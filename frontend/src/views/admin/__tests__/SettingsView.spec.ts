@@ -55,6 +55,9 @@ const {
   showSuccess,
   getMarketplaceModels,
   getMarketplaceStats,
+  getQualityProbeSettings,
+  getQualityProbeModels,
+  saveQualityProbeSettings,
 } = vi.hoisted(() => ({
   getSettings: vi.fn(),
   getCreativeModelCandidates: vi.fn(),
@@ -112,6 +115,9 @@ const {
   adminSettingsFetch: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
+  getQualityProbeSettings: vi.fn(),
+  getQualityProbeModels: vi.fn(),
+  saveQualityProbeSettings: vi.fn(),
   getMarketplaceModels: vi.fn().mockResolvedValue([]),
   getMarketplaceStats: vi.fn().mockResolvedValue({
     today_tokens: 0,
@@ -151,6 +157,9 @@ vi.mock('@/api', () => ({
       getStreamTimeoutSettings,
       getRectifierSettings,
       getBetaPolicySettings,
+      getQualityProbeSettings,
+      getQualityProbeModels,
+      saveQualityProbeSettings,
     },
     providers: {
       getOllamaCloudUsageSettings,
@@ -158,6 +167,7 @@ vi.mock('@/api', () => ({
     },
     groups: {
       getAll: getGroups,
+      getAllIncludingInactive: getGroups,
     },
     proxies: {
       list: listProxies,
@@ -170,6 +180,11 @@ vi.mock('@/api', () => ({
     },
   },
 }))
+
+vi.mock('@/api/admin', async () => {
+  const { adminAPI } = await import('@/api')
+  return { adminAPI }
+})
 
 vi.mock('@/api/marketplace', () => ({
   getMarketplaceModels,
@@ -193,6 +208,11 @@ vi.mock('@/stores/adminSettings', () => ({
     fetch: adminSettingsFetch,
   }),
 }))
+
+vi.mock('@/stores/app', async () => {
+  const { useAppStore } = await import('@/stores')
+  return { useAppStore }
+})
 
 vi.mock('@/composables/useClipboard', () => ({
   // useClipboard supplies an inert copy action for settings link controls.
@@ -787,10 +807,12 @@ const baseSettingsResponse = {
 }
 
 // mountView renders the settings page with input and peripheral component stubs.
-// Tests await initial API promises before editing, and automatic teardown unmounts
-// the page after each scenario to release its listeners and polling intervals.
-function mountView() {
+// Tests await initial API promises before editing and can override stubs to exercise
+// a real nested editor. Attaching to the document supports computed visibility;
+// automatic teardown releases page listeners and polling intervals.
+function mountView(stubs: Record<string, boolean> = {}, attachTo?: HTMLElement) {
   return mount(SettingsView, {
+    attachTo,
     global: {
       stubs: {
         'transition-group': true,
@@ -809,6 +831,7 @@ function mountView() {
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
         QualityProbeSettingsCard: true,
+        ...stubs,
       },
     },
   })
@@ -2431,6 +2454,69 @@ describe('admin SettingsView payment visible method controls', () => {
     await openGatewaySection(wrapper, 'ollamaCloud')
     expect(wrapper.get('[data-testid="ollama-cloud-usage-global-settings"]').isVisible()).toBe(true)
     expect(wrapper.get('[data-testid="gateway-card-overload-cooldown"]').isVisible()).toBe(false)
+  })
+
+  // The OpenAI section exposes the real quality-probe editor within the settings
+  // page. Navigation retains its draft, and the shared save bar persists or reloads
+  // that draft through the editor's registered target.
+  it('keeps the OpenAI quality-probe draft mounted and uses the shared save and discard actions', async () => {
+    const probeSettings = {
+      enabled: false,
+      interval_minutes: 30,
+      models: ['gpt-6-astra'],
+      cooldown_minutes: 5,
+      max_attempts: 3,
+      notify_email: 'probe@example.com',
+      group_ids: [],
+      schedule_enabled: true,
+      schedule_start: '08:00',
+      schedule_end: '00:00',
+      unschedule_on_degraded: true,
+    }
+    getQualityProbeSettings.mockResolvedValue(probeSettings)
+    getQualityProbeModels.mockResolvedValue([])
+    saveQualityProbeSettings.mockImplementation(async (payload) => ({ ...payload }))
+    const wrapper = mountView({ QualityProbeSettingsCard: false }, document.body)
+    await flushPromises()
+
+    const card = wrapper.get('[data-testid="quality-probe-settings"]')
+    expect(card.isVisible()).toBe(false)
+    expect(wrapper.find('[data-testid="settings-save-bar"]').exists()).toBe(false)
+    await openGatewayTab(wrapper)
+    expect(card.isVisible()).toBe(false)
+    await openGatewaySection(wrapper, 'openai')
+    expect(card.isVisible()).toBe(true)
+    expect(card.get('h2').text()).toBe('admin.settings.qualityProbe.title')
+    const interval = card.get('#quality-probe-interval')
+    await interval.setValue(45)
+
+    await openGatewaySection(wrapper, 'general')
+    expect(card.isVisible()).toBe(false)
+    await openGatewaySection(wrapper, 'openai')
+    await openUsersTab(wrapper)
+    expect(card.isVisible()).toBe(false)
+    await openGatewayTab(wrapper)
+    expect(card.isVisible()).toBe(true)
+    expect(wrapper.get('#quality-probe-interval').element).toBe(interval.element)
+    expect((interval.element as HTMLInputElement).value).toBe('45')
+    expect(getQualityProbeSettings).toHaveBeenCalledTimes(1)
+
+    await saveFromSaveBar(wrapper)
+    expect(saveQualityProbeSettings).toHaveBeenCalledExactlyOnceWith({
+      ...probeSettings,
+      interval_minutes: 45,
+    })
+    expect(updateSettings).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="settings-save-bar"]').attributes('inert')).toBeDefined()
+
+    await interval.setValue(60)
+    getQualityProbeSettings.mockResolvedValueOnce({ ...probeSettings, interval_minutes: 45 })
+    await wrapper.get('[data-testid="settings-save-bar-discard"]').trigger('click')
+    await flushPromises()
+    expect(getQualityProbeSettings).toHaveBeenCalledTimes(2)
+    expect(saveQualityProbeSettings).toHaveBeenCalledTimes(1)
+    expect((interval.element as HTMLInputElement).value).toBe('45')
+    expect(wrapper.get('[data-testid="settings-save-bar"]').attributes('inert')).toBeDefined()
   })
 
   // The gateway section tabs receive arrow, End, and Home keyboard events. Their

@@ -117,6 +117,44 @@ export default {
       antigravity: 'Antigravity',
       ollamaCloud: 'Ollama Cloud',
     },
+    qualityProbe: {
+      title: 'Quality probe',
+      description:
+        'Run candy and ModelTrace fingerprint checks on OpenAI providers. The switch is off by default.',
+      enabled: 'Enable quality probes',
+      enabledHint:
+        "When on, the server checks due accounts every minute. It only probes OpenAI providers that are active, have scheduling turned on, sit in an enabled group, and list the probe model among their available models. Probes use the upstream account's quota.",
+      scheduleEnabled: 'Limit automatic probes to a time window',
+      scheduleEnabledHint:
+        'When on, automatic probes run between the start and end times below. Manual probes require the master switch and can run at any hour.',
+      scheduleStart: 'Start time',
+      scheduleStartHint: 'Server local time. Default 08:00.',
+      scheduleEnd: 'End time',
+      scheduleEndHint: 'Server local time. The end time is excluded. Default 00:00 means midnight.',
+      unscheduleOnDegraded: 'Unschedule degraded accounts',
+      unscheduleOnDegradedHint:
+        'When on, a degraded verdict temporarily unschedules the account, while keeping at least one schedulable member per group. When off, probes still record results, count failures, and send email, and the account stays schedulable. Turning this off and saving immediately restores scheduling for accounts held by quality probes.',
+      intervalMinutes: 'Interval after a pass (minutes)',
+      intervalHint: 'Wait this long after a passing probe before the next automatic run.',
+      model: 'Probe models',
+      modelHint:
+        'Select models from the enabled groups. Automatic probes run the selected models available to each account and skip unavailable models. Selected models run concurrently.',
+      cooldownMinutes: 'Failure cooldown (minutes)',
+      cooldownHint:
+        'After a degraded verdict, wait this long before retrying. When "Unschedule degraded accounts" is on, the account is temporarily unschedulable during that wait.',
+      maxAttempts: 'Automatic attempts',
+      maxAttemptsHint:
+        'After this many consecutive failures the server emails you and stops the automatic loop.',
+      notifyEmail: 'Notification email',
+      notifyEmailHint:
+        'Email is sent here when consecutive failures reach the automatic attempt limit.',
+      groups: 'Automatic probe groups',
+      groupsHint:
+        'Leave empty to cover every enabled OpenAI group. The timer only probes accounts that are active, have scheduling on, and list the probe model. Disabled groups are skipped. The provider menu still probes any OpenAI account.',
+      groupInactive: 'Disabled',
+      loadFailed: 'Failed to load quality probe settings',
+      saveFailed: 'Failed to save quality probe settings',
+    },
     preAggregation: {
       title: 'Pre-aggregation',
       description: 'Manage usage and operations aggregation jobs and coverage status.',

@@ -583,6 +583,11 @@
     v-show="activeGatewaySection === 'openai'"
     v-content-reveal="activeGatewaySection === 'openai'"
   />
+  <!-- Keep the independent probe editor mounted so its draft and save target survive navigation between gateway sections. -->
+  <QualityProbeSettingsCard
+    v-show="activeGatewaySection === 'openai'"
+    v-content-reveal="activeGatewaySection === 'openai'"
+  />
   <!-- OpenAI and Codex client forwarding controls. -->
   <SettingsCard
     v-show="activeGatewaySection === 'openai'"
@@ -771,6 +776,7 @@
 <script setup lang="ts">
 import { vContentReveal } from '@/directives/contentReveal'
 import ResponsesWSSettings from '@/views/admin/settings/ResponsesWSSettings.vue'
+import QualityProbeSettingsCard from '@/components/admin/settings/QualityProbeSettingsCard.vue'
 import ContentSkeleton from '@/components/common/ContentSkeleton.vue'
 import Collapse from '@/components/common/Collapse.vue'
 import SettingRow from '@/components/common/settings/SettingRow.vue'
@@ -793,9 +799,9 @@ import type { useWebSearchSettings } from './useWebSearchSettings'
 /**
  * GatewayForwardingSettings.vue renders scheduling, forwarding identity, prompt
  * replacement, and usage visibility controls against the shared gateway draft. It
- * also hosts the independently registered Responses WebSocket editor and the search
- * configuration panel, whose mounted positions determine their participation in the
- * page save flow.
+ * also hosts independently registered Responses WebSocket and quality-probe editors
+ * alongside the search configuration panel. Their mounted positions retain local
+ * drafts and participation in the page save flow while platform sections are hidden.
  */
 // controller and form refer to the page-owned gateway actions and bulk draft, while
 // webSearch holds the separate search draft. activeGatewaySection changes visibility;

@@ -1,4 +1,3 @@
-<!-- QualityProbeSettingsCard.vue loads and saves automatic OpenAI quality-probe settings. The card keeps an editable draft for schedules, groups, and degraded-provider handling. -->
 <template>
   <SettingsCard
     data-testid="quality-probe-settings"
@@ -100,7 +99,7 @@
                 type="checkbox"
                 :value="group.id"
                 class="h-4 w-4 shrink-0 rounded-compact border-gray-300 text-primary-600 focus:ring-primary-500"
-                @change="loadModels"
+                @change="loadModels()"
               />
               <GroupBadge
                 :name="group.name"
@@ -208,9 +207,23 @@ import GroupBadge from '@/components/common/GroupBadge.vue'
 import ModelWhitelistSelector from '@/components/provider/ModelWhitelistSelector.vue'
 import type { AdminGroup } from '@/api/groups.types'
 
+// QualityProbeSettingsCard.vue edits automatic OpenAI quality-probe settings and
+// registers its draft with the settings page save bar. Settings persist independently
+// from the available group and model catalogs. Initial loading and discard retain
+// saved model choices when eligible providers are absent or a catalog request fails,
+// so saving another setting keeps the administrator's configured probe models.
+//
+// Group edits refresh candidates and filter selections against the requested scope.
+// Each request has a generation token because responses can finish out of order.
+// Successful initialization exposes controls after candidate loading completes.
+// Later reloads capture the server baseline before catalog requests so intervening
+// edits remain dirty when those requests finish.
+
 const { t } = useI18n()
 const appStore = useAppStore()
 const loading = ref(false)
+// loaded exposes controls after the first settings and candidate requests finish;
+// later refreshes leave controls mounted so pending user edits remain observable.
 const loaded = ref(false)
 const groupsLoading = ref(false)
 const groups = ref<AdminGroup[]>([])
@@ -252,19 +265,33 @@ function serialize(value: QualityProbeSettings) {
   })
 }
 
-// loadModels refreshes candidates after group scope changes. A stale request
-// cannot overwrite a newer selection because each completion compares its token.
+// modelRequestToken identifies the candidate lookup allowed to publish its result;
+// restoring server settings also advances it to invalidate the abandoned draft.
 let modelRequestToken = 0
-async function loadModels() {
+
+// loadModels refreshes candidates and optionally filters the current model choices.
+// Group changes use the default filtering behavior; server reloads pass false so
+// temporarily unavailable models remain configured. Every lookup advances the
+// request token before awaiting the API, and only the latest lookup may publish
+// candidates or filter choices. A failed current lookup clears suggestions while
+// retaining selected models, allowing other settings to be saved during catalog
+// outages.
+async function loadModels(filterSelection = true) {
   const token = ++modelRequestToken
   try {
     const candidates = await adminAPI.settings.getQualityProbeModels([...form.group_ids])
+    // A later lookup or server reload owns the draft, so an older completion
+    // cannot replace candidates or remove selections restored by that operation.
     if (token !== modelRequestToken) {
       return
     }
     models.value = candidates
-    form.models = form.models.filter((model) => candidates.includes(model))
+    if (filterSelection) {
+      form.models = form.models.filter((model) => candidates.includes(model))
+    }
   } catch {
+    // Keep configured selections when discovery fails because the server settings
+    // remain valid independently of the currently available candidate list.
     if (token === modelRequestToken) {
       models.value = []
     }
@@ -273,10 +300,22 @@ async function loadModels() {
 
 const dirty = computed(() => loaded.value && serialize(form) !== snapshot.value)
 
+// load replaces the draft and its clean snapshot from persisted probe settings.
+// Mounting, refresh, and the page discard action share this operation. Catalogs
+// provide editing choices, while saved model IDs remain intact during discovery.
+// Restoring the server draft invalidates earlier model requests before group
+// discovery can yield, preventing abandoned selections from changing that draft.
+//
+// The snapshot is recorded before catalog requests so edits during a later reload
+// remain dirty. On the first load, controls stay behind the skeleton until discovery
+// finishes, preventing an unfinished initialization from accepting user edits.
 async function load() {
   loading.value = true
   try {
     const data = await adminAPI.settings.getQualityProbeSettings()
+    // Invalidate pending group lookups before replacing model selections so a
+    // response from the abandoned draft cannot prune the restored configuration.
+    modelRequestToken++
     Object.assign(form, {
       ...data,
       schedule_enabled: data.schedule_enabled !== false,
@@ -286,17 +325,21 @@ async function load() {
       group_ids: [...(data.group_ids || [])],
       models: [...(data.models || (data.model ? [data.model] : []))],
     })
+    // Establish the server baseline before awaiting catalogs so edits during an
+    // already mounted refresh remain distinguishable when those requests finish.
     snapshot.value = serialize(form)
-    loaded.value = true
     groupsLoading.value = true
     try {
       groups.value = await adminAPI.groups.getAllIncludingInactive()
     } catch {
+      // A missing group catalog leaves the saved scope available for persistence;
+      // the empty list lets the remaining settings controls finish loading.
       groups.value = []
     } finally {
       groupsLoading.value = false
     }
-    await loadModels()
+    await loadModels(false)
+    loaded.value = true
   } catch (error: any) {
     appStore.showError(error?.message || t('admin.settings.qualityProbe.loadFailed'))
   } finally {

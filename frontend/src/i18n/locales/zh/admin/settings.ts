@@ -113,6 +113,41 @@ export default {
       antigravity: 'Antigravity',
       ollamaCloud: 'Ollama Cloud',
     },
+    qualityProbe: {
+      title: '降智探测',
+      description: '对 OpenAI 提供商定时做糖果题和 ModelTrace 指纹归因。总开关默认关闭。',
+      enabled: '启用降智探测',
+      enabledHint:
+        '开启后每分钟检查到期账号。只探测启用分组里、处于启用状态、打开了「参与调度」，且可用模型包含探测模型的 OpenAI 提供商。探测会消耗上游账号额度。',
+      scheduleEnabled: '按时间段自动探测',
+      scheduleEnabledHint:
+        '开启后，自动探测在下面的起止时间内运行。手动探测需要打开总开关，可在任何时段执行。',
+      scheduleStart: '开始时间',
+      scheduleStartHint: '服务器本地时区。默认 08:00。',
+      scheduleEnd: '结束时间',
+      scheduleEndHint: '服务器本地时区，结束时刻不执行自动探测。默认 00:00 表示午夜。',
+      unscheduleOnDegraded: '降智后是否停止调度',
+      unscheduleOnDegradedHint:
+        '开启后，判定降智会临时停调该账号（分组保底仍生效）。关闭后仍记结果、累计次数和发邮件，账号保持可调度；保存关闭时立即清掉已有的降智临时停调。',
+      intervalMinutes: '通过后的间隔（分钟）',
+      intervalHint: '本轮通过后，下次自动探测要等这么久。',
+      model: '探测模型',
+      modelHint:
+        '从启用分组中多选模型。自动探测会运行各账号可用的所选模型，跳过不可用模型。选中的模型同时探测。',
+      cooldownMinutes: '失败冷却（分钟）',
+      cooldownHint:
+        '判定降智后，等待这么久再测。开启「降智后是否停止调度」时，这段时间里账号会临时停调。',
+      maxAttempts: '自动循环次数',
+      maxAttemptsHint: '连续失败达到这个次数后发邮件，并停止自动循环。',
+      notifyEmail: '通知邮箱',
+      notifyEmailHint: '连续失败达到设置的自动循环次数时，向这个地址发送邮件。',
+      groups: '自动探测分组',
+      groupsHint:
+        '不选表示全部启用中的 OpenAI 分组。只探测其中已启用、已开启调度，且具备探测模型的账号；禁用分组不探测。提供商菜单里仍可手动探测任意 OpenAI 账号。',
+      groupInactive: '已禁用',
+      loadFailed: '加载降智探测设置失败',
+      saveFailed: '保存降智探测设置失败',
+    },
     preAggregation: {
       title: '预聚合',
       description: '管理使用记录和运维指标的聚合任务与覆盖状态。',
