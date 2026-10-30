@@ -74,6 +74,18 @@ upstream version.
 - For full local acceptance, run `make verify`. It runs the same checks as CI and requires Docker. Run `make security` for security scans.
 - If a test fails or a check is interrupted, fix the cause and rerun verification. Explain skipped tests and mark their scope as unverified.
 
+## Release scope and waiting
+
+- The owner requested on 2026-10-30 that releases reuse the v0.4.3 artifact scope. That successful release published Linux amd64/arm64 and macOS amd64/arm64 tar.gz archives, a Windows amd64 zip, `checksums.txt`, and Docker images through the standard Release workflow (run 40076981228). Preserve this scope until the owner changes it; the historical artifact list alone does not establish the OneToken server architecture.
+
+- Default to publishing the artifacts needed for the OneToken server to update normally. Confirm its operating system, architecture, and update method from deployment evidence, record the result, and reuse it until the deployment changes. Build additional platforms when the user requests them.
+- For administrator online updates, publish one archive for the confirmed target and `checksums.txt`. Keep the archive naming and embedded binary compatible with the updater. Publish a matching Docker image when the deployment needs image updates. A container deployment alone does not establish which update method it uses.
+- Select or adjust the release workflow to match this scope before triggering it. The existing image-only simple release does not supply the archive needed by the administrator updater. Apply the OneToken artifact scope to release skills and publication acceptance checks.
+- Run the changed package or component checks locally and check the release commit's CI results. Reuse successful results for the same commit and unchanged relevant inputs. Repeat checks when changes, failures, interrupted runs, or unresolved concerns require them. Keep the required CI checks and the migration and backup checks applicable to the release.
+- Build the frontend once and reuse its output. Reuse the target binary for its archive and image. Run independent checks in parallel when useful, and use build caches where supported.
+- Prefer completion notifications or a bounded watch over repeated status queries. When polling is necessary, start around 30 seconds and back off toward 60 seconds if status is unchanged. Keep each blocking wait within 60 seconds, use waiting time for independent authorized work, and continue as soon as a dependency completes.
+- Read compact status summaries while jobs run and inspect detailed logs when a failure or unexpected delay needs diagnosis. Report meaningful progress and required user action. Reuse completed reviews and artifact verification while their inputs remain unchanged; additional agents and repeated downloads should resolve a specific outstanding question.
+
 ## Plan mode
 
 - When using Codex plan mode, save the finalized plan verbatim under `.agents/plans/` before implementation. Append progress to the end of that file during execution. Keep plan files local and exclude them from commits.
