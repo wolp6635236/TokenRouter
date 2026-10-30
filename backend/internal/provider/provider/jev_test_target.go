@@ -2,14 +2,10 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
-	"github.com/TokenFlux/TokenRouter/internal/protocol"
-	"github.com/TokenFlux/TokenRouter/internal/protocol/systemone"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/jev"
 )
 
@@ -93,18 +89,9 @@ func (t jevTestTarget) Execute(ctx context.Context, request provider.PreparedTes
 	if t.record.Proxy != nil {
 		proxy = t.record.Proxy.URL()
 	}
-	body := systemone.ProbeBody(model, request.Prompt)
-	// A structured decision probe carries caller state and questions. Replace the
-	// mapped model in that body before validation so those fields survive provider
-	// alias selection.
-	if len(request.SystemOne) > 0 {
-		body, err = systemone.ReplaceModel(request.SystemOne, model)
-		if err != nil {
-			return output.Error(run, "Invalid SystemOne test request")
-		}
-		if _, err = systemone.ParseRequest(body); err != nil {
-			return output.Error(run, err.Error())
-		}
+	body, err := systemOneProbeBody(model, request.Prompt, request.SystemOne)
+	if err != nil {
+		return output.Error(run, err.Error())
 	}
 	run.Begin(true)
 	output.SendEvent(run, provider.TestEvent{Type: "test_start", Model: model})
@@ -115,13 +102,5 @@ func (t jevTestTarget) Execute(ctx context.Context, request provider.PreparedTes
 			return t.executor.Transport.Do(req, proxy, t.record.ID, t.record.Concurrency)
 		},
 	}
-	result, err := (jev.Executor{}).Execute(run.Context, upstream.AttemptInput{Protocol: protocol.ProtocolSystemOne, Body: body, Target: target}, nil)
-	if err != nil {
-		return output.Error(run, "SystemOne test failed: "+err.Error())
-	}
-	output.SendEvent(run, provider.TestEvent{Type: "content", Text: string(result.MediaBody)})
-	// Completion reports the upstream attempt duration in milliseconds.
-	data := map[string]any{"duration_ms": result.Duration.Milliseconds(), "usage_valid": result.HasUsage, "response": json.RawMessage(result.MediaBody)}
-	output.SendEvent(run, provider.TestEvent{Type: "test_complete", Model: result.UpstreamResponseModel, Success: true, Data: data})
-	return run.Result(nil)
+	return run.Result(executeSystemOneProbe(run, target, body))
 }

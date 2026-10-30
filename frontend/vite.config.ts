@@ -127,14 +127,10 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': resolve(import.meta.dirname, 'src'),
-        // Use the runtime localization build alongside the configured JIT message compiler.
+        // Vue I18n 11 enables CSP-compatible JIT compilation by default; keep
+        // the runtime distribution used by the application and component tests.
         'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js',
       },
-    },
-    define: {
-      // The JIT compiler represents messages as AST objects, allowing interpolation
-      // when the document CSP does not permit dynamically evaluated JavaScript.
-      __INTLIFY_JIT_COMPILATION__: true,
     },
     build: {
       outDir: '../backend/internal/web/dist',

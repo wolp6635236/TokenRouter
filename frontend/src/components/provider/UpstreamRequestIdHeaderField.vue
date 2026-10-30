@@ -73,8 +73,8 @@ const examples = computed<HeaderExample[]>(() => {
 
 <template>
   <div>
-    <div class="flex items-center">
-      <label class="input-label">{{ t('admin.providers.upstreamRequestIdHeader') }}</label>
+    <div class="mb-1.5 flex items-center">
+      <label class="input-label mb-0">{{ t('admin.providers.upstreamRequestIdHeader') }}</label>
       <HelpTooltip width-class="w-80">
         <p>{{ t('admin.providers.upstreamRequestIdHeaderHelp.intro') }}</p>
         <template v-if="examples.length">

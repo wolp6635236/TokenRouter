@@ -6,13 +6,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/deepseek"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/kimi"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/zhipu"
 )
 
 // test_targets.go loads provider records and selects the platform executor for
 // administrative tests.
 // Provider test handles use the stored platform to choose execution after
-// loading the requested provider ID. Jev, Qoder, Gemini, Grok, OpenAI, CN, and
-// Antigravity have explicit routes; remaining platforms enter the Anthropic
+// loading the requested provider ID. OpenCode, Jev, Qoder, Gemini, Grok, OpenAI,
+// Kimi, Zhipu, DeepSeek, and Antigravity have explicit routes; remaining
+// platforms enter the Anthropic
 // executor, which validates supported provider types during execution. Automatic
 // text and image probes select their payload using declared final-model output;
 // explicit image probes require the same positive capability evidence.
@@ -35,7 +39,7 @@ type TestTargets struct {
 	Grok        *GrokProviderTest        // Grok platform probe executor
 	Anthropic   *AnthropicProviderTest   // default Anthropic probe executor
 	OpenAI      *OpenAIProviderTest      // OpenAI platform probe executor
-	CN          *CNProviderTest          // CN native-protocol probe executor
+	Native      *NativeProtocolTest      // shared API-key protocol probe executor
 	Antigravity *AntigravityProviderTest // Antigravity platform probe executor
 }
 
@@ -55,6 +59,8 @@ func (t *TestTargets) LoadTestTarget(ctx context.Context, request provider.TestR
 		return nil, err
 	}
 	switch value.Platform {
+	case provider.PlatformOpenCode:
+		return openCodeTestTarget{executor: t.Native, record: value}, nil
 	case provider.PlatformJev:
 		return t.Jev.Target(value), nil
 	case provider.PlatformQoder:
@@ -65,8 +71,12 @@ func (t *TestTargets) LoadTestTarget(ctx context.Context, request provider.TestR
 		return t.Grok.Target(value), nil
 	case provider.PlatformOpenAI:
 		return t.OpenAI.Target(value), nil
-	case provider.PlatformKimi, provider.PlatformZhipu, provider.PlatformDeepseek:
-		return t.CN.Target(value), nil
+	case provider.PlatformKimi:
+		return t.Native.Target(value, kimi.DefaultTestModel), nil
+	case provider.PlatformDeepseek:
+		return t.Native.Target(value, deepseek.DefaultTestModel), nil
+	case provider.PlatformZhipu:
+		return t.Native.Target(value, zhipu.DefaultTestModel), nil
 	case provider.PlatformAntigravity:
 		return t.Antigravity.Target(value), nil
 	default:

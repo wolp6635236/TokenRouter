@@ -189,7 +189,7 @@ func (s *GrokProviderTest) Execute(c *TestRun, value *providercore.Record, model
 	// Provider overrides pass through the shared protected-header policy after CLI
 	// defaults, so a probe uses the same enabled override values as provider
 	// requests.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
@@ -299,7 +299,7 @@ func (s *GrokProviderTest) executeImage(c *TestRun, ctx context.Context, value *
 	if value.IsGrokOAuth() && (xai.MediaCodec{}).IsGrokCLIProxyTarget(apiURL) {
 		xai.ApplyCLIHeaders(req.Header)
 	}
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {

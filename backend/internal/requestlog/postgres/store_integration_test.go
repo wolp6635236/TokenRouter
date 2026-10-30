@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,10 +21,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/migrations"
 )
 
-// Request lookup must retain local ID scope while connecting child requests,
-// billing aliases, and retained historical sources. Migrated PostgreSQL
-// scenarios store real snapshots and business rows, then compare ordinary-user
-// and administrator visibility after replay, cleanup, and team-owner changes.
+// store_integration_test.go checks request lookup scope, child billing aliases,
+// retained sources, and sparse query plans against migrated PostgreSQL.
+// Migrated scenarios store real snapshots and business rows, then compare
+// ordinary-user and administrator visibility after replay, cleanup, and
+// team-owner changes. Usage cases also preserve distinct charges sharing an ID
+// and filter inaccessible rows before applying the global result limit.
 //
 // Execution-plan cases populate large sparse-match fixtures and capture nested
 // SQL through auto_explain notices on a dedicated pq connection. Recreating the
@@ -32,15 +35,203 @@ import (
 // required to reproduce a usage scan before staged migration is checked under
 // custom and generic plans. Timing logs record fixture migration duration;
 // assertions inspect IDs and scan nodes rather than imposing a latency
-// threshold.
+// threshold. Usage-query cases omit system metadata statistics and inspect
+// executed rows and discarded rows, catching time-index traversals that return
+// few results without using a sequential scan.
 
 // lookupPlanNode decodes recursive scan identity and execution counts from
 // explained PostgreSQL plans.
 type lookupPlanNode struct {
-	Type     string           `json:"Node Type"`     // explained execution node kind
-	Relation string           `json:"Relation Name"` // scanned database relation name
-	Plans    []lookupPlanNode `json:"Plans"`         // nested execution plan nodes
-	Loops    float64          `json:"Actual Loops"`  // actual node execution count
+	Type     string           `json:"Node Type"`              // explained execution node kind
+	Relation string           `json:"Relation Name"`          // scanned database relation name
+	Plans    []lookupPlanNode `json:"Plans"`                  // nested execution plan nodes
+	Loops    float64          `json:"Actual Loops"`           // actual node execution count
+	Index    string           `json:"Index Name"`             // selected database index name
+	Rows     float64          `json:"Actual Rows"`            // average rows per execution
+	Filtered float64          `json:"Rows Removed by Filter"` // average discarded rows per execution
+}
+
+// TestStoreFindUsageWithoutSystemStatistics reproduces sparse usage lookup after
+// an upgrade leaves system metadata statistics absent. The production SQL must
+// restrict executed scans under custom and generic plans, before and after
+// statistics are collected, including zero-match and parent-run lookups.
+func TestStoreFindUsageWithoutSystemStatistics(t *testing.T) {
+	db := postgrescontainer.New(t)
+	ctx := t.Context()
+	// Keep unrelated column statistics while suppressing system metadata sampling,
+	// then recreate its expression index to reproduce the newly migrated catalog.
+	_, err := db.ExecContext(ctx, `
+ALTER TABLE usage_logs SET (autovacuum_enabled=false);
+ALTER TABLE usage_logs ALTER COLUMN system_usage SET STATISTICS 0;
+INSERT INTO users(id,email,password_hash) VALUES (101,'usage-plan@requests.test','hash');
+INSERT INTO api_keys(id,user_id,key,name) VALUES (101,101,'usage-plan-key','lookup');
+INSERT INTO providers(id,name,platform,type) VALUES (101,'usage-plan','openai','apikey');
+INSERT INTO usage_logs(user_id,billing_user_id,api_key_id,provider_id,request_id,upstream_request_id,model,created_at)
+SELECT 101,101,101,101,'request-'||g,'supplier-'||g,'model','2026-01-01'::timestamptz+g*interval '1 second'
+FROM generate_series(1,100000) g;
+INSERT INTO usage_logs(provider_id,request_id,request_source,system_usage,model)
+VALUES (101,'system-child','group_probe','{"parent_request_id":"system-parent"}','model');
+ANALYZE usage_logs;
+ALTER TABLE usage_logs ALTER COLUMN system_usage SET STATISTICS -1;
+DROP INDEX idx_usage_logs_system_parent;
+CREATE INDEX idx_usage_logs_system_parent ON usage_logs ((system_usage->>'parent_request_id')) WHERE system_usage IS NOT NULL;`)
+	require.NoError(t, err)
+	var statistics int
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stats
+ WHERE tablename='idx_usage_logs_system_parent' OR (tablename='usage_logs' AND attname='system_usage')`).Scan(&statistics))
+	require.Zero(t, statistics)
+	for _, analyzed := range []bool{false, true} {
+		if analyzed {
+			_, err = db.ExecContext(ctx, "ANALYZE usage_logs")
+			require.NoError(t, err)
+		}
+		for _, mode := range []string{"force_custom_plan", "force_generic_plan"} {
+			t.Run(fmt.Sprintf("analyzed=%t/%s", analyzed, mode), func(t *testing.T) {
+				conn, err := db.Conn(ctx)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, conn.Close()) })
+				// Plan both modes on one connection using the same statement as Find;
+				// retain PostgreSQL's normal scan choices so cost regressions remain visible.
+				_, err = conn.ExecContext(ctx, "SET plan_cache_mode="+mode+"; DEALLOCATE ALL; PREPARE usage_lookup(text[],bigint,boolean,text,boolean) AS "+findUsageSQL)
+				require.NoError(t, err)
+				for _, statement := range []string{
+					"EXECUTE usage_lookup(ARRAY['request-1'],0,true,'request-1',true)",
+					"EXECUTE usage_lookup(ARRAY['request-1'],0,true,'supplier-1',false)",
+					"EXECUTE usage_lookup(ARRAY['system-parent'],0,true,'system-parent',true)",
+					"EXECUTE usage_lookup(ARRAY['missing'],0,true,'missing',false)",
+				} {
+					plan := explainUsageLookup(t, conn, statement)
+					assertSparseUsageLookup(t, plan)
+				}
+			})
+		}
+	}
+}
+
+// explainUsageLookup executes a prepared usage lookup and returns its analyzed
+// root plan. The caller owns the connection and supplies a fixture-only SQL
+// statement; production query parameters are defined by that prepared statement.
+func explainUsageLookup(t *testing.T, conn *sql.Conn, statement string) lookupPlanNode {
+	t.Helper()
+	var raw string
+	require.NoError(t, conn.QueryRowContext(t.Context(), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, TIMING OFF) "+statement).Scan(&raw))
+	var plans []struct {
+		Plan lookupPlanNode `json:"Plan"` // decoded execution plan root
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &plans))
+	require.Len(t, plans, 1)
+	return plans[0].Plan
+}
+
+// assertSparseUsageLookup rejects broad executed scans of the sparse fixture.
+// Check rows discarded by filters as well as returned rows because a time-index
+// scan can traverse the entire table while returning only one matching record.
+func assertSparseUsageLookup(t *testing.T, node lookupPlanNode) {
+	t.Helper()
+	if node.Relation == "usage_logs" && node.Loops > 0 {
+		require.NotContains(t, node.Type, "Seq Scan", "%+v", node)
+		require.NotEqual(t, "idx_usage_logs_created_at", node.Index, "%+v", node)
+		// Each lookup matches at most two branch rows; allow planner variation while
+		// rejecting work that scales with the hundred-thousand-row fixture size.
+		require.LessOrEqual(t, (node.Rows+node.Filtered)*node.Loops, float64(10), "%+v", node)
+	}
+	for _, child := range node.Plans {
+		assertSparseUsageLookup(t, child)
+	}
+}
+
+// TestStoreFindUsageUnionPreservesVisibility checks overlapping ID sources and
+// multiple charges sharing one request ID. Permissions precede the global row
+// limit, and active team owners retain access without exposing system records.
+func TestStoreFindUsageUnionPreservesVisibility(t *testing.T) {
+	db := postgrescontainer.New(t)
+	ctx := t.Context()
+	_, err := db.ExecContext(ctx, `
+INSERT INTO users(id,email,password_hash) VALUES
+ (101,'usage-owner@requests.test','hash'),(202,'usage-other@requests.test','hash'),(303,'usage-team@requests.test','hash');
+INSERT INTO api_keys(id,user_id,key,name) VALUES
+ (101,101,'usage-owner-one','lookup'),(102,101,'usage-owner-two','lookup'),(202,202,'usage-other-key','lookup');
+INSERT INTO providers(id,name,platform,type) VALUES (101,'usage-union','openai','apikey');
+INSERT INTO usage_logs(id,user_id,billing_user_id,api_key_id,provider_id,request_id,upstream_request_id,model) VALUES
+ (901,101,101,101,101,'local','shared','model'),
+ (902,101,101,102,101,'local','shared','model'),
+ (903,202,202,202,101,'foreign','local','model');
+INSERT INTO usage_logs(id,provider_id,request_id,upstream_request_id,request_source,system_usage,model)
+VALUES (905,101,'system','shared','group_probe','{"parent_request_id":"shared"}','model');`)
+	require.NoError(t, err)
+	var teamID int64
+	require.NoError(t, db.QueryRowContext(ctx, `INSERT INTO teams(name) VALUES('usage-lookup') RETURNING id`).Scan(&teamID))
+	_, err = db.ExecContext(ctx, `INSERT INTO team_memberships(team_id,user_id,role) VALUES($1,303,'owner')`, teamID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `INSERT INTO usage_logs(id,user_id,billing_user_id,team_id,api_key_id,provider_id,request_id,model)
+VALUES(906,202,202,$1,202,101,'team','model')`, teamID)
+	require.NoError(t, err)
+	store := NewStore(db)
+	for _, test := range []struct {
+		name   string   // visibility scenario label
+		ids    []string // resolved local request identifiers
+		search string   // original supplied search identifier
+		userID int64    // authenticated requesting user identifier
+		admin  bool     // trusted administrator access flag
+		exact  bool     // existing local identifier flag
+		want   []int64  // expected stored usage identifiers
+	}{
+		{"exact excludes upstream collision", []string{"local"}, "local", 0, true, true, []int64{901, 902}},
+		{"external includes collision", []string{"local"}, "local", 0, true, false, []int64{901, 902, 903}},
+		{"overlapping sources deduplicate rows", []string{"local", "system"}, "shared", 0, true, false, []int64{901, 902, 905}},
+		{"user cannot read system usage", []string{"local", "system"}, "shared", 101, false, false, []int64{901, 902}},
+		{"unrelated user has no access", []string{"local", "system"}, "shared", 202, false, false, nil},
+		{"active team owner", []string{"team"}, "team", 303, false, true, []int64{906}},
+		{"empty search result", []string{"missing"}, "missing", 0, true, false, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := findUsageIDs(t, store, test.ids, test.search, test.userID, test.admin, test.exact)
+			require.ElementsMatch(t, test.want, got)
+		})
+	}
+	_, err = db.ExecContext(ctx, `UPDATE team_memberships SET left_at=now() WHERE team_id=$1 AND user_id=303`, teamID)
+	require.NoError(t, err)
+	require.Empty(t, findUsageIDs(t, store, []string{"team"}, "team", 303, false, true))
+	// Place inaccessible rows newer than every visible row so limiting before the
+	// ownership check would incorrectly hide the user's entire matching history.
+	_, err = db.ExecContext(ctx, `
+INSERT INTO usage_logs(id,user_id,billing_user_id,api_key_id,provider_id,request_id,upstream_request_id,model,created_at)
+SELECT 910000+g,101,101,101,101,'visible-'||g,'limited','model','2026-01-01'::timestamptz+g*interval '1 second'
+FROM generate_series(1,120) g;
+INSERT INTO usage_logs(id,user_id,billing_user_id,api_key_id,provider_id,request_id,upstream_request_id,model,created_at)
+SELECT 920000+g,202,202,202,101,'hidden-'||g,'limited','model','2026-02-01'::timestamptz+g*interval '1 second'
+FROM generate_series(1,150) g;`)
+	require.NoError(t, err)
+	var ids []string
+	for i := 1; i <= 120; i++ {
+		ids = append(ids, fmt.Sprintf("visible-%d", i))
+	}
+	got := findUsageIDs(t, store, ids, "limited", 101, false, false)
+	require.Len(t, got, 101)
+	for i, id := range got {
+		require.Equal(t, int64(910120-i), id)
+	}
+	got = findUsageIDs(t, store, ids, "limited", 0, true, false)
+	require.Len(t, got, 101)
+	for i, id := range got {
+		require.Equal(t, int64(920150-i), id)
+	}
+}
+
+// findUsageIDs returns stored usage primary keys in the query's result order.
+// Each call starts without summaries so the assertions observe usage ordering
+// directly, including distinct charges with the same logical request ID.
+func findUsageIDs(t *testing.T, store *Store, ids []string, search string, userID int64, admin, exact bool) []int64 {
+	t.Helper()
+	var details []requestlog.Detail
+	require.NoError(t, store.findUsage(t.Context(), ids, search, userID, admin, exact, &details, map[string]int{}))
+	var result []int64
+	for _, detail := range details {
+		for _, usage := range detail.Usage {
+			result = append(result, usage.ID)
+		}
+	}
+	return result
 }
 
 // TestStoreLookupWithoutBillingStatistics models table statistics with a

@@ -1866,14 +1866,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	maps.Copy(identityFields, identity.AuthSourceParticipantFields(authSourceDefaults))
-	for name, value := range identityFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
-	}
+	mergePresentSettingsFields(fields, identityFields, sentFields)
 	// Encode merged scalar and collection fields for their registered owners.
 	// Current values use JSON-supported types, so encoding errors are discarded
 	// here before the owning preparers validate and select their stored representation.
@@ -1898,14 +1891,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	// Remove the initial pointer serialization before scheduler fields retain
 	// their normalized presence information, so omission can retain inherited sticky-escape policy.
 	delete(fields, "advanced_scheduler_sticky_escape_enabled")
-	for name, value := range schedulerFields {
-		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
-			if _, sent := sentFields[name]; !sent {
-				continue
-			}
-		}
-		fields[name] = value
-	}
+	mergePresentSettingsFields(fields, schedulerFields, sentFields)
 	if err := mergeNormalizedSettingsFields(fields, settings.RoutingAdminSettings(), sentFields); err != nil {
 		httpx.ErrorFrom(c, err)
 		return
@@ -2244,16 +2230,10 @@ func prepareFooterLinks(c *gin.Context, input *[]sitedto.FooterLinkGroup, previo
 }
 
 // mergeNormalizedSettingsFields serializes a module value into flat request
-// field JSON and updates the supplied participant-input map. It checks names
-// against the original raw request when the precomputed field map identifies
-// that name as non-pointer input.
-//
-// Omitted non-pointer values stay excluded even when normalization supplied
-// a default, preventing an unrelated partial request from writing those defaults.
-// Pointer-backed names and supplied non-pointer names receive the normalized
-// module result instead of an earlier decoded value. Encoding or decoding failures
-// return before this loop, while successful assignments mutate the caller's map
-// for the next preparation phase.
+// field JSON and applies the participant presence rules to the supplied map.
+// Encoding or decoding failures return before mutation; successful conversion
+// delegates omission handling to mergePresentSettingsFields for the next
+// preparation phase.
 func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any, sentFields map[string]json.RawMessage) error {
 	raw, err := json.Marshal(normalized)
 	if err != nil {
@@ -2263,7 +2243,21 @@ func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any
 	if err := json.Unmarshal(raw, &normalizedFields); err != nil {
 		return err
 	}
-	for name, value := range normalizedFields {
+	mergePresentSettingsFields(fields, normalizedFields, sentFields)
+	return nil
+}
+
+// mergePresentSettingsFields merges encoded participant values into the pending
+// settings update while preserving omitted scalar fields. The original request
+// presence controls non-pointer names, so normalization cannot turn an unrelated
+// partial update into an overwrite with a default, false, or empty value.
+//
+// Pointer-backed names already carry their owner's resolved values and are copied
+// even when the raw request omits them. Omitted scalar names leave any existing
+// destination value untouched. Assigned RawMessage values share their backing
+// bytes with normalized; this function performs no encoding, validation, or commit.
+func mergePresentSettingsFields(fields, normalized runtimesettings.Fields, sentFields map[string]json.RawMessage) {
+	for name, value := range normalized {
 		if _, nonPointer := settingKeyByJSONName[name]; nonPointer {
 			if _, sent := sentFields[name]; !sent {
 				continue
@@ -2271,7 +2265,6 @@ func mergeNormalizedSettingsFields(fields runtimesettings.Fields, normalized any
 		}
 		fields[name] = value
 	}
-	return nil
 }
 
 // rejectDeprecatedAdvancedSchedulerRequestFields rejects the retired global

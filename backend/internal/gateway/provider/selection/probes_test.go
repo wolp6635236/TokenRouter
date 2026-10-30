@@ -9,9 +9,11 @@ import (
 
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/scheduler/rediscache/codec"
 )
 
 // probes_test.go checks group probe selection and execution against controlled
@@ -76,7 +78,7 @@ func TestProbeSelectPreservesGroupMappedModel(t *testing.T) {
 				target, err := probe.Select(context.Background(), routing.GroupAvailabilityProbeDueGroup{GroupID: group.ID}, requested)
 				require.NoError(t, err)
 				// The testing service applies provider mapping after group selection.
-				require.Equal(t, routing.GroupProbeTarget{GroupID: group.ID, ProviderID: 3678, ModelID: groupModel}, target)
+				require.Equal(t, routing.GroupProbeTarget{RequestedModel: requested, GroupID: group.ID, ProviderID: 3678, ModelID: groupModel}, target)
 				if mapped {
 					_, err = probe.Select(context.Background(), routing.GroupAvailabilityProbeDueGroup{GroupID: group.ID}, groupModel)
 					require.Error(t, err)
@@ -110,7 +112,7 @@ func TestProbeTestPreservesGroup(t *testing.T) {
 	require.Same(t, session, recorder.attributes)
 	require.NoError(t, err)
 	require.Equal(t, "success", result.Status)
-	require.Equal(t, providercore.TestRequest{GroupID: 59, ProviderID: 3678, Model: "mapped-model", Prompt: "draw", UserAgent: "probe-client"}, recorder.request)
+	require.Equal(t, providercore.TestRequest{RequestSource: "group_probe", GroupID: 59, ProviderID: 3678, Model: "mapped-model", Prompt: "draw", UserAgent: "probe-client"}, recorder.request)
 }
 
 // TestProbeSelectUsesEntryRoute exercises both scheduler modes with mapped models and conversion policy.
@@ -179,5 +181,69 @@ func TestProbeSelectSkipsUntestableRoute(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(2), target.ProviderID)
 		require.Equal(t, capability.ProtocolOpenAIChatCompletions, target.ProtocolRoute.UpstreamProtocol)
+	}
+}
+
+// TestProbeSelectCachedImageReference resolves a relay alias through a group's
+// Gemini attribute reference. Full and lightweight cache records must both
+// remain selectable under basic and advanced scheduling before provider testing.
+func TestProbeSelectCachedImageReference(t *testing.T) {
+	value := mixedGroupProvider(9, capability.PlatformOpenAI, "Nano Banana Pro", 59)
+	value.Record.Credentials["base_url"] = "https://images.example.com/v1"
+	value.Record.Credentials["upstream_protocols"] = []string{"openai_images_generations", "openai_images_edits"}
+	value.Record.Credentials["model_mapping"] = map[string]any{"nano-banana-pro": "Nano Banana Pro"}
+	cacheCodec := codec.ProviderCodec{}
+	full, metadata, err := cacheCodec.Encode(codec.WrapRecord(&value.Record))
+	require.NoError(t, err)
+
+	for _, mode := range []routing.GroupSchedulerType{routing.GroupSchedulerTypeBasic, routing.GroupSchedulerTypeAdvanced} {
+		for name, payload := range map[string][]byte{"full": full, "metadata": metadata} {
+			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				decoded, err := cacheCodec.Decode(payload)
+				require.NoError(t, err)
+				record, err := codec.RecordValue(decoded)
+				require.NoError(t, err)
+				group := &routing.Group{
+					ID: 59, Hydrated: true, Status: routing.StatusActive, SchedulerType: mode,
+					AllowedProtocols: []capability.ProtocolID{capability.ProtocolImagesGenerations},
+					RoutingPolicy: routing.GroupRoutingPolicy{
+						Enabled: true, RestrictModels: true,
+						RestrictionModelSource: routing.BillingModelSourceGroupMapped,
+						AllowedModels:          []string{"nano-banana-pro"},
+					},
+				}
+				attributes := &routing.ModelAttributeService{
+					Repo: candidateAttributeRepo{config: &routing.ModelAttributeConfig{
+						Status: routing.StatusActive,
+						Rules: []routing.ModelAttributeRule{{
+							Models:         []string{"nano-banana-pro", "Nano Banana Pro"},
+							ReferenceModel: "gemini-3-pro-image-preview",
+						}},
+					}},
+					Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView},
+				}
+				policies := routing.NewPricingConfigService(probePricingStore{}, nil, routing.PricingConfigOptions{
+					ReadGroup: func(context.Context, int64) (*routing.Group, error) { return group, nil },
+				})
+				probe := Probe{
+					Attributes: attributes,
+					openAIGateway: newCompatibleSelectionForTest(CompatibleDependencies{
+						Reads: Reads{Providers: selectionProviderFixture{
+							providers: []gatewayprovider.ExecutionProvider{*gatewayprovider.NewExecutionProvider(record)},
+						}},
+						Shared: Shared{GroupPolicies: policies},
+					}, nil),
+				}
+				target, err := probe.Select(requeststate.WithGroup(t.Context(), group), routing.GroupAvailabilityProbeDueGroup{
+					GroupID: group.ID,
+					Config:  routing.GroupAvailabilityProbeConfig{Protocol: capability.ProtocolImagesGenerations},
+				}, "nano-banana-pro")
+				require.NoError(t, err)
+				require.Equal(t, value.Record.ID, target.ProviderID)
+				require.Equal(t, group.ID, target.GroupID)
+				require.Equal(t, "nano-banana-pro", target.ModelID)
+				require.Equal(t, capability.ProtocolImagesGenerations, target.ProtocolRoute.UpstreamProtocol)
+			})
+		}
 	}
 }

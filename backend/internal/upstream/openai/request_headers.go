@@ -21,7 +21,7 @@ import (
 // namespace, with special unary handling for the legacy compact endpoint and
 // different header selection for a Messages bridge. Provider identity applies
 // before precomputed fingerprints, which can intentionally replace those scoped
-// values. Final allowed overrides precede OpenCode session handling, beta
+// values. Final allowed overrides precede final provider authentication and session handling, beta
 // features, routing hints, and diagnostics. Request construction uses the
 // prepared body throughout, letting the generated routing hint describe the
 // actual model/tier fields after upstream request preparation.
@@ -49,10 +49,11 @@ type ResponsesRequestOptions struct {
 	IsolateSession             func(int64, string) string // required upstream session isolation
 	ApplyUserAgent             func(*http.Request)        // required outgoing User-Agent writer
 	// ApplyProviderIdentity scopes credential IDs, ApplyFingerprint writes attempt
-	// IDs, OverrideHeaders applies provider values, OpenCodeSession applies client
-	// session compatibility, and BetaFeatures negotiates capabilities. These
+	// IDs, OverrideHeaders applies provider values, and FinalizeProviderHeaders
+	// installs final authentication and client session identity. BetaFeatures
+	// negotiates capabilities. These
 	// callbacks mutate the same header map in the order used by the builder.
-	ApplyProviderIdentity, ApplyFingerprint, OverrideHeaders, OpenCodeSession, BetaFeatures func(http.Header)
+	ApplyProviderIdentity, ApplyFingerprint, OverrideHeaders, FinalizeProviderHeaders, BetaFeatures func(http.Header)
 	// RoutingHint writes final model/tier routing information, and Diagnostics
 	// records outgoing routing fields. Both receive prepared headers and the
 	// same body bytes used to construct the outbound request.
@@ -69,7 +70,7 @@ type ResponsesRequestOptions struct {
 // compact acceptance is JSON, and its isolated session can be replaced by
 // promptCacheKey when supplied; ordinary Codex acceptance is SSE. Credential
 // identity precedes the attempt fingerprint, then official client pairing runs
-// after User-Agent selection. Allowed overrides, OpenCode session handling,
+// after User-Agent selection. Allowed overrides, final provider authentication and session handling,
 // beta features, routing hints, and diagnostics run in that order, making later
 // policy callbacks see the prepared outgoing headers.
 func BuildResponsesRequest(ctx context.Context, body []byte, promptCacheKey string, options ResponsesRequestOptions) (*http.Request, error) {
@@ -172,8 +173,9 @@ func BuildResponsesRequest(ctx context.Context, body []byte, promptCacheKey stri
 	// header choices. OpenAI OAuth has no override map; other platforms apply
 	// their own supported provider types.
 	options.OverrideHeaders(req.Header)
-	// Apply caller-supplied OpenCode session handling after provider overrides.
-	options.OpenCodeSession(req.Header)
+	// Final provider preparation follows overrides so protocol-specific authentication
+	// headers cannot displace the selected provider credential or caller session identity.
+	options.FinalizeProviderHeaders(req.Header)
 	// Beta negotiation follows allowed overrides so required feature tokens can
 	// be added to the final header values before routing hints and diagnostic observation.
 	options.BetaFeatures(req.Header)

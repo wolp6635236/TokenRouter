@@ -357,7 +357,7 @@ func (s *Generic) shouldClearStickySessionForProviderLayer(ctx context.Context, 
 // afterward, letting diagnosis distinguish an otherwise eligible pool that
 // lacks the model from a pool already excluded for another eligibility reason.
 func (s *Generic) isProviderEligibleExceptModelSupport(ctx context.Context, provider *gatewayprovider.ExecutionProvider, requestedModel string, platform string, excludedIDs map[int64]struct{}, useMixed bool, groupID *int64, schedGroup *routing.Group) bool {
-	if !gatewayprovider.ExecutionModelPolicy(provider).AllowsProtocol(ctx) {
+	if !gatewayprovider.ExecutionModelPolicy(provider).AllowsProtocol(ctx, "") {
 		return false
 	}
 	if provider == nil {

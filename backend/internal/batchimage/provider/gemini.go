@@ -130,6 +130,13 @@ func (p *GeminiAPIBatchImageProvider) SupportsProvider(provider *Provider) bool 
 		batchImageProviderAPIKey(provider) != ""
 }
 
+// SupportsSubmission reports whether Gemini credentials can create a batch job.
+// Gemini uploads its own files, so the API-key adapter has no additional
+// deployment storage requirement for new submissions.
+func (p *GeminiAPIBatchImageProvider) SupportsSubmission(provider *Provider) bool {
+	return p.SupportsProvider(provider)
+}
+
 // Submit uploads Gemini JSONL and creates a batch from its returned file name.
 // The provider needs the enabled batch route and a nonblank API key; empty
 // input batch ID or model is filled from a supplied job before encoding.

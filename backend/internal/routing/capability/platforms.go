@@ -19,6 +19,7 @@ const (
 	PlatformKimi        = "kimi"        // Kimi provider platform identity
 	PlatformZhipu       = "zhipu"       // Zhipu provider platform identity
 	PlatformDeepseek    = "deepseek"    // DeepSeek provider platform identity
+	PlatformOpenCode    = "opencode"    // OpenCode inference platform identity
 	PlatformJev         = "jev"         // Jev provider platform identity
 )
 
@@ -26,5 +27,5 @@ const (
 // platform. Callers may change or reorder that slice independently when
 // preparing a platform filter for candidate queries.
 func ProviderPlatforms() []string {
-	return []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformJev}
+	return []string{PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformQoder, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformJev, PlatformOpenCode}
 }

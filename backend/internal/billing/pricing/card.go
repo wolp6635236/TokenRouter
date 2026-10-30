@@ -61,6 +61,11 @@ type ProviderStatsPricingRule struct {
 // presence: nil is unspecified and zero is supplied free pricing where that
 // bucket's calculation permits it.
 type ModelPricingEntry struct {
+	// ReferenceModel selects another model in the same price configuration.
+	// Reference entries contain no amounts or modifiers; resolution uses the
+	// target card and its catalog identity together.
+	ReferenceModel string `json:"reference_model,omitempty"`
+
 	ID int64 `json:"id,omitempty"` // stored model-card identifier
 	// owning shared pricing configuration
 	PricingConfigID int64 `json:"pricing_config_id,omitempty"`

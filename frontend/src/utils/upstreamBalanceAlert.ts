@@ -45,7 +45,7 @@ export function readUpstreamBalanceAlert(
 
 /**
  * supportsUpstreamBalanceAlert checks whether the provider category offers
- * wallet-balance reminders. API keys qualify except Zhipu and Kimi or DeepSeek
+ * wallet-balance reminders. API keys qualify except OpenCode, Zhipu, and Kimi or DeepSeek
  * coding modes; this predicate does not inspect enabled state or recipient
  * validity.
  */
@@ -54,7 +54,7 @@ export function supportsUpstreamBalanceAlert(
   platform: string,
   providerMode: string,
 ): boolean {
-  if (type !== 'apikey' || platform === 'zhipu') return false
+  if (type !== 'apikey' || platform === 'zhipu' || platform === 'opencode') return false
   const isCNPlatform = platform === 'kimi' || platform === 'deepseek'
   return !isCNPlatform || providerMode !== 'coding'
 }

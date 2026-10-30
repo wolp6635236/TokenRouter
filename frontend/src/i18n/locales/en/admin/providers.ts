@@ -6,7 +6,19 @@
 export default {
   // Providers
   providers: {
-    jev: { description: 'Call TypeSafe SystemOne decision models with an API key.' },
+    opencode: {
+      baseUrlHint:
+        'Leave blank for the selected service mode. A custom root should end at /inference or /inference/go. Set individual protocol addresses in Requests & protocols.',
+      payg: 'Console / Zen (pay as you go)',
+      paygDesc: 'Pay per use through OpenCode Zen.',
+      go: 'OpenCode Go',
+      goDesc: 'Subscription with rolling five-hour, weekly, and monthly usage windows.',
+      modelProtocols: 'Model protocols',
+      modelProtocolsHint:
+        'View catalog suggestions or set an exact model override. Delete an override to use the catalog. Each service mode keeps its own overrides.',
+      catalogSuggestion: 'Catalog',
+      selectProtocol: 'Select a protocol',
+    },
     title: 'Provider Management',
     description: 'Manage upstream AI connections and credentials',
     tabs: {
@@ -172,13 +184,10 @@ export default {
         endpoints: 'Protocol endpoints',
         responsesFallbackDesc:
           'Responses requests are converted to Chat Completions because this provider has no native Responses endpoint.',
-        chatCompletions: 'Chat Completions',
         chatCompletionsDesc:
           'Standard OpenAI-compatible endpoint; requests in other formats are converted.',
-        anthropic: 'Anthropic',
         anthropicDesc:
           'Native passthrough to the provider’s Anthropic endpoint — ideal for Claude Code.',
-        responses: 'Responses',
         responsesDesc: 'Provider’s native Responses endpoint — ideal for Codex.',
       },
       zhipuTeam: {
@@ -471,6 +480,9 @@ export default {
       baseUrlPlaceholder: 'Use the provider forwarding base URL',
       baseUrlHint:
         'The selected adapter keeps its own fixed paths and request format. Leave blank to reuse the provider base URL.',
+      openCodeBaseUrlHint:
+        'Leave blank to query https://opencode.ai. The Go management address is configured independently of the inference address.',
+      status: { rateLimited: 'Usage limit reached' },
       derouterBaseUrlHint:
         'Uses the provider Account Key to query available USD. Leave blank to use https://cf-api.derouter.ai, or enter a management base URL.',
       walletAccessToken: 'New API user access token (optional)',
@@ -1010,6 +1022,10 @@ export default {
       codexFingerprintFull: 'Full convergence',
       codexImageToolDesc:
         'Controls image-generation tools in conversations. Group settings take precedence over provider settings. Separate image generation and editing endpoints are unaffected.',
+      imageResponsesModel: 'Image Responses model',
+      imageResponsesModelDesc:
+        'Text model used to invoke the image tool for OAuth generation and editing. Leave blank to use the default. The image model is configured separately.',
+      imageResponsesModelDefault: 'Default (gpt-6-luna)',
       codexImageToolInherit: 'Follow group and global settings',
       codexImageToolInheritDesc:
         'This provider does not set its own policy. The group policy applies when set; otherwise the global setting is used.',
@@ -1127,6 +1143,7 @@ export default {
     syncUpstreamModelsEmpty: 'Upstream returned no models to sync',
     syncUpstreamModelsFailed: 'Failed to sync upstream models',
     syncUpstreamModelsError: 'Failed to sync upstream models: {message}',
+    saveBeforeSync: 'Save the connection changes before syncing upstream models.',
     clearAllModels: 'Clear all models',
     customModelName: 'Custom model name',
     enterCustomModelName: 'Enter custom model name',

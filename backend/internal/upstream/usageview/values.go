@@ -15,6 +15,7 @@ import (
 // These adapter identifiers select fixed upstream query formats in provider
 // execution and identify their normalized results.
 const (
+	UpstreamUsageAdapterOpenCodeGo      = "opencode_go"      // OpenCode Go allowance query adapter
 	UpstreamUsageAdapterSub2API         = "sub2api"          // Sub2API usage query adapter
 	UpstreamUsageAdapterNewAPI          = "new_api"          // New API usage query adapter
 	UpstreamUsageAdapterDerouter        = "derouter"         // derouter.ai account balance adapter
@@ -50,7 +51,8 @@ type UpstreamUsageBalanceEntry struct {
 type UpstreamUsageLimit struct {
 	// Name identifies the upstream window. ValidateUsageLimits requires nonblank
 	// names and compares their trimmed spellings case-sensitively for duplicate windows.
-	Name string `json:"name"` // upstream quota window name
+	Name   string `json:"name"`             // upstream quota window name
+	Status string `json:"status,omitempty"` // optional upstream window status
 	// Used, Limit, and Remaining use the result's shared unit and can be absent
 	// independently. ValidateUsageLimits requires at least one observed value
 	// and finite nonnegative Used and Limit when those values are supplied.
@@ -110,15 +112,16 @@ type UpstreamUsageInfo struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"` // optional upstream expiry instant
 }
 
-// CNQuotaTier carries one reported coding-plan percentage window before
-// normalized limit construction.
-type CNQuotaTier struct {
+// PercentageQuotaWindow carries one reported coding-plan percentage window
+// before normalized limit construction.
+type PercentageQuotaWindow struct {
 	Window string `json:"window"` // coding quota window name
-	// UsedPercent is the reported percentage. usageclient.CnUsageLimits accepts
-	// finite nonnegative values, retains overuse, and floors its derived
-	// remainder at zero.
+	// UsedPercent is the reported percentage. usageclient.PercentageUsageLimits
+	// accepts finite nonnegative values, retains overuse, and floors its
+	// derived remainder at zero.
 	UsedPercent float64 `json:"used_percent"` // percent
-	// ResetAt supplies reset text to usageclient.CnUsageLimits. That function
-	// omits invalid or zero RFC3339 resets while retaining the percentage window.
+	// ResetAt supplies reset text to usageclient.PercentageUsageLimits. That
+	// function omits invalid or zero RFC3339 resets while retaining the
+	// percentage window.
 	ResetAt string `json:"reset_at,omitempty"` // supplied reset timestamp text
 }

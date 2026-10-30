@@ -8,36 +8,38 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// protocol_legacy.go translates legacy protocol settings and preserves
-// endpoint selections during credential updates. Legacy protocol settings
-// express text routing and workloads separately from native selections. CN
-// adaptive mode enumerates available native protocols, while fixed variants
-// produce one text identifier. OpenAI API-key workload and endpoint settings
-// filter its native options before that selection is saved.
+// protocol_legacy.go translates legacy protocol settings and preserves endpoint
+// selections during credential updates. Legacy protocol settings express text
+// routing and workloads separately from native selections. Kimi, Zhipu, and
+// DeepSeek adaptive mode enumerates available native protocols, while fixed
+// variants produce one text identifier. OpenAI API-key workload and endpoint
+// settings filter its native options before that selection is saved.
 //
 // A legacy edit to an already unified provider replaces text protocols and,
 // when workload keys are supplied, embeddings. Independent media selections
 // remain present. A credential replacement with no legacy keys carries forward
-// omitted unified protocols and endpoint slots; supplied values, including
-// nil, express caller intent. Endpoint migration copies fixed CN base
-// addresses into missing slots before removing old fields, so the saved set
-// and its addresses survive the representation change together.
+// omitted unified protocols and endpoint slots; supplied values, including nil,
+// express caller intent. Endpoint migration copies fixed Kimi, Zhipu, and
+// DeepSeek base addresses into missing slots before removing old fields, so the
+// saved set and its addresses survive the representation change together.
 
 // LegacyUpstreamProtocols returns a new selection derived from legacy settings
-// for a nonnil record. CN modes use exact enum matching: adaptive uses all native
-// options, recognized fixed modes choose one identifier, and other values use
-// Chat. This read helper does not validate platform compatibility of fixed variants.
+// for a nonnil record. Kimi, Zhipu, and DeepSeek modes use exact enum matching:
+// adaptive uses all native options, recognized fixed modes choose one
+// identifier, and other values use Chat. This read helper does not validate
+// platform compatibility of fixed variants.
 //
-// OpenAI API-key workload flags can remove text-associated protocols or embeddings,
-// while routing mode removes the disfavored Responses or Chat endpoint. Media
-// generation and editing remain available through those workload filters.
-// Other platforms return their native options, with save validation responsible
-// for rejecting any unsupported selected identifier.
+// OpenAI API-key workload flags can remove text-associated protocols or
+// embeddings, while routing mode removes the disfavored Responses or Chat
+// endpoint. Media generation and editing remain available through those
+// workload filters. Other platforms return their native options, with save
+// validation responsible for rejecting any unsupported selected identifier.
 func (r *Record) LegacyUpstreamProtocols(legacyMode string) []capability.ProtocolID {
 	options := r.NativeProtocolOptions()
-	// Fixed CN legacy variants declare one text protocol, while adaptive variants
-	// enumerate platform options. Save validation separately rejects unsupported fixed choices.
-	if r.IsCNProvider() {
+	// Fixed Kimi, Zhipu, and DeepSeek legacy variants declare one text
+	// protocol, while adaptive variants enumerate platform options. Save
+	// validation separately rejects unsupported fixed choices.
+	if r.HasProtocolEndpointDefaults() {
 		switch legacyMode {
 		case APIProtocolAdaptive:
 			return options
@@ -164,7 +166,7 @@ func PreserveProtocolCredentials(existing, incoming map[string]any) map[string]a
 	// Secret-only credential rotations omit protocol fields. Carry those fields
 	// forward unless legacy credential keys request a new interpretation of the selection.
 	if !HasLegacyProtocolPatch(incoming, nil) {
-		for _, key := range []string{UpstreamProtocolsKey, "api_base_urls"} {
+		for _, key := range []string{UpstreamProtocolsKey, "api_base_urls", "provider_mode", OpenCodeModelProtocolsKey, OpenCodeCatalogProtocolsKey} {
 			if _, supplied := out[key]; !supplied {
 				if value, exists := existing[key]; exists {
 					out[key] = value
@@ -175,20 +177,23 @@ func PreserveProtocolCredentials(existing, incoming map[string]any) map[string]a
 	return out
 }
 
-// MigrateLegacyProtocolCredentials transfers fixed CN endpoints and removes
-// legacy selection fields from a nonnil candidate after its unified set has been
-// validated and assigned. For nonempty legacy modes other than exact adaptive,
-// a trimmed base URL fills a missing slot keyed by the stored legacy spelling.
+// MigrateLegacyProtocolCredentials transfers fixed Kimi, Zhipu, and DeepSeek
+// endpoints and removes legacy selection fields from a nonnil candidate after
+// its unified set has been validated and assigned. For nonempty legacy modes
+// other than exact adaptive, a trimmed base URL fills a missing slot keyed by
+// the stored legacy spelling.
 //
-// Existing slot presence wins, including an empty or nil value. The slot map and
-// Extra are shallow-copied, while credential deletions mutate the candidate's
-// current map, so callers prepare that map before migration. The base_url remains
-// available for model and usage queries. Direct calls perform no protocol or URL
-// validation; NormalizeProviderProtocols owns the ordered save path.
+// Existing slot presence wins, including an empty or nil value. The slot map
+// and Extra are shallow-copied, while credential deletions mutate the
+// candidate's current map, so callers prepare that map before migration. The
+// base_url remains available for model and usage queries. Direct calls perform
+// no protocol or URL validation; NormalizeProviderProtocols owns the ordered
+// save path.
 func MigrateLegacyProtocolCredentials(provider *Record) {
-	// A fixed CN base belongs to its stored legacy variant. Copy it into a missing
-	// protocol slot before deleting api_protocol, preserving any explicitly present slot value.
-	if provider.IsCNProvider() {
+	// A fixed Kimi, Zhipu, and DeepSeek base belongs to its stored legacy
+	// variant. Copy it into a missing protocol slot before deleting
+	// api_protocol, preserving any explicitly present slot value.
+	if provider.HasProtocolEndpointDefaults() {
 		legacy := provider.GetCredential("api_protocol")
 		if legacy != "" && legacy != APIProtocolAdaptive {
 			// Saved endpoint slots use map[string]any. Other container types provide no

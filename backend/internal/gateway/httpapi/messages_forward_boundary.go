@@ -15,6 +15,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/provider/messageforward"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/searchtools"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
@@ -118,8 +119,18 @@ func (b *MessageForwardBoundary) SearchOutput() searchtools.Output {
 // has finished; terminal output delegates semantic commitment to this
 // boundary.
 func (b *MessageForwardBoundary) ConversionOutput(responses bool, state *messageforward.AttemptState) forward.Output {
+	var streamWriter upstream.OutputWriter
+	if _, installed := b.context.Get(sseKeepaliveWriterKey); installed {
+		if stages := timing.StagesFromContext(b.context.Request.Context()); stages != nil && stages.Streaming() {
+			// Converted streams prepare headers before reading their first event. Keep
+			// that preparation private so downstream header-wait heartbeats remain eligible;
+			// Event continues to own timing provenance for upstream versus local errors.
+			streamWriter = upstream.NewDeferredOutputContext(ResponseSink{Writer: b.context.Writer, ctx: b.context}).Writer
+		}
+	}
 	return ForwardConversionOutput{
-		Context: b.context, Filter: b.filter, Responses: responses,
+		streamWriter: streamWriter,
+		Context:      b.context, Filter: b.filter, Responses: responses,
 		Reverse: func(body []byte) []byte {
 			return anthropic.RestoreToolNamesInBytes(body, state.ToolNames)
 		},
@@ -155,8 +166,8 @@ func (b *MessageForwardBoundary) ReadResponseBody(reader io.Reader, limit int64,
 	return ReadUpstreamResponseBody(reader, limit, b.context, tooLarge)
 }
 
-// Size returns the current HTTP writer’s reported response byte count.
-func (b *MessageForwardBoundary) Size() int { return b.context.Writer.Size() }
+// Size returns response bytes after excluding all recorded heartbeat output.
+func (b *MessageForwardBoundary) Size() int { return HeartbeatAdjustedWrittenSize(b.context) }
 
 // Written reports whether the current HTTP writer has written headers.
 func (b *MessageForwardBoundary) Written() bool { return b.context.Writer.Written() }

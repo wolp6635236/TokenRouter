@@ -83,15 +83,7 @@ func (p *OpenAIResponseOutput) AnthropicDirectOptions(c *gin.Context, provider *
 			return OpenAIResponseDefaultMaxLineSize
 		},
 		StreamInterval: p.TextStreamInterval,
-		KeepaliveInterval: func() time.Duration {
-			if p.Options.Configured && p.Options.StreamKeepaliveInterval > 0 {
-				// Convert the configured keepalive spacing from seconds for the native
-				// Anthropic reader.
-				return time.Duration(p.Options.StreamKeepaliveInterval) * time.Second
-			}
-			return 0
-		},
-		ExtractData: anthropic.ExtractSSEDataLine, IsTerminal: anthropic.StreamEventIsTerminal,
+		ExtractData:    anthropic.ExtractSSEDataLine, IsTerminal: anthropic.StreamEventIsTerminal,
 		Log: func(format string, args ...any) { logging.LegacyPrintf("service.gateway", format, args...) },
 		HandleTimeout: func(ctx context.Context, model string) {
 			if p.Observer != nil {

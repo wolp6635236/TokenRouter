@@ -119,7 +119,7 @@ func IsOpenAICompatMessagesBridgeContext(c *gin.Context) bool {
 // capabilities.
 //
 // Native Anthropic and adaptive protocol routes choose NativeMessages
-// dispatch, while raw-Chat model policy or a resolved non-CN Chat preference
+// dispatch, while raw-Chat model policy or a resolved other-platform Chat preference
 // selects Chat conversion. The remaining route uses Responses conversion.
 // These routing hints describe one selected provider; RunMessages owns the
 // subsequent exchange and the outer text loop owns provider switching.
@@ -142,7 +142,7 @@ func (p *openAIMessagesExecutionAdapter) Prepare(ctx context.Context) (openaiexe
 	route := openaiexecution.DispatchResponses
 	if gatewayprovider.ExecutionProtocolTarget(provider).IsAnthropicProtocol() || gatewayprovider.ExecutionProtocolTarget(provider).IsAdaptiveAPIProtocol() {
 		route = openaiexecution.DispatchAnthropic
-	} else if gatewayprovider.ExecutionModelPolicy(provider).RawChat() || (!provider.View().IsCNProvider() && resolveOpenAITextProtocolForAttempt(p.c, provider, providercore.TextProtocolResponses) == providercore.TextProtocolChatCompletions) {
+	} else if gatewayprovider.ExecutionModelPolicy(provider).RawChat() || (!provider.View().HasProtocolEndpointDefaults() && resolveOpenAITextProtocolForAttempt(p.c, provider, providercore.TextProtocolResponses) == providercore.TextProtocolChatCompletions) {
 		route = openaiexecution.DispatchRawChat
 	}
 	return profile, route, nil

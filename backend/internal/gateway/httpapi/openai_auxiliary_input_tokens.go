@@ -37,10 +37,10 @@ import (
 // returning failover evidence.
 
 // ForwardResponsesInputTokens handles one selected provider's native
-// token-count preflight. Unsupported platforms receive a handled 404. Grok, CN,
-// and configured compatibility targets use local estimation; other targets
-// resolve credentials and send converted counting input through the upstream
-// counter, which owns response-body cleanup.
+// token-count preflight. Unsupported platforms receive a handled 404. Grok,
+// Kimi, Zhipu, and DeepSeek, and configured compatibility targets use local
+// estimation; other targets resolve credentials and send converted counting
+// input through the upstream counter, which owns response-body cleanup.
 //
 // An upstream 404 or recognized OAuth incompatibility becomes a local estimate.
 // Other HTTP failures may return failover evidence without writing output. A
@@ -60,7 +60,7 @@ func (s *OpenAIAuxiliary) ForwardResponsesInputTokens(
 	// Restrict this native count path to the platforms with a prepared
 	// Responses or local-estimate representation; other selections receive
 	// a handled unsupported response.
-	if provider.Record.Platform != "openai" && !provider.View().IsGrok() && !provider.View().IsCNProvider() {
+	if !provider.View().IsOpenAICompatible() {
 		writeOpenAIResponsesInputTokensError(c, http.StatusNotFound, "not_found_error", "Responses input token counting is not supported for this provider")
 		return nil
 	}

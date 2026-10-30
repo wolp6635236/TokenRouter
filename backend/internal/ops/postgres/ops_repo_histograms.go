@@ -63,7 +63,7 @@ func (r *Store) GetLatencyHistogram(ctx context.Context, filter *ops.OpsDashboar
 SELECT
   ` + bucketExpr + ` AS bucket_index,
   COALESCE(COUNT(*), 0) AS count
-FROM usage_logs ul
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
 ` + join + `
 ` + where + `
 AND ul.duration_ms IS NOT NULL

@@ -259,10 +259,11 @@ func TestHasGeminiThirdPartyBaseURL(t *testing.T) {
 	}
 }
 
-// TestGetOpenAIProtocolAPIKey_CNProviders reads keys from eligible CN and
-// OpenAI API Key records. A CN OAuth record returns empty, and CN
-// classification remains separate from the OpenAI-specific type check.
-func TestGetOpenAIProtocolAPIKey_CNProviders(t *testing.T) {
+// TestGetOpenAIProtocolAPIKey_KimiZhipuDeepSeek reads keys from eligible Kimi,
+// Zhipu, and DeepSeek and OpenAI API Key records. A Kimi, Zhipu, and DeepSeek
+// OAuth record returns empty, and Kimi, Zhipu, and DeepSeek classification
+// remains separate from the OpenAI-specific type check.
+func TestGetOpenAIProtocolAPIKey_KimiZhipuDeepSeek(t *testing.T) {
 	t.Parallel()
 
 	kimi := &Record{

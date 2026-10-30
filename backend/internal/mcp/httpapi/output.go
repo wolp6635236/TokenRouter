@@ -120,7 +120,7 @@ func (h *Handler) operationResult(ctx context.Context, token *identity.MCPToken,
 		if status >= 500 && !op.ReadOnly {
 			outcome = "outcome_unknown"
 		}
-		result := toolResult(map[string]any{"status": outcome, "http_status": status, "request_id": requestID, "data": h.redact(decoded, 0)})
+		result := toolResult(map[string]any{"status": outcome, "http_status": status, "request_id": requestID, "data": h.redact(op.ID, decoded, "response", 0)})
 		result.IsError = true
 		return result
 	}
@@ -157,7 +157,7 @@ func (h *Handler) operationResult(ctx context.Context, token *identity.MCPToken,
 		}
 		return h.artifactResult(ctx, file)
 	}
-	return toolResult(map[string]any{"status": "succeeded", "http_status": status, "request_id": requestID, "data": h.redact(decoded, 0)})
+	return toolResult(map[string]any{"status": "succeeded", "http_status": status, "request_id": requestID, "data": h.redact(op.ID, decoded, "response", 0)})
 }
 
 // streamResult joins SSE data lines and verifies the finite operation outcome.
@@ -167,7 +167,7 @@ func (h *Handler) operationResult(ctx context.Context, token *identity.MCPToken,
 //
 // A missing terminal or malformed stream cannot establish mutation failure, so
 // it returns an unknown outcome for writes. Returned event values pass through
-// shared credential redaction while retaining the operation's progress and
+// MCP credential redaction while retaining the operation's progress and
 // business error details. Numeric event values retain their decimal spelling
 // so result rendering does not round identifiers or precise observation amounts.
 func (h *Handler) streamResult(op *adminapi.Operation, raw []byte, requestID string) *mcp.CallToolResult {
@@ -202,7 +202,13 @@ func (h *Handler) streamResult(op *adminapi.Operation, raw []byte, requestID str
 		if kind == "error" {
 			failed = true
 		}
-		events = append(events, h.redact(event, 0))
+		root := "event"
+		if kind == "error" {
+			// Only error events establish that a top-level code describes failure;
+			// progress and successful terminal payloads may instead carry a protected credential code.
+			root = "event/error"
+		}
+		events = append(events, h.redact(op.ID, event, root, 0))
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")

@@ -38,11 +38,11 @@ func TestParseSSEUsagePassthroughKimiFullyCachedInputReplacesStartTotal(t *testi
 	require.Equal(t, 173306, usage.CacheReadInputTokens)
 }
 
-// TestParseClaudeUsageFromResponseBodyNormalizesCNProviderAliases decodes
-// buffered Kimi, GLM, and DeepSeek usage shapes. Their total, nested-cache, and
-// hit/miss aliases must produce separate uncached input, cache-read, and output
-// buckets with the expected counts.
-func TestParseClaudeUsageFromResponseBodyNormalizesCNProviderAliases(t *testing.T) {
+// TestParseClaudeUsageFromResponseBodyNormalizesKimiZhipuDeepSeekAliases
+// decodes buffered Kimi, GLM, and DeepSeek usage shapes. Their total,
+// nested-cache, and hit/miss aliases must produce separate uncached input,
+// cache-read, and output buckets with the expected counts.
+func TestParseClaudeUsageFromResponseBodyNormalizesKimiZhipuDeepSeekAliases(t *testing.T) {
 	tests := []struct {
 		name          string // upstream usage shape
 		body          string // buffered response JSON

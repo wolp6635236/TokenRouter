@@ -13,7 +13,7 @@ Use the repository's [project-doc](.agents/skills/project-doc/SKILL.md) skill fi
 
 - Before writing or changing code, load and follow the project [code-complete](.agents/skills/code-complete/SKILL.md) skill for implementation guidance. First inspect existing implementations in the relevant module and follow the project's design and coding style.
 - For decisions about method abstractions, interface design, module boundaries, or responsibilities, also load and follow the project [a-philosophy-of-software-design](.agents/skills/a-philosophy-of-software-design/SKILL.md) skill. When both skills apply, use this skill for design and abstraction decisions and `code-complete` for implementation.
-- Use each skill's mini specification by default. Consult the full version when needed; each `SKILL.md` links to both.
+- Read the `code-complete` and `a-philosophy-of-software-design` skills' `SKILL.md` files in full and apply their rules.
 - Before writing, changing, or reviewing handwritten code, load and follow the project [code-comments](.agents/skills/code-comments/SKILL.md) skill, including changes that initially contain no comments. Meet its mandatory coverage, length, placement, and accuracy requirements for the task's scope.
 - Before writing or changing other prose, load and follow the project [humanizer](.agents/skills/humanizer/SKILL.md) skill. This includes documentation, commit messages, PR descriptions, UI text, i18n entries, error and log messages, plans, skill instructions, and agent guidelines.
 - Choose the writing skill by content type. Apply one of `code-comments` or `humanizer` to each passage. When a task includes both comments and other prose, use the corresponding skill for each. This division takes precedence over conflicting scope statements in the skills.
@@ -51,6 +51,16 @@ changes. `upstream` tracks `TokenFlux/TokenRouter`; use
 `tools/check-upstream-release.sh` with `tools/upstream-release.seen` to detect
 official releases. Update the seen tag after this fork releases the merged
 upstream version.
+
+## GitHub issues and pull requests
+
+- Write authored issue and PR text in English without emoji. Preserve verbatim user quotations in their original language and form.
+- Before an agent opens an issue, read and fill [.agents/github/ISSUE.md](.agents/github/ISSUE.md) as the entire issue body. Human contributors use the GitHub issue forms. Check the template's support boundaries, search the linked guides and engineering documentation, README, and relevant code, and answer usage, configuration, or integration questions without opening an issue.
+- Quote the user's request and later corrections faithfully in the agent template, preserving the original language and line breaks. Do not rewrite or summarize those quotations. Keep the other answers short and factual, and do not paste unfiltered AI-generated text in the body or later comments.
+- If required issue facts are missing, ask for the facts and wait. Do not invent actual behavior, impact, frequency, evidence attributing the problem to TokenRouter, or applicable relay, billing, frontend, and deployment details. Do not ask the user merely to confirm a template. Do not open an issue or PR while its required conditions are unmet.
+- Before an agent opens a PR, compare `git config user.name` and `git config user.email` with the repository's historical core developers in `git log`. Do not change Git configuration. For contributors outside that group, explicitly state in the PR body that the code was AI-generated or AI-assisted.
+- For a PR created for the project owner, use [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md). Do not use the agent PR template for the project owner unless the owner explicitly requests it.
+- For other agent-created PRs, read and fill [.agents/github/PR.md](.agents/github/PR.md) as the entire body, unless the project owner explicitly requests the human template. Record commands or steps actually performed and the observed results; a claim that `go build` or tests passed is insufficient. Follow the template's issue-linking, scope, research, and verification requirements before opening the PR.
 
 ## Verification and delivery
 

@@ -153,7 +153,7 @@ func OpenAIStreamAddedEventStartsClientOutput(payload []byte, eventType string) 
 // initiate a retry itself.
 func OpenAIStreamDataStartsClientOutput(data, eventType string) bool {
 	trimmed := strings.TrimSpace(data)
-	if trimmed == "" {
+	if upstream.IsSSEHeartbeatEvent(eventType, trimmed) {
 		return false
 	}
 	switch strings.TrimSpace(eventType) {

@@ -10,6 +10,7 @@
 - [模型名称链](#模型名称链)：修改模型映射、列表或响应模型恢复时读取。
 - [提供商选择与故障转移](#提供商选择与故障转移)：修改调度、并发、粘性或重试时读取。
 - [转发与流式输出](#转发与流式输出)：修改上游调用和错误返回时读取。
+- [SSE 保活](#sse_keepalive)：修改下游空闲心跳、上游心跳消费或重试字节计数时读取。
 - [用量与结算](#用量与结算)：修改用量记录、价格或扣费时读取。
 - [审核与搜索协作](#moderation_search_boundaries)：修改审核裁决、搜索额度和工具模拟时读取。
 - [新增入口检查清单](#新增入口检查清单)：新增入口或平台时逐项核对。
@@ -65,7 +66,7 @@
       响应模型元数据恢复与 Ops 完成采集
 ```
 
-HTTP 文本请求在鉴权之前安装请求级计时，覆盖复合 Key 提前读取正文。首次提供商准入前的正文读取、前置处理和两类槽位排队分别统计；首次准入后发生的提供商排队独立记录。事件时间线保留从入口起算的时刻。各平台流式响应通过共享 HTTP 观察边界记录上游事件、成功交付的有效内容和首次响应数据 Flush，计时判断与计费、重试的语义输出标志分开。上游输出通过 `NewResponseSink` 绑定计时来源；最终 HTTP writer 在成功写入后记录，保留中间的模型恢复和响应采集。网关本地错误直接使用普通 writer，不继承上游输出来源。详见 [HTTP 接口](../interfaces/http_api.md#response_errors)。
+HTTP 文本请求在鉴权之前安装请求级计时，覆盖复合 Key 提前读取正文。计时之后紧接统一 SSE writer，位于 Ops 输出采集和响应模型改写的内侧，所有正文写入与心跳在这一层串行化，规则见 [SSE 保活](#sse_keepalive)。首次提供商准入前的正文读取、前置处理和两类槽位排队分别统计；首次准入后发生的提供商排队独立记录。事件时间线保留从入口起算的时刻。各平台流式响应通过共享 HTTP 观察边界记录上游事件、成功交付的有效内容和首次响应数据 Flush，计时判断与计费、重试的语义输出标志分开。上游输出通过 `NewResponseSink` 绑定计时来源；最终 HTTP writer 在成功写入后记录，保留中间的模型恢复和响应采集。网关本地错误直接使用普通 writer，不继承上游输出来源。详见 [HTTP 接口](../interfaces/http_api.md#response_errors)。
 
 管线里有几条顺序约束：
 
@@ -75,7 +76,7 @@ HTTP 文本请求在鉴权之前安装请求级计时，覆盖复合 Key 提前�
 - 模型权限、分组白名单和提供商资格，都用逐层解析后对应那一层的模型名判断；客户端别名和最终路由模型是两个不同的名字。
 - 统一文本入口和 Gemini 的生成动作在提供商确定后检查计费模型是否有价格，每次换号都重新检查。Responses WebSocket 每轮执行相同检查。缺价时返回本地错误，手动零价可以放行；适用范围和配置方式见[缺价处理](../domains/routing_and_billing.md#missing_model_pricing)。
 - 上游成功后才增加 RPM 软计数，并安排正常的用量结算。本地拦截、内容拒绝和上游失败分别写各自的审计和运维记录。
-- HTTP 200 里出现的失败事件，按事件表达的实际状态执行提供商策略。WS 桥已经执行过的副作用，通过本请求的 `ResponseFailureEffects` 交给输出端，输出端只处理一次。HTTP 提交、重试窗口和实际输出三者分开记录。
+- HTTP 200 里出现的失败事件，按事件表达的实际状态执行提供商策略。HTTP 转换和 WS 桥已执行健康策略时，将状态码和停调结果通过 `httpapi.AppliedOpenAIResponseEffects` 显式传给输出端，输出端复用这些结果；未传入证据时，输出端执行终态健康策略。HTTP 提交、重试窗口和实际输出三者分开记录。
 - 响应里的模型别名恢复只修改协议的元数据字段，正文里恰好相同的字符串保持原样。工具恢复状态由 `requeststate.ResponseTools` 按请求和 turn 持有，WS 会话更新时，还在输出的 turn 保持自己的状态。协议算法在 `protocol/bridge`，HTTP 输出适配在 `gateway/httpapi`。
 
 ### 执行器装配
@@ -152,7 +153,7 @@ client_model
 
 `routing.RoutePlan` 保存本次的最终分组、入口协议和从 Key 到分组的模型链，handler 把它传给后续的候选解析。模型链快照还保存分组白名单的 `RestrictModels`、`RestrictionModelSource` 和单独的计费模型来源，转换为 `GroupMappingResult` 时全部带上。候选仍然按当前提供商快照和最终分组复核协议；提供商映射在使用时才读取，attempt 的结果只属于当前请求。分组发生回退时要重新授权，平台请求改写和响应模型恢复仍由执行链负责。
 
-`requeststate.AttemptRoute` 记录本次的候选结果和协议，`RoutingState.ResolveAttempt` 在 fresh 复核或数据库复核后重新解析。这个状态只存在于请求中，提供商的持久记录不保存它。协议相关的地址和 CN 适配规则由 `provider.ProtocolTarget` 根据协议和提供商记录计算。执行适配层使用的 `ExecutionProvider` 由提供商记录和本次路线组成；模型映射在调用时读取，上一次尝试的结果不会写回共享的提供商缓存。
+`requeststate.AttemptRoute` 记录本次的候选结果和协议，`RoutingState.ResolveAttempt` 在 fresh 复核或数据库复核后重新解析。这个状态只存在于请求中，提供商的持久记录不保存它。协议相关的地址和 Kimi、Zhipu、DeepSeek 的适配规则由 `provider.ProtocolTarget` 根据协议和提供商记录计算。执行适配层使用的 `ExecutionProvider` 由提供商记录和本次路线组成；模型映射在调用时读取，上一次尝试的结果不会写回共享的提供商缓存。
 
 候选协议快照、协议准入和模型冷却判断，都由 `gateway/provider.ModelPolicy` 根据提供商记录和本次 `AttemptRoute` 计算。选择和诊断按"协议、提供商状态、模型窗口"的顺序检查。原始窗口是否在冷却、允许 overages 时是否可调度、剩余时间，这三项分别计算。模型目录和候选协议复核使用同一份快照，动态模型映射在需要时才读取。
 
@@ -188,7 +189,7 @@ Codex 身份和指纹的请求内状态只由 HTTP 适配层持有。提供商�
 
 ### 计数与辅助入口
 
-Messages 的 `count_tokens` 由 app 直接构造 HTTP Handler。HTTP 只持有受控的计数目标和去掉凭据的提供商快照，选择和平台执行由 app 连接。流程是先做资金预检，再无槽选择，按实际提供商的平台执行计数，每次尝试都从原始报文重新做分组映射。Anthropic 和 OpenAI 使用已有的执行器，Gemini 在 OAuth scope 不足时回退，Grok 和 CN 平台在本地计数；Qoder、Antigravity 和 Bedrock 返回不支持。Responses 的 `input_tokens` 同样不占提供商槽。计数既不提交费用，也不完成任务。文本入口和计数入口共用兼容指标的采样计数器。
+Messages 的 `count_tokens` 由 app 直接构造 HTTP Handler。HTTP 只持有受控的计数目标和去掉凭据的提供商快照，选择和平台执行由 app 连接。流程是先做资金预检，再无槽选择，按实际提供商的平台执行计数，每次尝试都从原始报文重新做分组映射。Anthropic 和 OpenAI 使用已有的执行器，Gemini 在 OAuth scope 不足时回退，Grok、Kimi、Zhipu、DeepSeek 在本地计数；Qoder、Antigravity 和 Bedrock 返回不支持。Responses 的 `input_tokens` 同样不占提供商槽。计数既不提交费用，也不完成任务。文本入口和计数入口共用兼容指标的采样计数器。
 
 OpenAI 兼容计数、Grok 本地估算和 Responses 输入 token 预检，由 app 单独构造的 `OpenAITokensHandler` 处理，绑定同一个请求生命周期屏障。计数先做分组路由规划，再检查资金，然后做一次无槽选择。Responses 预检先检查资金，再做分组路由规划，选择器交来的每个提供商槽都会释放。Grok 本地估算完全在本地完成，跳过资金检查、选号和上游请求。这些入口不生成请求，所以也没有完成提交接口。计数执行绑定 `OpenAIAuxiliary`，路由计划和选择分别使用 `RoutePlanner` 和 `Compatible`；提供商目标只在受控的转发方法内部携带凭据。
 
@@ -231,11 +232,37 @@ OpenAI 和 Grok 共用的响应回合状态头由 `gateway/httpapi.CodexTurnStat
 
 ### 流式输出与重试窗口
 
-流式响应有一个不可逆的时间点。调用上游前记录 `ResponseWriter` 已写出的字节数；如果本次 attempt 已经向客户端写出实际业务内容，就不能再换提供商，否则两个上游的响应会拼成一条损坏的流。以下内容不算业务输出，可以留在 attempt 缓冲里，为输出前的 failover 留出空间：旧版 Compact 桥接心跳、Responses 的 `response.created` 和 `response.in_progress` 前导事件、等待终态判定的可重试 `error` 帧。不可重试的错误按事件及时转发。实际输出开始后，错误只能按当前协议追加允许的流错误事件，或者直接结束连接。非流式请求在还没写响应时，才能进入下一次 failover。
+流式响应有一个不可逆的时间点。调用上游前通过 `HeartbeatAdjustedWrittenSize` 记录扣除全部心跳后的写出字节数；如果本次 attempt 已经向客户端写出实际业务内容，就不能再换提供商，否则两个上游的响应会拼成一条损坏的流。已记录的心跳不算业务输出。以下事件可以留在 attempt 缓冲里，为输出前的 failover 留出空间：Responses 的 `response.created` 和 `response.in_progress` 前导事件、等待终态判定的可重试 `error` 帧。不可重试的错误按事件及时转发。实际输出开始后，错误只能按当前协议追加允许的流错误事件，或者直接结束连接。非流式请求在还没写响应时，才能进入下一次 failover。
 
 错误分为五类：本地准入、业务能力不足、调度容量不足、可切换的上游错误、不可切换的转发错误。协议准入拒绝时，Anthropic 返回 `permission_error`，OpenAI 返回 `protocol_not_allowed`，Google 返回 `PERMISSION_DENIED`，此时还没有选中提供商。Ops 采集记录归属、endpoint、实际提供商平台、模型和所选提供商；没有选中提供商时平台记为 unknown。返回给客户端的错误隐去凭据、内部代理和数据库错误。
 
 Qoder 流式请求进入上游后采用完成后释放：客户端断开时停止下游输出，在预算内收集完尾部 usage 后再释放槽位。等待中的请求和非流式请求按各自的取消策略释放。WS 入站连接和 Live 租约各自续租，租约丢失时各自取消，两者与请求 Lease 互相独立。
+
+<a id="sse_keepalive"></a>
+## SSE 保活
+
+保活按连接分别处理。上游心跳只表示 TokenRouter 与提供商之间仍有数据到达；客户端经过的反向代理和 CDN，由 TokenRouter 自己维护下游活跃。文本请求在 `TextRequestTiming` 后安装 `DownstreamSSEKeepalive`，覆盖 Messages、Chat Completions、Responses、Gemini 及 Qoder 的文本输出。协议转换和同协议直通共用这一层，文本读取器只保留上游空闲超时与断开后的用量收集。
+
+统一组件按最近一次下游字节写入计时，间隔使用 `gateway.stream_keepalive_interval`，默认 10 秒，允许 5 至 30 秒，0 关闭该组件。它有两个可写入阶段：
+
+- 上游等待：流式文本请求经 `timing.Do` 发起 HTTP 交换后，响应尚未提交且空闲满一个间隔时，提交 `200` 和 `text/event-stream`，发送心跳并 Flush。handler 获取可修改 Header 或开始输出时关闭这个等待窗口。读取器初始化的只读 Header 快照不会关闭窗口，因此上游已经返回响应头、首个业务事件仍在等待或暂存时也能保活。非流式请求、明确的非 200 状态或非 SSE 内容类型不会提前提交。
+- 已提交 SSE：状态为 2xx、内容类型为 `text/event-stream`，且输出停在完整帧边界时，按下游空闲时间发送心跳。半帧期间不插入字节；LF 和 CRLF 分隔符可以跨多次 Write。普通正文和排队心跳都会重置下游时钟，上游心跳不会重置它。
+
+Messages 默认发送 `event: ping` 加 `data: {"type": "ping"}`。Claude Code UA 版本至少为 2.1.193 且存在打开的受支持内容块时，发送对应的空 delta；工具块使用空的 `input_json_delta.partial_json`，块关闭后恢复 ping。Gemini 原生协议发送 `\n\n` 空事件，避免 Google SDK 将注释当作 JSON；其他文本协议发送 `: keepalive` 注释。识别到 `[DONE]`、`message_stop`、`error`、`response.completed`、`response.failed` 或 `response.incomplete` 终止帧后停止心跳。读取器也通过 `OutputEvent.Terminal` 提交整条响应的完成信息，终态字节经过现有 writer 链完整写入后才停止心跳；这段写入与终态发布共同排除定时器写入，短写返回 `io.ErrShortWrite`。文本前缀识别仍只保留每帧前 4096 字节，较大的帧继续跟踪边界；结构化终态通知不受此前缀限制。LF 与 CRLF 可以混用。
+
+等待上游响应头期间不应用 `gateway.stream_data_interval_timeout`：传输层的响应头超时和请求的首输出保护负责限制这段等待。`timing.Do` 单独记录尚未返回响应头或错误的请求数，所以心跳提前提交下游 200 不会被误当成上游响应头已经返回；并发交换也分别结束各自的等待。
+
+已提交 SSE 的正文停滞上限使用 `gateway.stream_data_interval_timeout`，默认 180 秒，0 不限制。发起上游请求、收到响应头和实际读到字节都会更新上游活动时间，注释和 ping 字节也算上游活动。停滞判断取上游活动与最近一次 handler 字节写入中较晚的时间；中央组件自己写出的心跳不更新这两个时钟。这样，绕过传输观察的输出路径也能以实际写入维持保活。超过正文停滞上限后，组件不再补发心跳，读取器自己的上游超时仍按原规则处理。下游写失败或连接 Hijack 后停止心跳；请求结束时等待心跳 goroutine 退出。
+
+HTTP 提交与业务输出分别判断。`StreamHeartbeatBytes` 汇总排队、图片流读取器、Compact／图片 SSE、图片 JSON 空白和统一文本组件的心跳字节；`HeartbeatAdjustedWrittenSize` 对尝试前后的观测使用同一口径。只有心跳时返回 Gin 的未写出哨兵 `-1`，没有任何心跳记录时保留原始 Size，包括只提交 Header 后的零。读取异步计数时同时锁定对应 writer 的大小，避免把两次观测之间写入的心跳误判成正文。`OutputWriter.Written()` 表示实际 HTTP 已提交，`ContentWritten()` 表示已有成功交付且关闭重试窗口的正文；重试使用后者，响应头能否发送仍使用前者。
+
+心跳提前提交 200 后，后续错误用客户端协议的 SSE 错误结束，不能再改 HTTP 状态。后来才到达的上游响应头也无法发送，且不能上报为已经提交。响应头在读取器的私有 map 中准备，初始化和前导事件不会登记提供商归属。`ResponseSink.Begin` 应用响应头时先关闭提前提交窗口，再复查实际提交状态；只有仍可应用的响应头才触发归属登记，避免心跳在读取器检查之后抢先提交。HTTP writer 在已提交后返回 Header 副本，避免迟到的 Header 修改与心跳并发读取同一个 map。只有心跳的请求仍可在既有策略与预算内重试或切换提供商。
+
+Gemini 成功响应的请求 ID 等元数据只在 `OutputContext` 的私有 Header 中准备，不能在读取首个业务事件之前调用 Gin Header。其原生与转换读取共用有界 SSE 消费、候选完成判断和错误分类；终态后的用量尾帧最多继续收集五秒，具体规则见 [Gemini 流生命周期](../interfaces/gemini_upstream.md#gemini_stream_lifecycle)。
+
+上游的注释、`ping`／`heartbeat`／`keepalive` 和空 data 帧在读取侧消费，JSON `type` 优先于 event 名，所以 `event: ping` 搭配实际业务数据时保留该数据。逐行路径使用有界候选缓冲，最多 16 行、16 KiB；遇到未知字段、超过上限或在 EOF 留下不完整候选时，保守释放保留的非注释行。明确的错误事件继续按既有错误规则处理，不因 data 为空被忽略。上游活动计时发生在过滤之前。
+
+排队心跳继续由 `WaitObserver` 在请求 goroutine 内写入；Gemini 流式排队使用与中央组件相同的空 SSE 事件。Compact 和图片保留专用控制器，统一组件不接管它们。图片错误根据已提交的 Content-Type 选择 SSE 或 JSON，JSON 空白心跳之后仍返回合法 JSON。注释、ping 和空文本、thinking、工具参数 delta 不建立 TTFT 数据事件。
 
 ## 用量与结算
 

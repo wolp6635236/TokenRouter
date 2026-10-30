@@ -4,10 +4,6 @@
 // resolve messages through the root catalog.
 
 export default {
-  batchImageGuide: {
-    title: '图片批量生成',
-    description: '一次提交多条提示词，任务完成后可统一下载图片结果',
-  },
   // Home Page
   home: {
     viewOnGithub: '在 GitHub 上查看',
@@ -65,8 +61,8 @@ export default {
     features: {
       unifiedGateway: '一键接入',
       unifiedGatewayDesc: '获取一个 API 密钥，即可调用所有已接入的 AI 模型，无需分别申请。',
-      multiProvider: '稳定可靠',
-      multiProviderDesc: '智能调度多个上游提供商，自动切换和负载均衡，告别频繁报错。',
+      multiProvider: '多提供商路由',
+      multiProviderDesc: '在多个上游提供商之间调度请求，支持自动切换和负载均衡。',
       balanceQuota: '用多少付多少',
       balanceQuotaDesc: '按实际使用量计费，支持设置配额上限，团队用量一目了然。',
       dataPolicies: '数据策略可控',
@@ -156,9 +152,9 @@ export default {
     },
     // Call-to-action section
     cta: {
-      title: '准备好开始了吗？',
-      description: '注册即可获得免费试用额度，体验一站式 AI 服务',
-      button: '免费注册',
+      title: '接入你的应用',
+      description: '创建账号，在控制台管理 API 密钥并查看模型用量。',
+      button: '创建账号',
     },
     footer: {
       allRightsReserved: '保留所有权利。',

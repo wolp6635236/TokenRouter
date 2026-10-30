@@ -1,0 +1,8 @@
+{
+  "name": "tokenrouter-gemini-sdk-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@google/genai": "2.32.0"
+  }
+}

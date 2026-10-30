@@ -12,11 +12,9 @@
     <div class="space-y-2 p-4">
       <button
         @click="router.push('/keys')"
-        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
+        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition-colors duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
       >
-        <div
-          class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control bg-primary-100 transition-transform group-hover:scale-105 dark:bg-primary-900/30"
-        >
+        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center">
           <Icon name="key" size="md" class="text-primary-600 dark:text-primary-400" />
         </div>
         <div class="min-w-0 flex-1">
@@ -30,19 +28,17 @@
         <Icon
           name="chevronRight"
           size="sm"
-          class="text-gray-400 transition duration-fast group-hover:translate-x-0.5 group-hover:text-primary-500 dark:text-dark-500"
+          class="text-gray-400 transition-colors duration-fast group-hover:text-primary-500 dark:text-dark-500"
           :animate-on-hover="false"
         />
       </button>
 
       <button
         @click="router.push('/usage')"
-        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
+        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition-colors duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
       >
-        <div
-          class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control bg-emerald-100 transition-transform group-hover:scale-105 dark:bg-emerald-900/30"
-        >
-          <Icon name="chart" size="md" class="text-emerald-600 dark:text-emerald-400" />
+        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center">
+          <Icon name="chart" size="md" class="text-gray-500 dark:text-dark-400" />
         </div>
         <div class="min-w-0 flex-1">
           <p class="text-sm font-medium text-gray-900 dark:text-dark-50">
@@ -55,33 +51,7 @@
         <Icon
           name="chevronRight"
           size="sm"
-          class="text-gray-400 transition duration-fast group-hover:translate-x-0.5 group-hover:text-emerald-500 dark:text-dark-500"
-          :animate-on-hover="false"
-        />
-      </button>
-
-      <button
-        v-if="canUseBatchImage"
-        @click="router.push('/batch-image')"
-        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
-      >
-        <div
-          class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control bg-sky-100 transition-transform group-hover:scale-105 dark:bg-sky-900/30"
-        >
-          <Icon name="sparkles" size="md" class="text-sky-600 dark:text-sky-400" />
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium text-gray-900 dark:text-dark-50">
-            {{ t('dashboard.batchImageAgent') }}
-          </p>
-          <p class="text-xs text-gray-500 dark:text-dark-400">
-            {{ t('dashboard.batchImageAgentDesc') }}
-          </p>
-        </div>
-        <Icon
-          name="chevronRight"
-          size="sm"
-          class="text-gray-400 transition duration-fast group-hover:translate-x-0.5 group-hover:text-sky-500 dark:text-dark-500"
+          class="text-gray-400 transition-colors duration-fast group-hover:text-primary-500 dark:text-dark-500"
           :animate-on-hover="false"
         />
       </button>
@@ -90,12 +60,10 @@
         v-if="paymentEnabled"
         data-testid="purchase-quick-action"
         @click="router.push('/purchase')"
-        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
+        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition-colors duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
       >
-        <div
-          class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control bg-rose-100 transition-transform group-hover:scale-105 dark:bg-rose-900/30"
-        >
-          <Icon name="creditCard" size="md" class="text-rose-600 dark:text-rose-400" />
+        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center">
+          <Icon name="creditCard" size="md" class="text-gray-500 dark:text-dark-400" />
         </div>
         <div class="min-w-0 flex-1">
           <p class="text-sm font-medium text-gray-900 dark:text-dark-50">
@@ -108,19 +76,17 @@
         <Icon
           name="chevronRight"
           size="sm"
-          class="text-gray-400 transition duration-fast group-hover:translate-x-0.5 group-hover:text-rose-500 dark:text-dark-500"
+          class="text-gray-400 transition-colors duration-fast group-hover:text-primary-500 dark:text-dark-500"
           :animate-on-hover="false"
         />
       </button>
 
       <button
         @click="router.push('/redeem')"
-        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
+        class="group flex w-full items-center gap-3 rounded-control bg-gray-50 p-3 text-left transition-colors duration-normal hover:bg-gray-100 dark:bg-dark-800/50 dark:hover:bg-dark-800"
       >
-        <div
-          class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control bg-amber-100 transition-transform group-hover:scale-105 dark:bg-amber-900/30"
-        >
-          <Icon name="gift" size="md" class="text-amber-600 dark:text-amber-400" />
+        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center">
+          <Icon name="gift" size="md" class="text-gray-500 dark:text-dark-400" />
         </div>
         <div class="min-w-0 flex-1">
           <p class="text-sm font-medium text-gray-900 dark:text-dark-50">
@@ -133,7 +99,7 @@
         <Icon
           name="chevronRight"
           size="sm"
-          class="text-gray-400 transition duration-fast group-hover:translate-x-0.5 group-hover:text-amber-500 dark:text-dark-500"
+          class="text-gray-400 transition-colors duration-fast group-hover:text-primary-500 dark:text-dark-500"
           :animate-on-hover="false"
         />
       </button>
@@ -142,31 +108,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
 import { useAppStore } from '@/stores/app'
 
 // UserDashboardQuickActions.vue provides compact links to account tasks from the
-// dashboard. Purchase and batch image entries follow their existing availability
-// checks, while the remaining entries lead to the key, usage, and redemption
-// pages through the application router.
+// dashboard. Public payment settings determine purchase visibility, while the remaining
+// entries lead to the key, usage, and redemption pages. Every shortcut navigates through
+// the application router using the current account session.
 
 // Router, translations, and availability stores supply destinations and feature visibility
 // for the dashboard shortcut buttons.
 const router = useRouter()
 const { t } = useI18n()
 const appStore = useAppStore()
-const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
 // paymentEnabled shows the purchase shortcut only after public settings report payment
 // enabled; unavailable settings keep it hidden.
 const paymentEnabled = computed(() => appStore.cachedPublicSettings?.payment_enabled === true)
-
-// Refresh batch-image availability when the card mounts so the shortcut reflects the current
-// user access response.
-onMounted(() => {
-  void refreshBatchImageAccess()
-})
 </script>

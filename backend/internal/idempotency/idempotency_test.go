@@ -174,35 +174,6 @@ func (r *inMemoryIdempotencyRepo) TryReclaim(_ context.Context, id int64, fromSt
 	return false, nil
 }
 
-// ExtendProcessingLock changes deadlines for a fixture record whose processing
-// state and request fingerprint match, returning whether it changed. Missing,
-// finished, or differently fingerprinted records return false.
-//
-// Lookup and mutation share the fixture mutex so a concurrent finish cannot
-// interleave between eligibility and deadline replacement. The fingerprint represents
-// a request rather than an acquisition owner; this helper follows the ordinary
-// command repository predicate and does not add maintenance owner-token fencing.
-func (r *inMemoryIdempotencyRepo) ExtendProcessingLock(_ context.Context, id int64, requestFingerprint string, newLockedUntil, newExpiresAt time.Time) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Check processing identity while holding the update lock, so fixture snapshots
-	// cannot observe either deadline before the other one has been replaced for this request.
-	for _, rec := range r.data {
-		if rec.ID != id {
-			continue
-		}
-		if rec.Status != IdempotencyStatusProcessing || rec.RequestFingerprint != requestFingerprint {
-			return false, nil
-		}
-		rec.LockedUntil = &newLockedUntil
-		rec.ExpiresAt = newExpiresAt
-		rec.UpdatedAt = time.Now()
-		return true, nil
-	}
-	return false, nil
-}
-
 // MarkSucceeded stores success, response fields, and retention for a fixture
 // record by ID, clearing the failure reason and lock. A missing record returns
 // a test error, making accidental completion of an unclaimed record observable.
@@ -534,11 +505,6 @@ func (failingIdempotencyRepo) TryReclaim(context.Context, int64, string, time.Ti
 	return false, errors.New("store unavailable")
 }
 
-// ExtendProcessingLock fails deadline extension with the same injected repository outage.
-func (failingIdempotencyRepo) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, errors.New("store unavailable")
-}
-
 // MarkSucceeded fails result persistence if a scenario reaches callback completion.
 func (failingIdempotencyRepo) MarkSucceeded(context.Context, int64, int, string, time.Time) error {
 	return errors.New("store unavailable")
@@ -734,11 +700,6 @@ func (noIDOwnerRepo) TryReclaim(context.Context, int64, string, time.Time, time.
 	return false, nil
 }
 
-// ExtendProcessingLock returns false because this fixture stores no renewable record.
-func (noIDOwnerRepo) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, nil
-}
-
 // MarkSucceeded succeeds inertly because missing-ID claims stop before storing a result.
 func (noIDOwnerRepo) MarkSucceeded(context.Context, int64, int, string, time.Time) error { return nil }
 
@@ -809,11 +770,6 @@ func (r *conflictBranchRepo) TryReclaim(context.Context, int64, string, time.Tim
 		return false, r.tryReclaimErr
 	}
 	return r.tryReclaimOK, nil
-}
-
-// ExtendProcessingLock returns false because these conflict scenarios perform no renewal.
-func (r *conflictBranchRepo) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, nil
 }
 
 // MarkSucceeded succeeds inertly for the branch fixture's unused outcome storage method.

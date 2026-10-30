@@ -47,19 +47,6 @@ export const userRoutes: RouteRecordRaw[] = [
     },
   },
   {
-    path: '/batch-image',
-    name: 'BatchImageGuide',
-    alias: '/docs/batch-image',
-    component: () => import('@/views/user/BatchImageGuideView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: false,
-      title: 'Batch Image Guide',
-      titleKey: 'batchImageGuide.title',
-      descriptionKey: 'batchImageGuide.description',
-    },
-  },
-  {
     path: '/creative',
     name: 'CreativeStudio',
     component: () => import('@/views/user/CreativeStudioView.vue'),

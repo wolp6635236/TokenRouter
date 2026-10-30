@@ -25,8 +25,8 @@ import (
 //
 // Mode selects open-platform QR authorization or an mp browser authorization
 // endpoint. Missing mode is inferred from the request User-Agent, and callback
-// URL construction prefers configured absolute API base data before raw
-// request host/protocol headers. Existing-account login repairs runtime
+// URL construction uses the public request host and protocol so callback
+// cookies stay on their issuing origin. Existing-account login repairs runtime
 // identity data before pending continuation. Legacy registration issues
 // credentials, applies adoption, records login, and then consumes browser
 // state as separate steps, so later failures can follow completed earlier
@@ -107,10 +107,10 @@ func (h *WeChatHandler) FrontendCallback(ctx context.Context) string {
 //
 // The returned copy trims application credentials, selects the mode authorize
 // endpoint, and supplies a default frontend callback when that field is blank.
-// Redirect reconstruction joins the API base path or raw request host/protocol
-// data. The caller configuration reader owns application-credential validity;
-// this method requires a usable resulting redirect URI before returning
-// provider options.
+// Redirect reconstruction uses the request origin and canonical callback path
+// to retain the state cookies emitted by start. The caller configuration reader
+// owns application-credential validity; this method requires a usable resulting
+// redirect URI before returning provider options.
 func (h *WeChatHandler) GetConfig(ctx context.Context, raw string, c *gin.Context) (identity.WeChatOAuthOptions, error) {
 	mode, e := ResolveWeChatOAuthMode(raw, c)
 	if e != nil {
@@ -129,7 +129,10 @@ func (h *WeChatHandler) GetConfig(ctx context.Context, raw string, c *gin.Contex
 	cfg.Mode = mode
 	cfg.AppID = strings.TrimSpace(cfg.AppID)
 	cfg.AppSecret = strings.TrimSpace(cfg.AppSecret)
-	cfg.RedirectURI = identity.OAuthFirstNonEmpty(strings.TrimSpace(cfg.RedirectURI), ResolveWeChatOAuthAbsoluteURL(cfg.APIBaseURL, c, "/api/v1/auth/oauth/wechat/callback"))
+	cfg.RedirectURI = identity.OAuthFirstNonEmpty(
+		strings.TrimSpace(cfg.RedirectURI),
+		ResolveWeChatOAuthAbsoluteURL(c, "/api/v1/auth/oauth/wechat/callback"),
+	)
 	cfg.FrontendCallback = identity.OAuthFirstNonEmpty(strings.TrimSpace(cfg.FrontendCallback), WechatOAuthDefaultFrontendCB)
 	if mode == "mp" {
 		cfg.AuthorizeURL = "https://open.weixin.qq.com/connect/oauth2/authorize"
@@ -622,41 +625,21 @@ func BuildWeChatAuthorizeURL(cfg identity.WeChatOAuthOptions, state string) (str
 	return u.String(), nil
 }
 
-// ResolveWeChatOAuthAbsoluteURL joins a callback path to configured absolute
-// API base data or request host/protocol observations. Empty callback path or
-// unavailable host returns empty text.
+// ResolveWeChatOAuthAbsoluteURL joins a canonical callback path to the public
+// request origin. A missing request, path, or host returns empty text. Site and
+// model-client base URLs cannot replace this origin because start cookies are
+// host-only and scoped to the canonical OAuth API paths.
 //
-// A configured base needs a scheme and host; its escaped path is retained,
-// with overlapping api/v1 segments joined once and query/fragment data
-// omitted. Otherwise raw X-Forwarded-Host overrides request Host, and
-// IsRequestHTTPS selects the scheme. These headers are not locally checked
-// against proxy trust, so callers supply the deployment header policy around
-// request-based reconstruction.
-func ResolveWeChatOAuthAbsoluteURL(apiBaseURL string, c *gin.Context, callbackPath string) string {
+// X-Forwarded-Host overrides request Host, and IsRequestHTTPS selects the scheme.
+// The deployment must sanitize these forwarding headers at its trusted edge;
+// this helper retains the existing request-origin reconstruction policy. Explicit
+// login callback settings are selected by GetConfig before this generated value.
+func ResolveWeChatOAuthAbsoluteURL(c *gin.Context, callbackPath string) string {
 	callbackPath = strings.TrimSpace(callbackPath)
 	if callbackPath == "" {
 		return ""
 	}
 
-	if raw := strings.TrimSpace(apiBaseURL); raw != "" {
-		if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-			basePath := strings.TrimRight(parsed.EscapedPath(), "/")
-			targetPath := callbackPath
-			// Join an API base already ending in api/v1 with the callback suffix once.
-			// Retain the escaped configured prefix so percent-encoded path data
-			// survives reconstruction.
-			if basePath != "" && strings.HasSuffix(basePath, "/api/v1") && strings.HasPrefix(callbackPath, "/api/v1") {
-				targetPath = basePath + strings.TrimPrefix(callbackPath, "/api/v1")
-			} else if basePath != "" {
-				targetPath = basePath + callbackPath
-			}
-			return parsed.Scheme + "://" + parsed.Host + targetPath
-		}
-	}
-
-	// An absent, unparsable, or nonabsolute API base leaves callback
-	// reconstruction to request host and HTTPS observations. Forwarding-header
-	// values are accepted directly on this fallback path.
 	if c == nil || c.Request == nil {
 		return ""
 	}

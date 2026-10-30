@@ -215,9 +215,9 @@ func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFail
 	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAICompactSSEKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
-	require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, before, HeartbeatAdjustedWrittenSize(c))
 	// Simulate a commit marker set before any protocol event was delivered.
 	MarkResponseCommitted(c)
 
@@ -278,9 +278,9 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepaliveWritesSingleJSONFall
 	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
-	require.Equal(t, before, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, before, HeartbeatAdjustedWrittenSize(c))
 	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream response: unexpected EOF")))
 
 	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
@@ -312,12 +312,12 @@ func TestOpenAIEnsureForwardErrorResponse_ImageJSONKeepalivePreservesCompletedJS
 	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	defer stop()
-	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	require.Eventually(t, c.Writer.Written, time.Second, time.Millisecond)
 	c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": "aW1hZ2U="}}})
 	completedBody := w.Body.String()
 	require.True(t, json.Valid([]byte(completedBody)), completedBody)
-	require.Greater(t, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
+	require.Greater(t, HeartbeatAdjustedWrittenSize(c), before)
 	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
 
 	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)
@@ -347,11 +347,11 @@ func TestOpenAIEnsureForwardErrorResponse_FastImageJSONKeepalivePreservesComplet
 	// continue writing after this fixture inspects the final error or image document.
 	stop := StartOpenAIImagesJSONKeepalive(c, time.Hour)
 	defer stop()
-	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": "ZmFzdC1pbWFnZQ=="}}})
 	completedBody := w.Body.String()
 	require.True(t, json.Valid([]byte(completedBody)), completedBody)
-	require.Greater(t, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), before)
+	require.Greater(t, HeartbeatAdjustedWrittenSize(c), before)
 	require.False(t, OpenAIForwardErrorAlreadyCommunicated(c, before, errors.New("read upstream trailer: unexpected EOF")))
 
 	wrote := DefaultOpenAIErrorOutput().EnsureFallback(c, false)

@@ -37,18 +37,22 @@ func (UsageLog) Annotations() []schema.Annotation {
 // schema and preserve supplied historical attribution.
 func (UsageLog) Fields() []ent.Field {
 	return []ent.Field{
+		// Recorded customer or internal execution source.
+		field.String("request_source").MaxLen(32).Default("user"),
+		// Internal execution attribution and measurement completeness.
+		field.JSON("system_usage", map[string]any{}).Optional(),
 		// user_id, billing_user_id, team_id, and api_key_id separate the acting
 		// user, recorded payer, optional team scope, and credential. Historical
 		// payer writes are supported by migration 221, while current repositories
 		// write their resolved payer snapshot.
 		// Acting request user.
-		field.Int64("user_id"),
+		field.Int64("user_id").Optional().Nillable(),
 		// Recorded request payer.
-		field.Int64("billing_user_id").Optional(),
+		field.Int64("billing_user_id").Optional().Nillable(),
 		// Optional request team scope.
 		field.Int64("team_id").Optional().Nillable(),
 		// Authenticated request key.
-		field.Int64("api_key_id"),
+		field.Int64("api_key_id").Optional().Nillable(),
 		// Selected execution provider.
 		field.Int64("provider_id"),
 		// platform snapshots the execution platform so later provider changes
@@ -288,12 +292,10 @@ func (UsageLog) Edges() []ent.Edge {
 		edge.From("user", User.Type).
 			Ref("usage_logs").
 			Field("user_id").
-			Required().
 			Unique(),
 		edge.From("api_key", APIKey.Type).
 			Ref("usage_logs").
 			Field("api_key_id").
-			Required().
 			Unique(),
 		edge.From("provider", Provider.Type).
 			Ref("usage_logs").

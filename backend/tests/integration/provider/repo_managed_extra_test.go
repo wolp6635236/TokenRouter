@@ -19,7 +19,7 @@ import (
 )
 
 // Managed provider Extra values are selected from stored observations and
-// cleaned according to identity changes. SQL mocks check CN snapshot version
+// cleaned according to identity changes. SQL mocks check usage snapshot version
 // predicates, Ollama state carry-forward, retired-key removal, and transaction
 // rollback when an outbox operation returns an error.
 
@@ -27,11 +27,11 @@ import (
 // to check removal from both submitted Extra and emitted repository SQL.
 const deprecatedOpenAILongContextBillingExtraKey = "openai_long_context_billing_enabled"
 
-// TestUpdateCNUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically mocks
-// one affected row for a timestamp-qualified CN observation. The expected
+// TestUpdateUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically mocks one
+// affected row for a timestamp-qualified usage observation. The expected
 // statement contains the snapshot update and event insertion, then commits and
 // reports true.
-func TestUpdateCNUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically(t *testing.T) {
+func TestUpdateUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -41,12 +41,12 @@ func TestUpdateCNUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically(t *tes
 	expectedUpdatedAt := time.Date(2026, 8, 23, 2, 0, 0, 0, time.UTC)
 	mock.ExpectBegin()
 	mock.ExpectExec(`(?s)WITH updated AS \(.*updated_at = \$5.*INSERT INTO scheduler_outbox`).
-		WithArgs("", providercore.CNUsageMonitorSnapshotExtraKey, sqlmock.AnyArg(), int64(27), expectedUpdatedAt, scheduler.SchedulerOutboxEventProviderChanged).
+		WithArgs("", providercore.UsageMonitorSnapshotExtraKey, sqlmock.AnyArg(), int64(27), expectedUpdatedAt, scheduler.SchedulerOutboxEventProviderChanged).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	repo := newProviderStoreContract(client, db, nil)
-	written, err := repo.UpdateCNUsageMonitorSnapshotCAS(context.Background(), 27, expectedUpdatedAt, &providercore.CNUsageMonitorSnapshot{
+	written, err := repo.UpdateUsageMonitorSnapshotCAS(context.Background(), 27, expectedUpdatedAt, &providercore.UsageMonitorSnapshot{
 		Version:       1,
 		Adapter:       providercore.UpstreamUsageAdapterKimiBalance,
 		IdentityHash:  "identity",
@@ -57,11 +57,10 @@ func TestUpdateCNUsageMonitorSnapshotCASWritesSnapshotAndOutboxAtomically(t *tes
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestUpdateCNUsageMonitorSnapshotCASRejectsStaleUpdatedAt returns zero
-// affected rows from the timestamp-qualified snapshot statement. The repository
-// reports false with no error and requests rollback in the configured mock
-// sequence.
-func TestUpdateCNUsageMonitorSnapshotCASRejectsStaleUpdatedAt(t *testing.T) {
+// TestUpdateUsageMonitorSnapshotCASRejectsStaleUpdatedAt returns zero affected
+// rows from the timestamp-qualified snapshot statement. The repository reports
+// false with no error and requests rollback in the configured mock sequence.
+func TestUpdateUsageMonitorSnapshotCASRejectsStaleUpdatedAt(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -71,12 +70,12 @@ func TestUpdateCNUsageMonitorSnapshotCASRejectsStaleUpdatedAt(t *testing.T) {
 	expectedUpdatedAt := time.Date(2026, 8, 23, 2, 0, 0, 0, time.UTC)
 	mock.ExpectBegin()
 	mock.ExpectExec(`(?s)WITH updated AS \(.*updated_at = \$5.*INSERT INTO scheduler_outbox`).
-		WithArgs("", providercore.CNUsageMonitorSnapshotExtraKey, sqlmock.AnyArg(), int64(27), expectedUpdatedAt, scheduler.SchedulerOutboxEventProviderChanged).
+		WithArgs("", providercore.UsageMonitorSnapshotExtraKey, sqlmock.AnyArg(), int64(27), expectedUpdatedAt, scheduler.SchedulerOutboxEventProviderChanged).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
 	repo := newProviderStoreContract(client, db, nil)
-	written, err := repo.UpdateCNUsageMonitorSnapshotCAS(context.Background(), 27, expectedUpdatedAt, &providercore.CNUsageMonitorSnapshot{
+	written, err := repo.UpdateUsageMonitorSnapshotCAS(context.Background(), 27, expectedUpdatedAt, &providercore.UsageMonitorSnapshot{
 		Version:       1,
 		Adapter:       providercore.UpstreamUsageAdapterKimiBalance,
 		IdentityHash:  "stale",

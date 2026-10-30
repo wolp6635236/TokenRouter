@@ -201,7 +201,7 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { providersAPI } from '@/api/admin/providers'
-import type { SyncUpstreamPreviewParams } from '@/api/admin/providers'
+import type { SyncUpstreamModelsResult, SyncUpstreamPreviewParams } from '@/api/admin/providers'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -217,7 +217,9 @@ import { SEARCH_DEBOUNCE_MS } from '@/constants/ui'
 // Search changes and dropdown visibility advance a generation before scheduling the next
 // query. Only the current generation may publish its results or loading state, and
 // unmount invalidates pending catalog work. Upstream synchronization follows a separate
-// request path and merges returned IDs into the selection at completion.
+// request path: a changed provider identity or preview credential cancels it, and a
+// current completion merges returned IDs into the selection and reports the full
+// result through the synced event.
 
 // t resolves interface labels from the active component locale while reactive consumers
 // update their displayed text.
@@ -246,12 +248,7 @@ const props = withDefaults(
     providerId?: number
     // Unsaved credentials used for preview synchronization when a saved provider identifier
     // is unavailable.
-    syncCredentials?: {
-      platform: string // Provider platform identifier.
-      type: string // Provider authentication type.
-      base_url?: string // Optional preview upstream address.
-      api_key: string // Preview API credential value.
-    }
+    syncCredentials?: SyncUpstreamPreviewParams
   }>(),
   {
     showQuickActions: true,
@@ -262,6 +259,9 @@ const props = withDefaults(
 // emit publishes typed draft changes and actions to the parent that owns this component.
 const emit = defineEmits<{
   'update:modelValue': [value: string[]] // Replacement model value draft value.
+  // synced reports each accepted upstream response, including optional per-model
+  // protocol suggestions, before its IDs are merged into the selection.
+  synced: [result: SyncUpstreamModelsResult]
 }>()
 
 // appStore displays operation feedback through the shared notification area used by the
@@ -286,6 +286,9 @@ const isComposing = ref(false)
 // isSyncingUpstream prevents overlapping sync actions while the saved-provider or preview
 // request is waiting for upstream model IDs.
 const isSyncingUpstream = ref(false)
+// syncRequest identifies the synchronization allowed to publish. Replacing or clearing
+// it invalidates older responses even when the inputs later return to their old values.
+let syncRequest: AbortController | undefined
 // normalizedPlatforms trims and deduplicates the preferred platform list for determining
 // whether the upstream synchronization action is available.
 const normalizedPlatforms = computed(() => {
@@ -317,6 +320,7 @@ const upstreamSyncPlatforms = new Set([
   'zhipu',
   'deepseek',
   'jev',
+  'opencode',
 ])
 // canSyncUpstream selects saved-provider or preview-credential eligibility from the
 // normalized platforms before the template shows its synchronization action.
@@ -411,11 +415,28 @@ watch([showDropdown, searchQuery, () => props.models], () => {
     }, SEARCH_DEBOUNCE_MS)
   }
 })
+// cancelUpstreamSync aborts the active synchronization request and releases its busy
+// state so another target can be synchronized immediately.
+const cancelUpstreamSync = () => {
+  syncRequest?.abort()
+  syncRequest = undefined
+  isSyncingUpstream.value = false
+}
+
+// A new provider identity or preview credential object means the pending response
+// describes another upstream target. Cancel synchronously, before a later change can
+// restore the original values and make the stale response look current.
+watch([() => props.providerId, () => props.syncCredentials], cancelUpstreamSync, {
+  flush: 'sync',
+})
+
 // Unmount invalidates pending responses and clears the scheduled callback, preventing
-// either source from publishing another catalog update into this component.
+// either source from publishing another catalog update into this component. It also
+// cancels synchronization so a closed form cannot receive upstream results.
 onBeforeUnmount(() => {
   queryVersion++
   clearTimeout(searchTimer)
+  cancelUpstreamSync()
 })
 
 // filteredModels filters explicit candidates locally or displays fetched candidates, then
@@ -488,30 +509,34 @@ const handleEnter = () => {
 
 // syncUpstreamModels merges fetched upstream identifiers into the selected model draft. A
 // saved provider ID takes precedence over preview credentials, and an in-progress
-// synchronization suppresses another invocation. Empty upstream results produce
-// informational feedback and leave the selection untouched.
+// synchronization suppresses another invocation. Every accepted response is emitted as
+// synced; empty upstream results then produce informational feedback and leave the
+// selection untouched.
 //
-// The merge reads the current selected array after the request resolves, trims fetched
-// IDs, and appends only missing values. This path has no catalog generation check, so a
-// completed request can publish after the provider props change.
+// Each invocation owns an AbortController recorded in syncRequest. A provider or
+// credential change, unmount, or newer invocation replaces that owner, so a late
+// response or failure from the earlier target publishes nothing. The merge reads the
+// current selected array after the request resolves, trims fetched IDs, and appends only
+// missing values.
 const syncUpstreamModels = async () => {
   if (isSyncingUpstream.value) return
-  if (!props.providerId && !props.syncCredentials) return
+  const providerId = props.providerId
+  const credentials = props.syncCredentials
+  if (!providerId && !credentials) return
 
+  const controller = new AbortController()
+  syncRequest = controller
   isSyncingUpstream.value = true
   try {
-    let result
     // A saved provider ID selects server-held credentials before preview input, so edit
     // forms synchronize using the persisted provider identity.
-    if (props.providerId) {
-      result = await providersAPI.syncUpstreamModels(props.providerId)
-    } else if (props.syncCredentials) {
-      result = await providersAPI.syncUpstreamModelsPreview(
-        props.syncCredentials as SyncUpstreamPreviewParams,
-      )
-    } else {
-      return
-    }
+    const result = providerId
+      ? await providersAPI.syncUpstreamModels(providerId, controller.signal)
+      : await providersAPI.syncUpstreamModelsPreview(credentials!, controller.signal)
+    // The target changed or the form closed while waiting; the response belongs to a
+    // different provider configuration and must not reach the current draft.
+    if (syncRequest !== controller) return
+    emit('synced', result)
 
     const upstreamModels = result.models.map((model) => model.trim()).filter(Boolean)
     if (upstreamModels.length === 0) {
@@ -542,11 +567,19 @@ const syncUpstreamModels = async () => {
       )
     }
   } catch (error) {
+    // Canceled or superseded requests fail after their owner was replaced; only the
+    // current request reports an error.
+    if (syncRequest !== controller) return
     const message =
       error instanceof Error ? error.message : t('admin.providers.syncUpstreamModelsFailed')
     appStore.showError(t('admin.providers.syncUpstreamModelsError', { message }))
   } finally {
-    isSyncingUpstream.value = false
+    // A canceled invocation can settle after another starts, so only the current owner
+    // releases the busy state.
+    if (syncRequest === controller) {
+      syncRequest = undefined
+      isSyncingUpstream.value = false
+    }
   }
 }
 

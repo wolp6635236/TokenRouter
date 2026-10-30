@@ -491,6 +491,7 @@ func buildUsageCleanupWhere(filters usage.UsageCleanupFilters) (string, []any) {
 		conditions = append(conditions, fmt.Sprintf("billing_type = $%d", idx))
 		args = append(args, *filters.BillingType)
 	}
+	conditions, args = appendRequestSourceCondition(conditions, args, filters.RequestSource, "")
 	return strings.Join(conditions, " AND "), args
 }
 

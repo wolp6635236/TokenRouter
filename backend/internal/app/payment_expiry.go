@@ -24,7 +24,7 @@ import (
 // assembled order lifecycle. A generated owner identifies lease attempts; the
 // Redis leader capability and optional SQL advisory callback are supplied to
 // the common singleton helper before each cycle.
-func providePaymentExpiry(runtime *payment.Runtime, cache provider.CNMonitorLeader, db *sql.DB) *payment.OrderExpiry {
+func providePaymentExpiry(runtime *payment.Runtime, cache provider.LeaderLocker, db *sql.DB) *payment.OrderExpiry {
 	owner := uuid.NewString()
 	var advisory func(context.Context, string) (func(), bool)
 	if db != nil {

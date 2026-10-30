@@ -40,7 +40,6 @@ type Options struct {
 	GeminiDebugHeaders   bool          // Gemini exchange header diagnostics
 	MaxLineSize          int           // SSE line byte limit
 	StreamInterval       time.Duration // upstream event idle duration
-	StreamKeepalive      time.Duration // downstream heartbeat idle duration
 	ResponseReadLimit    int64         // response body byte cap
 	PreserveContentType  bool          // upstream content type retention
 	URLAllowlistEnabled  bool          // upstream host allowlist permission
@@ -104,8 +103,9 @@ type HTTPBoundary interface {
 	// caller-owned, and callers inspect the returned error before further
 	// presentation.
 	ReadResponseBody(io.Reader, int64, BodyKind) ([]byte, error)
-	// Size returns the current response writer byte count for attempt
-	// accounting.
+	// Size reports accepted body bytes after excluding recorded heartbeats.
+	// Implementations return the unwritten sentinel for heartbeat-only output,
+	// preserving provider recovery after queue or header-wait commitment.
 	Size() int
 	// Written reports whether the response writer has begun its HTTP
 	// response.

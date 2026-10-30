@@ -358,7 +358,7 @@ func TestProcessModes(t *testing.T) {
 			// Maintenance hooks report one start and stop, and their stops precede
 			// Redis. Further comparisons place token refresh before its coordinator
 			// and deferred jobs before the timing wheel.
-			for _, name := range []string{"TokenRefreshService", "ProviderExpiryService", "ProxyExpiryService", "ScheduledTestRunnerService", "GroupAvailabilityProbeRunnerService", "CNProviderBalanceCheckService", "OllamaCloudUsageService", "DeferredService", "TLSFingerprintProfileService", "TLSFingerprintRouterService"} {
+			for _, name := range []string{"TokenRefreshService", "ProviderExpiryService", "ProxyExpiryService", "ScheduledTestRunnerService", "GroupAvailabilityProbeRunnerService", "UsageMonitor", "OllamaCloudUsageService", "DeferredService", "TLSFingerprintProfileService", "TLSFingerprintRouterService"} {
 				require.Equal(t, 1, strings.Count(logs, "[Lifecycle] started "+name), name)
 				require.Equal(t, 1, strings.Count(logs, "[Lifecycle] stopped "+name), name)
 				require.Less(t, strings.Index(logs, "stopped "+name), strings.Index(logs, "stopped Redis"), name)

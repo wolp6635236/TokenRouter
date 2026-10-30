@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -173,13 +174,14 @@ func (s *AntigravityOutput) GoogleError(status int, message string) error {
 		statusStr = "UNAVAILABLE"
 	}
 
-	c.JSON(status, gin.H{
+	body, _ := json.Marshal(gin.H{
 		"error": gin.H{
 			"code":    status,
 			"message": message,
 			"status":  statusStr,
 		},
 	})
+	writeGoogleErrorBody(c, status, body)
 	return fmt.Errorf("%s", message)
 }
 

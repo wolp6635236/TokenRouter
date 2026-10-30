@@ -188,23 +188,19 @@ func (p *generationRequestAdapter) ForwardGeneration(ctx context.Context, _ gate
 	provider := p.selection.Provider
 	var result *forwardcore.OpenAIResult
 	var err error
-	p.writerBefore = p.c.Writer.Size()
+	// JSON padding or SSE comments can commit HTTP before image content exists.
+	// Exclude both formats so those bytes do not close the provider retry window.
+	p.writerBefore = gatewayhttp.HeartbeatAdjustedWrittenSize(p.c)
 	if p.usesGrok() {
 		result, err = p.h.bindings.Platform.GrokMedia(ctx, p.c, provider, p.endpoint, p.requestID, body, p.contentType)
 	} else {
-		// JSON padding or SSE comments can commit HTTP before image content exists.
-		// Exclude either heartbeat format so those bytes do not close the retry window.
-		p.writerBefore = gatewayhttp.OpenAIImagesAdjustedWrittenSize(p.c)
 		match := p.h.bindings.Common.Forward.MatchOpenAITLSFingerprintRouterForRequest(p.c, provider)
 		err = p.h.bindings.Common.Forward.EnforceOpenAIClientPolicyForRequest(ctx, p.c, provider, body, match)
 		if err == nil {
 			result, err = p.h.bindings.Platform.Images(ctx, p.c, provider, body, p.parsed, p.routingModel, match)
 		}
 	}
-	after := p.c.Writer.Size()
-	if !p.usesGrok() {
-		after = gatewayhttp.OpenAIImagesAdjustedWrittenSize(p.c)
-	}
+	after := gatewayhttp.HeartbeatAdjustedWrittenSize(p.c)
 	outcome := gatewaymedia.GenerationOutcome{Result: generationResultView(result), Err: err, OutputChanged: after != p.writerBefore}
 	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failure = failure.RetryFailure()

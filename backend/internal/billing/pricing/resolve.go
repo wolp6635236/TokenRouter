@@ -33,6 +33,13 @@ const (
 // ResolvedPricing contains the selected units, amount availability, intervals,
 // and card metadata for one pricing resolution.
 type ResolvedPricing struct {
+	// LookupModel carries the resolved price identity into catalog media reads.
+	// Nil retains the caller's model for resolutions constructed outside PriceResolver.
+	LookupModel *string `json:"-"`
+	// ConfiguredReference records a target selected by an explicit profile reference.
+	// A referenced target can still be unpriced; callers check availability separately.
+	ConfiguredReference bool `json:"-"`
+
 	// Mode controls whether costs use tokens or unit prices. ResolvePriceCards
 	// defaults an empty card mode to token; direct callers supply the intended
 	// supported mode.

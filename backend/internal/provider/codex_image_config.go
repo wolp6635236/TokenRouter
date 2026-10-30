@@ -2,13 +2,15 @@ package provider
 
 import (
 	"strings"
+	"unicode"
 
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // codex_image_config.go resolves provider image-generation overrides from
 // current, historical, and nested OpenAI settings.
-// OpenAI provider image settings accept current and historical keys at the top
+// Tool-injection settings accept current and historical keys at the top
 // of Extra before nested openai configuration. Typed presence matters: a
 // top-level false or empty string wins over nested values, while absent or
 // incompatible types permit the next configured representation.
@@ -18,11 +20,21 @@ import (
 // maps strip, remove, and drop to stripping and treats other text as allow.
 // ResponseImagePolicy.Enabled applies group policy before the provider bridge
 // override and its process default; these readers return the provider choice
-// while that consumer owns the final request decision.
+// while that consumer owns the final request decision. Image-only adaptation
+// also reads a selected-provider text driver independently of injection policy;
+// blank overrides restore the OAuth default, and writes reject malformed IDs.
 
 // Codex image constants name provider Extra overrides and the allow/strip
 // values consumed when image bridging and explicit tool policy are resolved.
 const (
+	// CodexImageResponsesModelKey selects the text model that invokes the hosted
+	// image tool for OAuth image requests; ordinary text requests keep their model.
+	CodexImageResponsesModelKey = "codex_image_responses_model"
+
+	// DefaultCodexImageResponsesModel supplies the OAuth text driver when a
+	// provider has no nonblank override for its image request adaptation.
+	DefaultCodexImageResponsesModel = "gpt-6-luna"
+
 	// CodexImageGenerationBridgeKey names the provider Extra switch consumed
 	// by automatic Responses image injection policy after group-level selection.
 	CodexImageGenerationBridgeKey = "codex_image_generation_bridge"
@@ -39,6 +51,40 @@ const (
 	// rule.
 	CodexImagePolicyStrip = "strip"
 )
+
+// CodexImageResponsesModel returns the provider's OAuth image text driver.
+// Missing, blank, or non-string stored values use the platform default. The
+// override belongs to the selected provider, including credential shadows.
+func (r *Record) CodexImageResponsesModel() string {
+	if r != nil && r.IsOpenAIOAuthLike() {
+		if model, ok := r.Extra[CodexImageResponsesModelKey].(string); ok {
+			if model = strings.TrimSpace(model); model != "" {
+				return model
+			}
+		}
+	}
+	return DefaultCodexImageResponsesModel
+}
+
+// NormalizeCodexImageResponsesModel validates a supplied image-driver override.
+// Missing and null fields remain unchanged for merge updates; blank strings
+// reset the default. Nonblank model IDs cannot contain whitespace or controls.
+func NormalizeCodexImageResponsesModel(extra map[string]any) error {
+	value, exists := extra[CodexImageResponsesModelKey]
+	if !exists || value == nil {
+		return nil
+	}
+	model, ok := value.(string)
+	if !ok {
+		return apperror.BadRequest("CODEX_IMAGE_RESPONSES_MODEL_INVALID", "Image Responses model must be a string")
+	}
+	model = strings.TrimSpace(model)
+	if strings.ContainsFunc(model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return apperror.BadRequest("CODEX_IMAGE_RESPONSES_MODEL_INVALID", "Image Responses model cannot contain whitespace or control characters")
+	}
+	extra[CodexImageResponsesModelKey] = model
+	return nil
+}
 
 // boolOverrideFromMap copies the first typed boolean in key order into a
 // pointer. False is a present override, wrong types are skipped, and nil

@@ -108,6 +108,7 @@ Markdown 正文需要 JWT，并且菜单可见；管理员页面只对管理员�
 - `POST /api/v1/admin/payment/orders/{id}/force-expire`：必填 JSON 字段 `reason`（1 到 500 个字符）。只有当前为 `PENDING` 的订单可以被改成 `EXPIRED`，整个过程不调用上游，成功时 `data.message=force_expired`。订单不存在返回 `NOT_FOUND`，状态被并发修改返回 `ORDER_STATUS_CHANGED`（409）。之后迟到的付款仍可以通过正常的 webhook 恢复。
 - 退款查单：同时接受 `REFUND_PENDING`，以及带有有效准备记录的 `REFUNDING`。页面上是同一个查单按钮；接口只查询已经发起过的渠道退款，渠道退款只发起那一次。恢复记录不完整、互相矛盾或渠道无法确认时，返回要求人工核实的错误，调用方不能据此认为退款没发生。
 - `POST /api/v1/admin/payment/providers/test`：接受 `provider_key`、`config` 和可选的 `instance_id`，目前只支持 `easypay`。带实例 ID 时，服务端按更新规则合并请求里没回传的敏感字段，再用随机订单号做一次只读查单。接口不保存草稿，也不创建订单；成功时只返回 `data.reachable=true`，上游的 body、URL 细节和凭据都不会出现在响应里。
+- `POST /api/v1/admin/payment/plans` 和 `PUT /api/v1/admin/payment/plans/{id}`：请求带上的 `group_ids` 必须指向现存分组，包含已删除或不存在的分组时返回 `GROUP_NOT_FOUND`（404），套餐写入不会执行。更新不带 `group_ids` 时保留原有分组选择，不做分组查询。
 
 普通取消在无法确认上游支付状态时，返回 `PAYMENT_STATUS_UNAVAILABLE`（503）。某个 provider instance 还有强制过期、尚未恢复的订单时，删除接口返回 `FORCED_EXPIRED_ORDERS`（409）；管理员应当停用并保留这个实例，以便接收迟到的回调。
 
@@ -242,7 +243,9 @@ Key 自身的配额和滚动限额字段不受这些展示规则影响。
 
 分组的管理请求和列表筛选不接受上游平台。分组的 `routing_policy.model_mapping` 是 `Record<string,string>`，`allowed_models` 是 `string[]`，外面没有平台这一层。提供商列表仍然可以按提供商自己的平台筛选。
 
-`/api/v1/admin/pricing/configs` 和它的 `/:id` 子路由提供共享价格配置的增删改查。请求只接受价格字段；模型映射、白名单和功能字段通过分组的 `routing_policy` 保存。共享价卡和提供商成本价卡都没有 `platform`，模型规则统一检查是否重叠；价格配置里出现未知字段时返回 400。
+`/api/v1/admin/pricing/configs` 和它的 `/:id` 子路由提供共享价格配置的增删改查。价格条目接受可选 `reference_model`，引用同一配置中另一具体模型的生效价格。请求路由的模型改写、白名单和功能字段通过分组的 `routing_policy` 保存。共享价卡和提供商成本价卡都没有 `platform`，模型规则统一检查是否重叠；价格配置里出现未知字段时返回 400。
+
+价格条目和属性规则的 `reference_model` 缺失或为空时使用字段覆盖模式。非空引用与非空覆盖字段同时提交、目标含通配符，或目标命中本档案任一映射来源规则时返回 400，reason 为 `INVALID_MODEL_REFERENCE`。价格引用接受存储默认的 `billing_mode=token` 占位，实际计费模式由目标决定。提供商成本条目提交非空引用返回 400。属性预览和配置保存使用相同的引用校验，预览结果用 `reference_model` 报告目标，实际路线仍在 `target` 中。
 
 默认价的只读查询在 `/api/v1/admin/pricing/defaults` 和 `/model`，`/model` 不需要上游平台参数，默认目录列表可以按模型来源标签筛选。价格配置通过手动添加模型规则维护。价格规则见[管理员默认价格查询](model_catalog_and_marketplace.md#gateway_default_pricing)。模型链字段使用 `group_mapped`；历史用量里的共享价格关联字段是 `pricing_config_id`，取值就是原来的 ID。
 

@@ -173,8 +173,9 @@ func (s *UpstreamUsageService) SnapshotMetrics() UpstreamUsageMetrics {
 // repository failures are translated to stable usage errors.
 //
 // The initial read selects an adapter and input fingerprint for in-flight
-// sharing. CN platforms select their platform/mode adapter. Shared work keeps
-// the initiating caller's context values with cancellation detached, then uses
+// sharing; EffectiveUpstreamUsageConfig supplies platform-selected adapters,
+// and a platform mode without one returns unsupported. Shared work keeps the
+// initiating caller's context values with cancellation detached, then uses
 // service cancellation and a sixty-second system deadline that includes
 // preflight time. The execution implementation cooperates with that context; an
 // unresponsive dependency can outlive its deadline.
@@ -214,17 +215,13 @@ func (s *UpstreamUsageService) QueryProvider(ctx context.Context, providerID int
 	if err != nil {
 		return nil, err
 	}
+	// A platform mode without a query format resolves as disabled. Report it as
+	// unsupported first so administrators see that no saved switch can enable it.
+	if queryConfig.Adapter == "" {
+		return nil, ErrUpstreamUsageUnsupported
+	}
 	if !queryConfig.Enabled {
 		return nil, ErrUpstreamUsageDisabled
-	}
-	// CN usage protocols are chosen by platform and provider mode. Override the
-	// generic configured adapter so the native platform request format reaches
-	// execution.
-	if provider.IsCNProvider() {
-		queryConfig.Adapter = CNUpstreamUsageAdapterName(provider)
-		if queryConfig.Adapter == "" {
-			return nil, ErrUpstreamUsageUnsupported
-		}
 	}
 	if !s.execution.Supports(queryConfig.Adapter) {
 		return nil, ErrUpstreamUsageUnsupported

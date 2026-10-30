@@ -107,15 +107,15 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesI
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
 }
 
-// TestOpenAIGatewayServiceForwardCountTokensCNProvidersAlwaysEstimateLocally
-// varies CN platform, provider mode, and configured protocol. It checks
-// positive local counts, absent upstream requests, and zero temporary or
-// persistent health writes.
-func TestOpenAIGatewayServiceForwardCountTokensCNProvidersAlwaysEstimateLocally(t *testing.T) {
+// TestOpenAIGatewayServiceForwardCountTokensKimiZhipuDeepSeekAlwaysEstimateLocally
+// varies Kimi, Zhipu, and DeepSeek platform, provider mode, and configured
+// protocol. It checks positive local counts, absent upstream requests, and zero
+// temporary or persistent health writes.
+func TestOpenAIGatewayServiceForwardCountTokensKimiZhipuDeepSeekAlwaysEstimateLocally(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
 	tests := []struct {
 		name     string // counting test scenario label
-		platform string // selected CN provider platform
+		platform string // selected Kimi/Zhipu/DeepSeek provider platform
 		mode     string // configured provider billing mode
 		protocol string // configured upstream protocol kind
 	}{

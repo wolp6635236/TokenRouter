@@ -25,8 +25,8 @@ func TestBuildOpenAIResponsesURLForPlatform(t *testing.T) {
 	require.Equal(t, "https://api.kimi.com/coding/v1/responses", ResponsesEndpoint(capability.PlatformKimi, "https://api.kimi.com/coding/v1"))
 }
 
-// TestNormalizeDeepSeekResponsesRequestBody selects explicit and adaptive
-// native CN targets alongside Chat and OpenAI controls. Native requests must
+// TestNormalizeDeepSeekResponsesRequestBody selects explicit and adaptive Kimi
+// and DeepSeek targets alongside Chat and OpenAI controls. Native requests must
 // disable storage and remove continuation IDs, while the control routes retain
 // their supplied bytes.
 func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
@@ -37,7 +37,7 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Credentials: map[string]any{"api_protocol": providercore.APIProtocolResponses},
 	}
 	body := []byte(`{"model":"deepseek-v4-pro","store":true,"previous_response_id":"resp_123","input":"hi"}`)
-	normalized := NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: deepseekResponses}).UsesNativeCNResponses(), body)
+	normalized := NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: deepseekResponses}).UsesStatelessResponses(), body)
 	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
 	require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(normalized, "model").String())
@@ -46,20 +46,21 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Platform: capability.PlatformDeepseek, Type: capability.ProviderTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": providercore.APIProtocolAdaptive},
 	}
-	adaptiveNormalized := NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: deepseekAdaptive}).UsesNativeCNResponses(), body)
+	adaptiveNormalized := NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: deepseekAdaptive}).UsesStatelessResponses(), body)
 	require.False(t, gjson.GetBytes(adaptiveNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(adaptiveNormalized, "previous_response_id").Exists())
 
-	// A Chat-resolved provider supplies no native-CN marker, so its continuation
-	// and storage fields stay available for that route's separate preparation.
+	// A Chat-resolved provider supplies no Kimi and DeepSeek marker, so its
+	// continuation and storage fields stay available for that route's separate
+	// preparation.
 	deepseekCC := &providercore.Record{Platform: capability.PlatformDeepseek, Type: capability.ProviderTypeAPIKey}
-	require.Equal(t, string(body), string(NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: deepseekCC}).UsesNativeCNResponses(), body)))
+	require.Equal(t, string(body), string(NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: deepseekCC}).UsesStatelessResponses(), body)))
 
 	kimiResponses := &providercore.Record{
 		Platform: capability.PlatformKimi, Type: capability.ProviderTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": providercore.APIProtocolResponses},
 	}
-	kimiNormalized := NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: kimiResponses}).UsesNativeCNResponses(), body)
+	kimiNormalized := NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: kimiResponses}).UsesStatelessResponses(), body)
 	require.False(t, gjson.GetBytes(kimiNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(kimiNormalized, "previous_response_id").Exists())
 
@@ -67,12 +68,13 @@ func TestNormalizeDeepSeekResponsesRequestBody(t *testing.T) {
 		Platform: capability.PlatformKimi, Type: capability.ProviderTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": providercore.APIProtocolAdaptive, "provider_mode": providercore.ProviderModeCoding},
 	}
-	kimiCodingNormalized := NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: kimiCodingAdaptive}).UsesNativeCNResponses(), body)
+	kimiCodingNormalized := NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: kimiCodingAdaptive}).UsesStatelessResponses(), body)
 	require.False(t, gjson.GetBytes(kimiCodingNormalized, "store").Bool())
 	require.False(t, gjson.GetBytes(kimiCodingNormalized, "previous_response_id").Exists())
 
 	// OpenAI retains server-side Responses state because this normalization is
-	// scoped to native CN targets rather than all Responses-compatible providers.
+	// scoped to Kimi and DeepSeek targets rather than all Responses-compatible
+	// providers.
 	openai := &providercore.Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}
-	require.Equal(t, string(body), string(NormalizeCNResponsesBody((providercore.ProtocolTarget{Record: openai}).UsesNativeCNResponses(), body)))
+	require.Equal(t, string(body), string(NormalizeStatelessResponsesBody((providercore.ProtocolTarget{Record: openai}).UsesStatelessResponses(), body)))
 }

@@ -468,7 +468,7 @@ func (a *attempt) StreamError(err error) (string, bool) {
 	return "", false
 }
 
-// Size returns the HTTP writer byte count observed for this attempt.
+// Size returns the heartbeat-adjusted response byte count for this attempt.
 func (a *attempt) Size() int { return a.c.Size() }
 
 // Written reports whether the attempt HTTP writer has begun its response.

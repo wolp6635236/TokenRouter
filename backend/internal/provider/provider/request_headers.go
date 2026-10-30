@@ -19,7 +19,8 @@ import (
 // ApplyProviderHeaderOverrides applies the record's filtered header policy with
 // Anthropic wire casing. Nil destination headers are skipped; allowed keys can
 // replace existing values, while protected keys are excluded by provider and
-// egress filtering.
+// egress filtering. Request preparation applies final provider authentication
+// separately after these configured replacements.
 func ApplyProviderHeaderOverrides(value *provider.Record, headers http.Header) {
 	if headers == nil {
 		return

@@ -75,7 +75,7 @@ func (r *Store) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time
 	query := fmt.Sprintf(`
 		WITH top_keys AS (
 			SELECT api_key_id
-			FROM usage_logs
+			FROM (SELECT * FROM usage_logs WHERE request_source = 'user') usage_logs
 			WHERE created_at >= $1 AND created_at < $2
 			GROUP BY api_key_id
 			ORDER BY SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) DESC
@@ -87,7 +87,7 @@ func (r *Store) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time
 			COALESCE(k.name, '') as key_name,
 			COUNT(*) as requests,
 			COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens
-		FROM usage_logs u
+		FROM (SELECT * FROM usage_logs WHERE request_source = 'user') u
 		LEFT JOIN api_keys k ON u.api_key_id = k.id
 		WHERE u.api_key_id IN (SELECT api_key_id FROM top_keys)
 		  AND u.created_at >= $4 AND u.created_at < $5
@@ -145,7 +145,7 @@ func (r *Store) GetUserUsageTrend(ctx context.Context, startTime, endTime time.T
 	query := fmt.Sprintf(`
 		WITH top_users AS (
 			SELECT COALESCE(billing_user_id, user_id) AS user_id
-			FROM usage_logs
+			FROM (SELECT * FROM usage_logs WHERE request_source = 'user') usage_logs
 			WHERE created_at >= $1 AND created_at < $2
 			-- 团队成员使用团队 Key 时，Top 用户应按付款主体合并用量。
 			GROUP BY COALESCE(billing_user_id, user_id)
@@ -161,7 +161,7 @@ func (r *Store) GetUserUsageTrend(ctx context.Context, startTime, endTime time.T
 			COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens,
 			COALESCE(SUM(u.total_cost), 0) as cost,
 			COALESCE(SUM(u.actual_cost), 0) as actual_cost
-		FROM usage_logs u
+		FROM (SELECT * FROM usage_logs WHERE request_source = 'user') u
 		LEFT JOIN users us ON COALESCE(u.billing_user_id, u.user_id) = us.id
 		WHERE COALESCE(u.billing_user_id, u.user_id) IN (SELECT user_id FROM top_users)
 		  AND u.created_at >= $4 AND u.created_at < $5
@@ -227,7 +227,7 @@ func (r *Store) GetUserSpendingRanking(ctx context.Context, startTime, endTime t
 				COALESCE(SUM(u.actual_cost), 0) as actual_cost,
 				COUNT(*) as requests,
 				COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens
-			FROM usage_logs u
+			FROM (SELECT * FROM usage_logs WHERE request_source = 'user') u
 			LEFT JOIN users us ON COALESCE(u.billing_user_id, u.user_id) = us.id
 			WHERE u.created_at >= $1 AND u.created_at < $2
 			-- 排行按付款主体归属，团队成员使用团队 Key 时计入团队 Owner。
@@ -424,6 +424,11 @@ func (r *Store) getUsageTrendWithFilters(ctx context.Context, startTime, endTime
 		query += " AND team_id IS NULL"
 	}
 	query, args = appendUsageLogModelQueryFilter(query, args, filters.Model, filters.ModelFilterSource)
+	sourceConditions, sourceArgs := appendRequestSourceCondition(nil, args, filters.RequestSource, "")
+	if len(sourceConditions) > 0 {
+		query += " AND " + strings.Join(sourceConditions, " AND ")
+	}
+	args = sourceArgs
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
 	if filters.BillingType != nil {
@@ -468,6 +473,7 @@ func shouldUsePreaggregatedTrend(granularity string, filters UsageLogFilters) bo
 		filters.ProviderID == 0 &&
 		filters.GroupID == 0 &&
 		filters.Model == "" &&
+		(filters.RequestSource == "" || filters.RequestSource == "all") &&
 		filters.RequestType == nil &&
 		filters.Stream == nil &&
 		filters.BillingType == nil &&
@@ -666,6 +672,11 @@ func (r *Store) getModelStatsWithFiltersBySource(ctx context.Context, startTime,
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
 		args = append(args, filters.Model)
 	}
+	sourceConditions, sourceArgs := appendRequestSourceCondition(nil, args, filters.RequestSource, "")
+	if len(sourceConditions) > 0 {
+		query += " AND " + strings.Join(sourceConditions, " AND ")
+	}
+	args = sourceArgs
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
 	if filters.BillingType != nil {
@@ -794,6 +805,11 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
 		args = append(args, filters.Model)
 	}
+	sourceConditions, sourceArgs := appendRequestSourceCondition(nil, args, filters.RequestSource, "ul.")
+	if len(sourceConditions) > 0 {
+		query += " AND " + strings.Join(sourceConditions, " AND ")
+	}
+	args = sourceArgs
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "ul")
 	if filters.BillingType != nil {
@@ -852,7 +868,8 @@ func (r *Store) getGroupStatsWithFilters(ctx context.Context, startTime, endTime
 // before payer grouping, so a member's selected activity can appear under its
 // owner. RequestType and Stream both apply when supplied here. Current email
 // belongs to the payer, and base cost, user charges, and provider expense retain
-// separate result columns.
+// separate result columns. System requests have no payer and are excluded from
+// both raw and aggregated rankings, including when no identity filter is set.
 func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usage.UserBreakdownDimension, limit int) (results []usage.UserBreakdownItem, err error) {
 	// Failed or unusable multidimensional analytics is discarded before the later
 	// source executes, keeping partial aggregate data out of raw report totals.
@@ -876,6 +893,7 @@ func (r *Store) GetUserBreakdownStats(ctx context.Context, startTime, endTime ti
 		FROM usage_logs ul
 		LEFT JOIN users u ON u.id = COALESCE(ul.billing_user_id, ul.user_id)
 		WHERE ul.created_at >= $1 AND ul.created_at < $2
+		  AND ul.request_source = 'user'
 	`
 	args := []any{startTime, endTime}
 

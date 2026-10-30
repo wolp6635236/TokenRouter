@@ -143,3 +143,39 @@ describe('共享价格卡', () => {
     expect(validatePricingForm([onlyFast], t)).toBeNull()
   })
 })
+
+// Reference drafts retain editable prices locally while their payload contains only
+// the target identity. Switching back restores the custom fields and schedules.
+it('serializes reference targets without draft overrides', () => {
+  const original = fullPricing()
+  const draft = pricingEntryFromAPI(original)
+  draft.reference_mode = true
+  draft.reference_model = ' target '
+  expect(validatePricingForm([draft], t)).toBeNull()
+  const payload = pricingEntryToAPI(draft)
+  expect(payload.reference_model).toBe('target')
+  expect(payload.input_price).toBeNull()
+  expect(payload.fast_multiplier).toBeUndefined()
+  expect(payload.intervals).toEqual([])
+  expect(payload.time_pricing).toBeUndefined()
+  expect(pricingEntryFromAPI(payload).reference_mode).toBe(true)
+  draft.reference_mode = false
+  expect(pricingEntryToAPI(draft)).toEqual(original)
+})
+
+// A wildcard source includes its target and another reference targets that source.
+// Both forms are rejected before the editor can send a recursive reference.
+it('rejects wildcard self references and reference chains', () => {
+  const first = {
+    ...pricingEntryFromAPI(fullPricing()),
+    models: ['custom-*'],
+    reference_mode: true,
+    reference_model: 'CUSTOM-one',
+  }
+  expect(validatePricingForm([first], t)).toBe('admin.pricing.referenceInvalid')
+  first.reference_model = 'target'
+  const second = { ...first, models: ['target'], reference_model: 'final' }
+  expect(validatePricingForm([first, second], t)).toBe('admin.pricing.referenceInvalid')
+  first.reference_model = 'missing'
+  expect(validatePricingForm([first], t)).toBeNull()
+})

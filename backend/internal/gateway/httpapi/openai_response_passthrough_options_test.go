@@ -155,9 +155,8 @@ func runPassthroughFlushTest(
 }
 
 // TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries supplies
-// content, comment and terminal frames. It checks exact downstream bytes,
-// three complete-frame flush lengths and returned usage for the fixture
-// stream.
+// content, comment and terminal frames. It checks comment removal, exact
+// business bytes, two complete-frame flush lengths and retained terminal usage.
 func TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries(t *testing.T) {
 	firstEvent := "event: response.output_text.delta\n" +
 		"id: event-1\n" +
@@ -172,11 +171,10 @@ func TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries(t *testing.T
 
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, upstream, recorder.Body.String())
+	require.Equal(t, firstEvent+terminalEvent, recorder.Body.String())
 	require.Equal(t, []int{
 		len(firstEvent),
-		len(firstEvent) + len(heartbeat),
-		len(upstream),
+		len(firstEvent) + len(terminalEvent),
 	}, writer.flushBodyLengths)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
@@ -197,10 +195,11 @@ func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(
 	_, recorder, writer, err := runPassthroughFlushTest(t, io.NopCloser(strings.NewReader(upstream)), -1)
 
 	require.NoError(t, err)
-	require.Equal(t, upstream, recorder.Body.String())
+	expectedPreamble := strings.ReplaceAll(preamble, ": waiting\n\n", "")
+	require.Equal(t, expectedPreamble+firstOutput+terminalEvent, recorder.Body.String())
 	require.Equal(t, []int{
-		len(preamble) + len(firstOutput),
-		len(upstream),
+		len(expectedPreamble) + len(firstOutput),
+		len(expectedPreamble) + len(firstOutput) + len(terminalEvent),
 	}, writer.flushBodyLengths)
 }
 

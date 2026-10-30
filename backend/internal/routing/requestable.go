@@ -130,19 +130,15 @@ type RequestableResolver struct {
 // requestableQuery retains the inputs and initial result shared by one group
 // catalogue resolution.
 type requestableQuery struct {
-	attributes *ModelAttributeSession // query-local catalog and profile snapshot
-	groupID    int64                  // selected attribute configuration group
-	preview    bool                   // defer capability filtering to preview draft
-	err        error                  // first attribute resolution failure
-	providers  []CatalogueProvider    // platform-filtered stable query providers
-	// protocols aligns by index with providers. Preparation captures each
-	// provider's enabled protocols once so every model check uses the same
-	// declared protocol selection.
-	protocols     []capability.ProviderProtocols // copied query protocol selections
-	policy        *GroupPolicyView               // captured group request policy
-	billingSource string                         // chosen public billing stage
-	candidates    []string                       // finite ordered concrete identities
-	result        RequestableModelsResult        // initial query restriction evidence
+	attributes    *ModelAttributeSession  // query-local catalog and profile snapshot
+	groupID       int64                   // selected attribute configuration group
+	preview       bool                    // defer capability filtering to preview draft
+	err           error                   // first attribute resolution failure
+	providers     []CatalogueProvider     // platform-filtered stable query providers
+	policy        *GroupPolicyView        // captured group request policy
+	billingSource string                  // chosen public billing stage
+	candidates    []string                // finite ordered concrete identities
+	result        RequestableModelsResult // initial query restriction evidence
 }
 
 // ResolveWithProviders returns the eligible catalogue from finite configured
@@ -266,10 +262,6 @@ func (s *RequestableResolver) prepare(ctx context.Context, groupID *int64, platf
 	configured = append(configured, baseModels...)
 	configured = append(configured, currentModels...)
 	query.candidates = mergeRequestableModelCandidates(configured, providers, query.policy)
-	query.protocols = make([]capability.ProviderProtocols, len(providers))
-	for i := range providers {
-		query.protocols[i] = providers[i].Protocols()
-	}
 	return query
 }
 
@@ -443,7 +435,8 @@ func (q *requestableQuery) resolve(ctx context.Context, requestedModel string) (
 				continue
 			}
 			for _, source := range policy.AllowedProtocols {
-				target, ok := capability.ResolveRoute(q.protocols[i], source, policy.ProtocolFallbacks)
+				finalModel, _ := provider.ModelPolicy.Resolve(groupMappedModel)
+				target, ok := capability.ResolveRoute(provider.ProtocolsForModel(finalModel), source, policy.ProtocolFallbacks)
 				if !ok {
 					continue
 				}

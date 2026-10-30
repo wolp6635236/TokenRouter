@@ -187,6 +187,7 @@ func TestUnifiedTextDispatchUsesSelectedProvider(t *testing.T) {
 	}{
 		{"anthropic", "claude-sonnet-4-5", "/v1/messages", `{"id":"msg-native","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":7,"cache_read_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":5},"speed":"fast"}}`},
 		{"gemini", "gemini-2.5-flash", ":generateContent", `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}`},
+		{"opencode", "gemini-2.5-flash", ":generateContent", `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}`},
 		{"openai", "gpt-5.4", "/v1/responses", `{"id":"resp-native","object":"response","status":"completed","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}`},
 	}
 	for _, tt := range tests {
@@ -200,19 +201,37 @@ func TestUnifiedTextDispatchUsesSelectedProvider(t *testing.T) {
 			switch tt.platform {
 			case "anthropic":
 				executor.Anthropic = NewMessagesExecutor(messageforward.NewRuntime(messageforward.Dependencies{Search: searchtools.NewEmulator(unifiedSearchSource{}, nil, nil, nil, nil, nil), Credentials: &provider.MessageCredentialSource{}, Transport: transport, Deferred: &provider.DeferredService{}}, messageforward.Options{Configured: true, ResponseReadLimit: 1 << 20}), nil)
-			case "gemini":
+			case "gemini", "opencode":
 				executor.Gemini = &GeminiExecutor{Runtime: &googleforward.Gemini{Transport: transport, Options: googleforward.Options{Configured: true, ResponseReadLimit: 1 << 20}}}
 			case "openai":
 				executor.OpenAI = newResponsesFixture(responsesFixtureInputs{transport: transport})
+			}
+			ctx := context.Background()
+			if tt.platform == "opencode" {
+				SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
+				SetActualUpstreamEndpoint(c, "/v1/responses")
+				target.Record.Credentials[provider.OpenCodeModelProtocolsKey] = map[string]any{"payg": map[string]any{tt.model: "gemini_generate_content"}}
+				ctx = requeststate.WithClientProtocol(ctx, protocol.ProtocolAnthropicMessages)
+				ctx = requeststate.WithRoutePlan(ctx, routing.Plan(routing.PlanInput{RequestedModel: tt.model, ClientProtocol: protocol.ProtocolAnthropicMessages}))
+				c.Request.Header.Set("User-Agent", "fixture-agent/1")
+				c.Request.Header.Set("Session-Id", "fixture-conversation")
 			}
 			var result *forward.OpenAIResult
 			var err error
 			if tt.platform == "openai" {
 				result, err = executor.Responses(context.Background(), c, target, []byte(`{"model":"`+tt.model+`","input":"hello"}`))
 			} else {
-				result, err = executor.Messages(context.Background(), c, target, []byte(`{"model":"`+tt.model+`","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}`), "", tt.model)
+				result, err = executor.Messages(ctx, c, target, []byte(`{"model":"`+tt.model+`","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}`), "", tt.model)
 			}
 			require.NoError(t, err)
+			if tt.platform == "opencode" {
+				require.Equal(t, "/inference/google/v1beta/models/"+tt.model+":generateContent", transport.lastReq.URL.Path)
+				require.Equal(t, "Bearer test-key", transport.lastReq.Header.Get("Authorization"))
+				require.Empty(t, transport.lastReq.Header.Get("x-goog-api-key"))
+				require.Equal(t, "fixture-agent/1", transport.lastReq.Header.Get("User-Agent"))
+				require.Equal(t, "fixture-conversation", transport.lastReq.Header.Get("X-OpenCode-Session"))
+				require.Equal(t, EndpointGeminiModels, GetUpstreamEndpoint(c, provider.PlatformOpenCode))
+			}
 			require.NotNil(t, result)
 			require.Contains(t, transport.lastReq.URL.Path, tt.path)
 			require.Equal(t, http.StatusOK, rec.Code)

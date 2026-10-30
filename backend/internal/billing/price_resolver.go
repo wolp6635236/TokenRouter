@@ -104,7 +104,8 @@ func NewPriceResolver(pricingConfigs ConfigPrices, calculator *Calculator, looku
 // group first tries the requested model and then same-identity candidates. The
 // configuration reader determines exact and wildcard matching.
 //
-// Catalog lookup runs when the selected card needs inherited base amounts,
+// Reference-aware sources select the lookup identity and target card from one
+// profile snapshot. Catalog lookup uses that identity when the card needs base amounts,
 // allowing standalone cards to price uncataloged models. Effective billing
 // settings are read separately even when no model card matches. The pure
 // resolver combines these inputs and retains an unavailable base as unpriced
@@ -112,16 +113,31 @@ func NewPriceResolver(pricingConfigs ConfigPrices, calculator *Calculator, looku
 // @project-doc docs/domains/routing_and_billing.md#group_model_pricing
 func (r *PriceResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
 	var configPricing *ModelPricingEntry
+	lookupModel := input.Model
 	if input.GroupID != nil && r.pricingConfigs != nil {
-		configPricing = r.LookupConfigPricingNormalized(ctx, *input.GroupID, input.Model)
+		if source, ok := r.pricingConfigs.(interface {
+			// ResolveModelPricing selects a reference target and card from one profile.
+			// It retains the input model when no reference applies and returns an
+			// empty model for an invalid reference chain.
+			ResolveModelPricing(context.Context, int64, string) (string, *ModelPricingEntry)
+		}); ok {
+			lookupModel, configPricing = source.ResolveModelPricing(ctx, *input.GroupID, input.Model)
+		} else {
+			configPricing = r.LookupConfigPricingNormalized(ctx, *input.GroupID, input.Model)
+		}
 	}
 	var base *ModelPricing
 	source := PricingSourceUnpriced
 	if purepricing.PriceCardNeedsBase(configPricing) {
-		base, source = r.ResolveBasePricing(input.Model)
+		base, source = r.ResolveBasePricing(lookupModel)
 	}
 	settings := r.BillingSettings(ctx, input.GroupID)
-	return purepricing.ResolvePriceCards(configPricing, base, source, settings.LongContextPricingEnabled)
+	resolved := purepricing.ResolvePriceCards(configPricing, base, source, settings.LongContextPricingEnabled)
+	resolved.LookupModel = &lookupModel
+	// The profile reader retains the supplied identity unless it selects a reference.
+	// Empty identities denote invalid chains and cannot establish an explicit price choice.
+	resolved.ConfiguredReference = lookupModel != "" && lookupModel != input.Model
+	return resolved
 }
 
 // ResolveBasePricing reads catalog calculation rates for the full supplied

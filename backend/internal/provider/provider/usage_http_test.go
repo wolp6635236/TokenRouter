@@ -24,18 +24,18 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 )
 
-// cnDecisionRepo rotates the selected identity immediately before monitor
+// usageDecisionRepo rotates the selected identity immediately before monitor
 // health writes are compared.
-type cnDecisionRepo struct {
-	*cnUsageMonitorRepo // embedded monitor decision capture repository
+type usageDecisionRepo struct {
+	*usageMonitorRepo // embedded monitor decision capture repository
 	// changed prevents repeated fixture rotation. The first decision advances
 	// UpdatedAt and installs a replacement credential map before comparison.
 	changed bool
 }
 
-// cnUsageMonitorRepo captures monitor snapshots and provider cooldown writes
+// usageMonitorRepo captures monitor snapshots and provider cooldown writes
 // under its fixture mutex.
-type cnUsageMonitorRepo struct {
+type usageMonitorRepo struct {
 	// mu protects base repository providers, platform lists, snapshot captures,
 	// and recorded health effects. Individual readers return shallow record state; the base
 	// health comparison and delegated mutation use separate lock acquisitions.
@@ -45,7 +45,7 @@ type cnUsageMonitorRepo struct {
 	// writes retains copied outer snapshot objects after accepted comparisons.
 	// Nested amounts and observation references remain shared with the caller for
 	// assertions.
-	writes []*acctcore.CNUsageMonitorSnapshot
+	writes []*acctcore.UsageMonitorSnapshot
 	// casResult gates snapshot capture after a matching UpdatedAt. False rejects
 	// that write without appending the requested observation.
 	casResult        bool
@@ -55,9 +55,9 @@ type cnUsageMonitorRepo struct {
 	updateExtraCalls int       // captured generic Extra write count
 }
 
-// cnUsageMonitorHTTP captures monitor requests and can wait for their
+// usageMonitorHTTP captures monitor requests and can wait for their
 // cancellation before returning.
-type cnUsageMonitorHTTP struct {
+type usageMonitorHTTP struct {
 	// mu protects calls, requests, and the response configuration captured by
 	// DoWithTLS. The method releases it before startup notification or a
 	// cancellable blocked wait.
@@ -76,18 +76,18 @@ type cnUsageMonitorHTTP struct {
 	block bool
 }
 
-// cnUsageMonitorLeaderLock supplies a fixed acquisition result and counts
+// usageMonitorLeaderLock supplies a fixed acquisition result and counts
 // runner lease attempts.
-type cnUsageMonitorLeaderLock struct {
+type usageMonitorLeaderLock struct {
 	acquired bool // fixed fixture lease acquisition result
 	calls    int  // observed fixture lease attempt count
 }
 
-// cnQueryFixtureOptions carries outbound URL policy and periodic monitor
+// usageQueryFixtureOptions carries outbound URL policy and periodic monitor
 // options for usage fixtures.
-type cnQueryFixtureOptions struct {
-	Policy  egress.UsageURLPolicy     // native query root trust policy
-	Monitor acctcore.CNMonitorOptions // periodic monitor option override values
+type usageQueryFixtureOptions struct {
+	Policy  egress.UsageURLPolicy        // native query root trust policy
+	Monitor acctcore.UsageMonitorOptions // periodic monitor option override values
 }
 
 // upstreamUsageProviderRepoStub exposes one mutable provider identity with
@@ -134,42 +134,42 @@ type upstreamUsageHTTPStub struct {
 	}
 }
 
-// TestCNMonitorOldIdentityCannotPauseNewCredentials replaces the provider
+// TestUsageMonitorOldIdentityCannotPauseNewCredentials replaces the provider
 // identity before a low-balance health decision is written. The fixture must
 // run its replacement hook and leave the old pause absent from captured reason
 // and stored deadline.
-func TestCNMonitorOldIdentityCannotPauseNewCredentials(t *testing.T) {
-	value := newCNUsageMonitorProvider(1, capability.PlatformKimi, acctcore.ProviderModePayG)
-	repo := &cnDecisionRepo{cnUsageMonitorRepo: &cnUsageMonitorRepo{providers: map[int64]*acctcore.Record{1: value}, byPlatform: map[string][]int64{capability.PlatformKimi: {1}}, casResult: true}}
-	upstream := &cnUsageMonitorHTTP{body: `{"code":0,"data":{"available_balance":0.1}}`}
-	cfg := newCNQueryFixtureOptions()
+func TestUsageMonitorOldIdentityCannotPauseNewCredentials(t *testing.T) {
+	value := newUsageMonitorProvider(1, capability.PlatformKimi, acctcore.ProviderModePayG)
+	repo := &usageDecisionRepo{usageMonitorRepo: &usageMonitorRepo{providers: map[int64]*acctcore.Record{1: value}, byPlatform: map[string][]int64{capability.PlatformKimi: {1}}, casResult: true}}
+	upstream := &usageMonitorHTTP{body: `{"code":0,"data":{"available_balance":0.1}}`}
+	cfg := newUsageQueryFixtureOptions()
 	cfg.Monitor.BalanceThreshold = 0.5
-	usage := newCNUsageFixture(repo, upstream, cfg, nil)
-	monitor := newCNMonitorFixture(repo, usage, cfg)
+	usage := newUsageFixture(repo, upstream, cfg, nil)
+	monitor := newUsageMonitorFixture(repo, usage, cfg)
 	monitor.RunOnce(context.Background())
 	require.True(t, repo.changed)
 	require.Empty(t, repo.pauseReason, "旧查询健康结论不得写到管理员替换后的身份")
 	require.Nil(t, value.TempUnschedulableUntil)
 }
 
-// TestCNUsageMonitorRunOncePersistsUnifiedSnapshotWithoutLegacyWrites queries
-// an official Kimi balance through the periodic monitor. Storage must receive a
+// TestUsageMonitorRunOncePersistsUnifiedSnapshotWithoutLegacyWrites queries an
+// official Kimi balance through the periodic monitor. Storage must receive a
 // valid unified snapshot while the generic Extra writer remains unused and
 // redirects stay disabled.
-func TestCNUsageMonitorRunOncePersistsUnifiedSnapshotWithoutLegacyWrites(t *testing.T) {
-	provider := newCNUsageMonitorProvider(1, capability.PlatformKimi, acctcore.ProviderModePayG)
-	repo := &cnUsageMonitorRepo{
+func TestUsageMonitorRunOncePersistsUnifiedSnapshotWithoutLegacyWrites(t *testing.T) {
+	provider := newUsageMonitorProvider(1, capability.PlatformKimi, acctcore.ProviderModePayG)
+	repo := &usageMonitorRepo{
 		providers:  map[int64]*acctcore.Record{1: provider},
 		byPlatform: map[string][]int64{capability.PlatformKimi: {1}},
 		casResult:  true,
 	}
-	upstream := &cnUsageMonitorHTTP{body: `{"code":0,"data":{"available_balance":12.5}}`}
-	service := newCNUsageMonitorForTest(repo, upstream, newCNQueryFixtureOptions())
+	upstream := &usageMonitorHTTP{body: `{"code":0,"data":{"available_balance":12.5}}`}
+	service := newUsageMonitorForTest(repo, upstream, newUsageQueryFixtureOptions())
 	service.RunOnce(context.Background())
 
 	require.Len(t, repo.writes, 1)
 	snapshot := repo.writes[0]
-	require.Equal(t, acctcore.CNUsageMonitorSnapshotVersion, snapshot.Version)
+	require.Equal(t, acctcore.UsageMonitorSnapshotVersion, snapshot.Version)
 	require.Equal(t, acctcore.UpstreamUsageAdapterKimiBalance, snapshot.Adapter)
 	require.Equal(t, capability.PlatformKimi, snapshot.Provider)
 	require.Equal(t, "balance", snapshot.Mode)
@@ -182,19 +182,18 @@ func TestCNUsageMonitorRunOncePersistsUnifiedSnapshotWithoutLegacyWrites(t *test
 	require.True(t, upstreamcore.HTTPUpstreamRedirectsDisabled(upstream.requests[0].Context()))
 }
 
-// TestCNUsageMonitorFailurePreservesLastSuccess starts with a successful
-// DeepSeek balance observation and returns a later upstream error. The new
-// snapshot must record failure while retaining the earlier successful balance
-// and observation time.
-func TestCNUsageMonitorFailurePreservesLastSuccess(t *testing.T) {
-	provider := newCNUsageMonitorProvider(2, capability.PlatformDeepseek, acctcore.ProviderModePayG)
+// TestUsageMonitorFailurePreservesLastSuccess starts with a successful DeepSeek
+// balance observation and returns a later upstream error. The new snapshot must
+// record failure while retaining the earlier successful balance and observation
+// time.
+func TestUsageMonitorFailurePreservesLastSuccess(t *testing.T) {
+	provider := newUsageMonitorProvider(2, capability.PlatformDeepseek, acctcore.ProviderModePayG)
 	queryConfig, err := acctcore.EffectiveUpstreamUsageConfig(provider)
 	require.NoError(t, err)
-	queryConfig.Adapter = acctcore.CNUpstreamUsageAdapterName(provider)
 	observed := time.Date(2026, 8, 22, 3, 0, 0, 0, time.UTC)
 	remaining := 8.0
-	provider.Extra[acctcore.CNUsageMonitorSnapshotExtraKey] = &acctcore.CNUsageMonitorSnapshot{
-		Version:       acctcore.CNUsageMonitorSnapshotVersion,
+	provider.Extra[acctcore.UsageMonitorSnapshotExtraKey] = &acctcore.UsageMonitorSnapshot{
+		Version:       acctcore.UsageMonitorSnapshotVersion,
 		Adapter:       queryConfig.Adapter,
 		IdentityHash:  acctcore.UpstreamUsageContextFingerprint(provider, queryConfig, UpstreamUsageBaseURL(provider)),
 		Provider:      capability.PlatformDeepseek,
@@ -204,13 +203,13 @@ func TestCNUsageMonitorFailurePreservesLastSuccess(t *testing.T) {
 		ObservedAt:    &observed,
 		LastAttemptAt: observed,
 	}
-	repo := &cnUsageMonitorRepo{
+	repo := &usageMonitorRepo{
 		providers:  map[int64]*acctcore.Record{2: provider},
 		byPlatform: map[string][]int64{capability.PlatformDeepseek: {2}},
 		casResult:  true,
 	}
-	upstream := &cnUsageMonitorHTTP{status: http.StatusBadGateway, body: `{}`}
-	service := newCNUsageMonitorForTest(repo, upstream, newCNQueryFixtureOptions())
+	upstream := &usageMonitorHTTP{status: http.StatusBadGateway, body: `{}`}
+	service := newUsageMonitorForTest(repo, upstream, newUsageQueryFixtureOptions())
 	service.RunOnce(context.Background())
 
 	require.Len(t, repo.writes, 1)
@@ -220,20 +219,20 @@ func TestCNUsageMonitorFailurePreservesLastSuccess(t *testing.T) {
 	require.InDelta(t, remaining, *snapshot.Balance.Remaining, 1e-9)
 }
 
-// TestCNUsageMonitorCustomHostRequiresExplicitAllowlist selects a custom relay
+// TestUsageMonitorCustomHostRequiresExplicitAllowlist selects a custom relay
 // before and after adding its enabled allowlist entry. Monitoring must skip the
 // untrusted request and permit one fetch once that host is allowed.
-func TestCNUsageMonitorCustomHostRequiresExplicitAllowlist(t *testing.T) {
-	provider := newCNUsageMonitorProvider(3, capability.PlatformDeepseek, acctcore.ProviderModePayG)
+func TestUsageMonitorCustomHostRequiresExplicitAllowlist(t *testing.T) {
+	provider := newUsageMonitorProvider(3, capability.PlatformDeepseek, acctcore.ProviderModePayG)
 	provider.Credentials["base_url"] = "https://relay.example/v1"
-	repo := &cnUsageMonitorRepo{
+	repo := &usageMonitorRepo{
 		providers:  map[int64]*acctcore.Record{3: provider},
 		byPlatform: map[string][]int64{capability.PlatformDeepseek: {3}},
 		casResult:  true,
 	}
-	upstream := &cnUsageMonitorHTTP{body: `{}`}
-	cfg := newCNQueryFixtureOptions()
-	service := newCNUsageMonitorForTest(repo, upstream, cfg)
+	upstream := &usageMonitorHTTP{body: `{}`}
+	cfg := newUsageQueryFixtureOptions()
+	service := newUsageMonitorForTest(repo, upstream, cfg)
 	service.RunOnce(context.Background())
 	require.Zero(t, upstream.calls)
 	require.Len(t, repo.writes, 1)
@@ -243,51 +242,50 @@ func TestCNUsageMonitorCustomHostRequiresExplicitAllowlist(t *testing.T) {
 	cfg.Policy.UpstreamHosts = []string{"relay.example"}
 	repo.writes = nil
 	upstream.body = `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"3"}]}`
-	service = newCNUsageMonitorForTest(repo, upstream, cfg)
+	service = newUsageMonitorForTest(repo, upstream, cfg)
 	service.RunOnce(context.Background())
 	require.Equal(t, 1, upstream.calls)
 	require.Len(t, repo.writes, 1)
 	require.Equal(t, "relay.example", upstream.requests[0].URL.Hostname())
 }
 
-// TestCNUsageMonitorSkipsCycleWhenNotLeader rejects lease acquisition for a
-// valid monitor provider. One leader attempt must occur while transport and
-// snapshot storage remain unused for that cycle.
-func TestCNUsageMonitorSkipsCycleWhenNotLeader(t *testing.T) {
-	provider := newCNUsageMonitorProvider(4, capability.PlatformKimi, acctcore.ProviderModePayG)
-	repo := &cnUsageMonitorRepo{
+// TestUsageMonitorSkipsCycleWhenNotLeader rejects lease acquisition for a valid
+// monitor provider. One leader attempt must occur while transport and snapshot
+// storage remain unused for that cycle.
+func TestUsageMonitorSkipsCycleWhenNotLeader(t *testing.T) {
+	provider := newUsageMonitorProvider(4, capability.PlatformKimi, acctcore.ProviderModePayG)
+	repo := &usageMonitorRepo{
 		providers:  map[int64]*acctcore.Record{4: provider},
 		byPlatform: map[string][]int64{capability.PlatformKimi: {4}},
 		casResult:  true,
 	}
-	upstream := &cnUsageMonitorHTTP{body: `{}`}
-	lock := &cnUsageMonitorLeaderLock{acquired: false}
-	service := newCNUsageMonitorForTest(repo, upstream, newCNQueryFixtureOptions(), func(o *acctcore.CNMonitorOptions) { o.Leader = lock })
+	upstream := &usageMonitorHTTP{body: `{}`}
+	lock := &usageMonitorLeaderLock{acquired: false}
+	service := newUsageMonitorForTest(repo, upstream, newUsageQueryFixtureOptions(), func(o *acctcore.UsageMonitorOptions) { o.Leader = lock })
 	service.RunOnce(context.Background())
 	require.Equal(t, 1, lock.calls)
 	require.Zero(t, upstream.calls)
 	require.Empty(t, repo.writes)
 }
 
-// TestCNUsageMonitorDefaultOffAndStopCancelsProbe checks default-disabled
-// startup and an enabled blocked request. Disabled startup must leave snapshot
-// captures empty, while Stop must finish after the later blocked probe is
-// cancelled.
-func TestCNUsageMonitorDefaultOffAndStopCancelsProbe(t *testing.T) {
-	repo := &cnUsageMonitorRepo{providers: map[int64]*acctcore.Record{}, byPlatform: map[string][]int64{}, casResult: true}
-	service := newCNUsageMonitorForTest(repo, &cnUsageMonitorHTTP{}, newCNQueryFixtureOptions())
+// TestUsageMonitorDefaultOffAndStopCancelsProbe checks default-disabled startup
+// and an enabled blocked request. Disabled startup must leave snapshot captures
+// empty, while Stop must finish after the later blocked probe is cancelled.
+func TestUsageMonitorDefaultOffAndStopCancelsProbe(t *testing.T) {
+	repo := &usageMonitorRepo{providers: map[int64]*acctcore.Record{}, byPlatform: map[string][]int64{}, casResult: true}
+	service := newUsageMonitorForTest(repo, &usageMonitorHTTP{}, newUsageQueryFixtureOptions())
 	require.NoError(t, service.StartContext(context.Background()))
 	// Monitoring is disabled by default, so startup writes nothing.
 	require.Empty(t, repo.writes)
 
-	provider := newCNUsageMonitorProvider(5, capability.PlatformKimi, acctcore.ProviderModePayG)
+	provider := newUsageMonitorProvider(5, capability.PlatformKimi, acctcore.ProviderModePayG)
 	repo.providers[5] = provider
 	repo.byPlatform[capability.PlatformKimi] = []int64{5}
 	started := make(chan struct{}, 1)
-	upstream := &cnUsageMonitorHTTP{started: started, block: true}
-	cfg := newCNQueryFixtureOptions()
+	upstream := &usageMonitorHTTP{started: started, block: true}
+	cfg := newUsageQueryFixtureOptions()
 	cfg.Monitor.Enabled = true
-	service = newCNUsageMonitorForTest(repo, upstream, cfg, func(o *acctcore.CNMonitorOptions) { o.Interval = time.Millisecond })
+	service = newUsageMonitorForTest(repo, upstream, cfg, func(o *acctcore.UsageMonitorOptions) { o.Interval = time.Millisecond })
 	require.NoError(t, service.StartContext(context.Background()))
 	select {
 	case <-started:
@@ -308,11 +306,11 @@ func TestCNUsageMonitorDefaultOffAndStopCancelsProbe(t *testing.T) {
 	}
 }
 
-// TestCNUsageBalanceThresholdUsesAllCurrenciesAndIdentityReason compares two
+// TestUsageBalanceThresholdUsesAllCurrenciesAndIdentityReason compares two
 // wallet currencies before and after both fall below threshold. Low-balance
 // classification must consider every currency and retain the identity-derived
 // monitor reason prefix.
-func TestCNUsageBalanceThresholdUsesAllCurrenciesAndIdentityReason(t *testing.T) {
+func TestUsageBalanceThresholdUsesAllCurrenciesAndIdentityReason(t *testing.T) {
 	available := true
 	result := &acctcore.UpstreamUsageQueryResult{
 		Mode:      "balance",
@@ -322,21 +320,22 @@ func TestCNUsageBalanceThresholdUsesAllCurrenciesAndIdentityReason(t *testing.T)
 			{Currency: "USD", Remaining: 2},
 		},
 	}
-	low, known := acctcore.CNUsageBalanceBelowThreshold(result, 0.5)
+	low, known := acctcore.UsageBalanceBelowThreshold(result, 0.5)
 	require.True(t, known)
 	require.False(t, low)
 	result.Balances[1].Remaining = 0.2
-	low, known = acctcore.CNUsageBalanceBelowThreshold(result, 0.5)
+	low, known = acctcore.UsageBalanceBelowThreshold(result, 0.5)
 	require.True(t, known)
 	require.True(t, low)
-	require.True(t, strings.HasPrefix(acctcore.CNUsageMonitorReason("abc"), "cn_usage_monitor:abc:"))
+	require.True(t, strings.HasPrefix(acctcore.UsageMonitorReason("abc"), "cn_usage_monitor:abc:"))
 }
 
-// TestCNUpstreamUsageAdaptersPreserveConfiguredHostAndNormalizeResults queries
-// CN coding and balance adapters through custom roots. Requests must retain the
-// relay host, fixed paths, authentication and organization headers, while
-// returned usage follows each adapter's normalization.
-func TestCNUpstreamUsageAdaptersPreserveConfiguredHostAndNormalizeResults(t *testing.T) {
+// TestPlatformUsageAdaptersPreserveConfiguredHostAndNormalizeResults queries
+// Kimi, Zhipu, and DeepSeek coding and balance adapters through custom roots.
+// Requests must retain the relay host, fixed paths, authentication and
+// organization headers, while returned usage follows each adapter's
+// normalization.
+func TestPlatformUsageAdaptersPreserveConfiguredHostAndNormalizeResults(t *testing.T) {
 	tests := []struct {
 		name        string                                               // native adapter scenario label
 		provider    *acctcore.Record                                     // provider record under evaluation
@@ -458,20 +457,26 @@ func TestCNUpstreamUsageAdaptersPreserveConfiguredHostAndNormalizeResults(t *tes
 	}
 }
 
-// TestCNUpstreamUsageUnsupportedPayGDoesNotSendRequest selects Zhipu
-// pay-as-you-go usage with no supported balance adapter. Query must return
-// unsupported before any captured transport request is sent.
-func TestCNUpstreamUsageUnsupportedPayGDoesNotSendRequest(t *testing.T) {
-	provider := &acctcore.Record{
-		ID: 15, Platform: capability.PlatformZhipu, Type: capability.ProviderTypeAPIKey, Status: acctcore.StatusActive,
-		Credentials: map[string]any{"api_key": "zhipu-key", "provider_mode": acctcore.ProviderModePayG},
+// TestUpstreamUsageUnsupportedPayGDoesNotSendRequest selects Zhipu and
+// OpenCode pay-as-you-go usage, which have no platform query format, with a
+// saved request to enable queries. Query must return unsupported before any
+// captured transport request is sent.
+func TestUpstreamUsageUnsupportedPayGDoesNotSendRequest(t *testing.T) {
+	for _, platform := range []string{capability.PlatformZhipu, capability.PlatformOpenCode} {
+		t.Run(platform, func(t *testing.T) {
+			provider := &acctcore.Record{
+				ID: 15, Platform: platform, Type: capability.ProviderTypeAPIKey, Status: acctcore.StatusActive,
+				Credentials: map[string]any{"api_key": "payg-key", "provider_mode": acctcore.ProviderModePayG},
+				Extra:       map[string]any{acctcore.UpstreamUsageQueryExtraKey: map[string]any{"enabled": true}},
+			}
+			repo := &upstreamUsageProviderRepoStub{provider: provider}
+			upstream := &upstreamUsageHTTPStub{}
+			service := newUsageContractService(repo, upstream, testUpstreamUsageConfig())
+			_, err := service.QueryProvider(context.Background(), provider.ID)
+			require.ErrorIs(t, err, acctcore.ErrUpstreamUsageUnsupported)
+			require.Empty(t, upstream.requests)
+		})
 	}
-	repo := &upstreamUsageProviderRepoStub{provider: provider}
-	upstream := &upstreamUsageHTTPStub{}
-	service := newUsageContractService(repo, upstream, testUpstreamUsageConfig())
-	_, err := service.QueryProvider(context.Background(), provider.ID)
-	require.ErrorIs(t, err, acctcore.ErrUpstreamUsageUnsupported)
-	require.Empty(t, upstream.requests)
 }
 
 // TestZivvUsageQueryUsesVersionedBalanceEndpoint queries a relay using its
@@ -1048,7 +1053,7 @@ func TestUpstreamUsageSingleflightResultIsolation(t *testing.T) {
 // changeIdentity advances UpdatedAt and replaces credentials once for a stored
 // fixture row. The wrapper invokes it before conditional health comparison, and
 // subsequent calls retain the already rotated identity.
-func (r *cnDecisionRepo) changeIdentity(id int64) {
+func (r *usageDecisionRepo) changeIdentity(id int64) {
 	if r.changed {
 		return
 	}
@@ -1062,12 +1067,12 @@ func (r *cnDecisionRepo) changeIdentity(id int64) {
 // SetTempUnschedulable rotates fixture identity before delegating an
 // unconditional cooldown capture. Tests use the conditional method to prove
 // that a stale decision is rejected after that same rotation point.
-func (r *cnDecisionRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+func (r *usageDecisionRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.changeIdentity(id)
-	return r.cnUsageMonitorRepo.SetTempUnschedulable(ctx, id, until, reason)
+	return r.usageMonitorRepo.SetTempUnschedulable(ctx, id, until, reason)
 }
 
-// SetCNUsageDecisionCAS injects identity rotation before comparing the
+// SetUsageMonitorDecisionCAS injects identity rotation before comparing the
 // requested UpdatedAt. A mismatch returns false before cooldown mutation;
 // matching clear requests delegate recovery and matching pause requests
 // delegate the captured suspension.
@@ -1077,7 +1082,7 @@ func (r *cnDecisionRepo) SetTempUnschedulable(ctx context.Context, id int64, unt
 // control that sequence before comparison. Its mutation and version read are
 // unlocked; delegated pause and clear use the base writer's lock. This injects
 // stale-observation rejection rather than implementing an atomic database CAS.
-func (r *cnDecisionRepo) SetCNUsageDecisionCAS(ctx context.Context, id int64, expected time.Time, until time.Time, reason string, clear bool) (bool, error) {
+func (r *usageDecisionRepo) SetUsageMonitorDecisionCAS(ctx context.Context, id int64, expected time.Time, until time.Time, reason string, clear bool) (bool, error) {
 	r.changeIdentity(id)
 	if !r.providers[id].UpdatedAt.Equal(expected) {
 		return false, nil
@@ -1085,14 +1090,14 @@ func (r *cnDecisionRepo) SetCNUsageDecisionCAS(ctx context.Context, id int64, ex
 	if clear {
 		return true, r.ClearTempUnschedulable(ctx, id)
 	}
-	return true, r.cnUsageMonitorRepo.SetTempUnschedulable(ctx, id, until, reason)
+	return true, r.usageMonitorRepo.SetTempUnschedulable(ctx, id, until, reason)
 }
 
 // GetByID returns a shallow record copy under the fixture mutex or
 // provider-not-found for missing IDs. Credential and Extra maps remain shared
 // with storage, so callers keep those nested values stable while using the
 // snapshot.
-func (r *cnUsageMonitorRepo) GetByID(_ context.Context, id int64) (*acctcore.Record, error) {
+func (r *usageMonitorRepo) GetByID(_ context.Context, id int64) (*acctcore.Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	provider := r.providers[id]
@@ -1106,7 +1111,7 @@ func (r *cnUsageMonitorRepo) GetByID(_ context.Context, id int64) (*acctcore.Rec
 // ListByPlatform returns shallow record values in the configured platform-ID
 // order under the fixture mutex. Missing IDs are omitted, while nested
 // credential and Extra values remain shared with their stored records.
-func (r *cnUsageMonitorRepo) ListByPlatform(_ context.Context, platform string) ([]acctcore.Record, error) {
+func (r *usageMonitorRepo) ListByPlatform(_ context.Context, platform string) ([]acctcore.Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ids := r.byPlatform[platform]
@@ -1119,21 +1124,21 @@ func (r *cnUsageMonitorRepo) ListByPlatform(_ context.Context, platform string) 
 	return result, nil
 }
 
-// UpdateCNUsageMonitorSnapshotCAS captures an outer snapshot copy after
-// checking UpdatedAt and the configured acceptance flag under the fixture
-// mutex. Missing or mismatched rows return false, and nested snapshot values
-// remain shared for assertions.
+// UpdateUsageMonitorSnapshotCAS captures an outer snapshot copy after checking
+// UpdatedAt and the configured acceptance flag under the fixture mutex. Missing
+// or mismatched rows return false, and nested snapshot values remain shared for
+// assertions.
 //
-// Comparison and capture share one critical section, so the appended observation
-// belongs to the version checked by that call. Acceptance records the requested
-// snapshot in writes and leaves provider Extra unchanged. Only the outer
-// snapshot object is copied; tests keep nested amounts and observation pointers
-// stable while inspecting this accepted-write evidence.
-func (r *cnUsageMonitorRepo) UpdateCNUsageMonitorSnapshotCAS(
+// Comparison and capture share one critical section, so the appended
+// observation belongs to the version checked by that call. Acceptance records
+// the requested snapshot in writes and leaves provider Extra unchanged. Only
+// the outer snapshot object is copied; tests keep nested amounts and
+// observation pointers stable while inspecting this accepted-write evidence.
+func (r *usageMonitorRepo) UpdateUsageMonitorSnapshotCAS(
 	_ context.Context,
 	providerID int64,
 	expectedUpdatedAt time.Time,
-	snapshot *acctcore.CNUsageMonitorSnapshot,
+	snapshot *acctcore.UsageMonitorSnapshot,
 	_ string,
 ) (bool, error) {
 	r.mu.Lock()
@@ -1153,7 +1158,7 @@ func (r *cnUsageMonitorRepo) UpdateCNUsageMonitorSnapshotCAS(
 // SetTempUnschedulable captures the deadline and reason and updates any
 // matching row under the mutex. Missing rows still retain capture state, and
 // the stored deadline uses the supplied value through an escaped pointer.
-func (r *cnUsageMonitorRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+func (r *usageMonitorRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pauseReason = reason
@@ -1168,7 +1173,7 @@ func (r *cnUsageMonitorRepo) SetTempUnschedulable(_ context.Context, id int64, u
 // ClearTempUnschedulable counts recovery and clears a matching row's deadline
 // and reason under the fixture mutex. Missing rows still count the requested
 // clear and return success.
-func (r *cnUsageMonitorRepo) ClearTempUnschedulable(_ context.Context, id int64) error {
+func (r *usageMonitorRepo) ClearTempUnschedulable(_ context.Context, id int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clearCalls++
@@ -1181,7 +1186,7 @@ func (r *cnUsageMonitorRepo) ClearTempUnschedulable(_ context.Context, id int64)
 
 // UpdateExtra counts generic Extra writes that periodic monitor tests expect to
 // skip.
-func (r *cnUsageMonitorRepo) UpdateExtra(_ context.Context, _ int64, _ map[string]any) error {
+func (r *usageMonitorRepo) UpdateExtra(_ context.Context, _ int64, _ map[string]any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.updateExtraCalls++
@@ -1190,7 +1195,7 @@ func (r *cnUsageMonitorRepo) UpdateExtra(_ context.Context, _ int64, _ map[strin
 
 // Do delegates monitor request capture to DoWithTLS with a nil fingerprint
 // profile.
-func (h *cnUsageMonitorHTTP) Do(req *http.Request, proxyURL string, providerID int64, concurrency int) (*http.Response, error) {
+func (h *usageMonitorHTTP) Do(req *http.Request, proxyURL string, providerID int64, concurrency int) (*http.Response, error) {
 	return h.DoWithTLS(req, proxyURL, providerID, concurrency, nil)
 }
 
@@ -1204,7 +1209,7 @@ func (h *cnUsageMonitorHTTP) Do(req *http.Request, proxyURL string, providerID i
 // The captured block, status, and body values govern this call even if later
 // configuration changes. Startup sends can be dropped, so they provide a
 // best-effort entry signal while the request context controls blocked completion.
-func (h *cnUsageMonitorHTTP) DoWithTLS(
+func (h *usageMonitorHTTP) DoWithTLS(
 	req *http.Request,
 	_ string,
 	_ int64,
@@ -1240,19 +1245,19 @@ func (h *cnUsageMonitorHTTP) DoWithTLS(
 // TryAcquireLeaderLock counts the lease attempt and returns the configured
 // acceptance flag. It ignores key, owner, and TTL, leaving lease ownership
 // behavior to other tests while controlling this runner cycle.
-func (l *cnUsageMonitorLeaderLock) TryAcquireLeaderLock(context.Context, string, string, time.Duration) (bool, error) {
+func (l *usageMonitorLeaderLock) TryAcquireLeaderLock(context.Context, string, string, time.Duration) (bool, error) {
 	l.calls++
 	return l.acquired, nil
 }
 
 // ReleaseLeaderLock accepts fixture cleanup without retaining any leader
 // ownership state.
-func (*cnUsageMonitorLeaderLock) ReleaseLeaderLock(context.Context, string, string) error { return nil }
+func (*usageMonitorLeaderLock) ReleaseLeaderLock(context.Context, string, string) error { return nil }
 
-// newCNUsageMonitorProvider creates an active schedulable API-key record with a
+// newUsageMonitorProvider creates an active schedulable API-key record with a
 // fixed UpdatedAt and supplied platform and mode. Fresh credentials and Extra
 // maps let each monitor test configure its identity independently.
-func newCNUsageMonitorProvider(id int64, platform, mode string) *acctcore.Record {
+func newUsageMonitorProvider(id int64, platform, mode string) *acctcore.Record {
 	return &acctcore.Record{
 		LoadLocation: time.LoadLocation, ID: id,
 		Platform:    platform,
@@ -1269,27 +1274,26 @@ func newCNUsageMonitorProvider(id int64, platform, mode string) *acctcore.Record
 	}
 }
 
-// newCNUsageMonitorForTest combines native usage querying and periodic
-// monitoring with supplied configuration callbacks. It retains the fixture
-// store and transport, and callbacks can alter the monitor options before
-// construction.
-func newCNUsageMonitorForTest(repo *cnUsageMonitorRepo, upstream httpclient.UpstreamTransport, cfg *cnQueryFixtureOptions, configure ...func(*acctcore.CNMonitorOptions)) *acctcore.CNUsageMonitor {
-	usage := newCNUsageFixture(repo, upstream, cfg, nil)
-	return newCNMonitorFixture(repo, usage, cfg, configure...)
+// newUsageMonitorForTest combines native usage querying and periodic monitoring
+// with supplied configuration callbacks. It retains the fixture store and
+// transport, and callbacks can alter the monitor options before construction.
+func newUsageMonitorForTest(repo *usageMonitorRepo, upstream httpclient.UpstreamTransport, cfg *usageQueryFixtureOptions, configure ...func(*acctcore.UsageMonitorOptions)) *acctcore.UsageMonitor {
+	usage := newUsageFixture(repo, upstream, cfg, nil)
+	return newUsageMonitorFixture(repo, usage, cfg, configure...)
 }
 
-// newCNQueryFixtureOptions creates configured query policy that permits fixture
+// newUsageQueryFixtureOptions creates configured query policy that permits fixture
 // HTTP roots. Other policy and monitor fields retain zero values for tests to
 // select explicitly or for production defaults to interpret.
-func newCNQueryFixtureOptions() *cnQueryFixtureOptions {
-	return &cnQueryFixtureOptions{Policy: egress.UsageURLPolicy{Configured: true, AllowInsecureHTTP: true}}
+func newUsageQueryFixtureOptions() *usageQueryFixtureOptions {
+	return &usageQueryFixtureOptions{Policy: egress.UsageURLPolicy{Configured: true, AllowInsecureHTTP: true}}
 }
 
-// newCNUsageFixture binds native adapters to repository, transport, optional
+// newUsageFixture binds native adapters to repository, transport, optional
 // TLS profiles, and copied query policy. Readiness requires both repository and
 // transport, while missing optional profiles leave request fingerprint
 // selection unset.
-func newCNUsageFixture(repo acctcore.UpstreamUsageReader, transport httpclient.UpstreamTransport, cfg *cnQueryFixtureOptions, tls *egressprovider.TLSProfiles) *acctcore.UpstreamUsageService {
+func newUsageFixture(repo acctcore.UpstreamUsageReader, transport httpclient.UpstreamTransport, cfg *usageQueryFixtureOptions, tls *egressprovider.TLSProfiles) *acctcore.UpstreamUsageService {
 	options := UsageHTTPOptions{Available: repo != nil && transport != nil}
 	if cfg != nil {
 		options.Policy = cfg.Policy
@@ -1303,12 +1307,12 @@ func newCNUsageFixture(repo acctcore.UpstreamUsageReader, transport httpclient.U
 	return acctcore.NewUpstreamUsageService(repo, NewUpstreamUsageHTTPExecution(options), acctcore.UpstreamUsageOptions{Now: time.Now})
 }
 
-// newCNMonitorFixture constructs periodic monitoring with one-second budgets
+// newUsageMonitorFixture constructs periodic monitoring with one-second budgets
 // and fixture identity. Supplied monitor fields replace initial enabled,
 // interval, concurrency, and threshold values; configuration callbacks run last
 // before the production constructor retains options.
-func newCNMonitorFixture(repo acctcore.CNMonitorStore, queries *acctcore.UpstreamUsageService, cfg *cnQueryFixtureOptions, configure ...func(*acctcore.CNMonitorOptions)) *acctcore.CNUsageMonitor {
-	options := acctcore.CNMonitorOptions{Now: time.Now, InstanceID: "fixture-owner", RoundTimeout: time.Second, ProbeTimeout: time.Second, BalanceThreshold: 0.5}
+func newUsageMonitorFixture(repo acctcore.UsageMonitorStore, queries *acctcore.UpstreamUsageService, cfg *usageQueryFixtureOptions, configure ...func(*acctcore.UsageMonitorOptions)) *acctcore.UsageMonitor {
+	options := acctcore.UsageMonitorOptions{Now: time.Now, InstanceID: "fixture-owner", RoundTimeout: time.Second, ProbeTimeout: time.Second, BalanceThreshold: 0.5}
 	if cfg != nil {
 		options.Enabled = cfg.Monitor.Enabled
 		options.Interval = cfg.Monitor.Interval
@@ -1319,13 +1323,13 @@ func newCNMonitorFixture(repo acctcore.CNMonitorStore, queries *acctcore.Upstrea
 	for _, apply := range configure {
 		apply(&options)
 	}
-	return acctcore.NewCNUsageMonitor(repo, queries, options)
+	return acctcore.NewUsageMonitor(repo, queries, options)
 }
 
-// SetCNUsageDecisionCAS compares the stored UpdatedAt under the fixture mutex
-// before delegating pause or clear. A mismatch returns false, while accepted
-// comparison releases the lock before the delegated writer acquires its own
-// lock.
+// SetUsageMonitorDecisionCAS compares the stored UpdatedAt under the fixture
+// mutex before delegating pause or clear. A mismatch returns false, while
+// accepted comparison releases the lock before the delegated writer acquires
+// its own lock.
 //
 // This fixture therefore has separate comparison and mutation phases rather
 // than one atomic database operation. The wrapper identity test injects
@@ -1333,7 +1337,7 @@ func newCNMonitorFixture(repo acctcore.CNMonitorStore, queries *acctcore.Upstrea
 // rejects that change. Tests using this base method inspect requested health
 // effects with controlled record state; production conditional-write atomicity
 // is not established by this helper.
-func (r *cnUsageMonitorRepo) SetCNUsageDecisionCAS(ctx context.Context, id int64, expected, until time.Time, reason string, clear bool) (bool, error) {
+func (r *usageMonitorRepo) SetUsageMonitorDecisionCAS(ctx context.Context, id int64, expected, until time.Time, reason string, clear bool) (bool, error) {
 	r.mu.Lock()
 	matches := r.providers[id] != nil && r.providers[id].UpdatedAt.Equal(expected)
 	r.mu.Unlock()

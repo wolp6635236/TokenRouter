@@ -102,9 +102,9 @@ func EvaluateProviderSchedulingThreshold(provider *Record, thresholds map[string
 	case PlatformGrok:
 		winner = pickLatestResetSchedulingCandidate(grokThresholdCandidates(provider), threshold, now)
 	case PlatformKimi:
-		winner = pickLatestResetSchedulingCandidate(CNProviderThresholdCandidates(provider, PlatformKimi), threshold, now)
+		winner = pickLatestResetSchedulingCandidate(CodingPlanThresholdCandidates(provider, PlatformKimi), threshold, now)
 	case PlatformZhipu:
-		winner = pickLatestResetSchedulingCandidate(CNProviderThresholdCandidates(provider, PlatformZhipu), threshold, now)
+		winner = pickLatestResetSchedulingCandidate(CodingPlanThresholdCandidates(provider, PlatformZhipu), threshold, now)
 	default:
 		return decision
 	}
@@ -476,20 +476,20 @@ func grokThresholdCandidates(provider *Record) []*SchedulingThresholdCandidate {
 	}
 }
 
-// CNProviderThresholdCandidates builds Coding Plan limit candidates from a
-// monitor snapshot accepted by ValidCNUsageMonitorSnapshot's version,
-// adapter, and current-fingerprint checks. The record platform must match
-// exactly, the snapshot must use limits mode with an observation timestamp,
-// and each retained limit needs usage and reset pointers. Deadline and
-// threshold checks occur later; the observation's age is not checked here.
-func CNProviderThresholdCandidates(provider *Record, platform string) []*SchedulingThresholdCandidate {
+// CodingPlanThresholdCandidates builds Coding Plan limit candidates from a
+// monitor snapshot accepted by ValidUsageMonitorSnapshot's version, adapter,
+// and current-fingerprint checks. The record platform must match exactly, the
+// snapshot must use limits mode with an observation timestamp, and each
+// retained limit needs usage and reset pointers. Deadline and threshold checks
+// occur later; the observation's age is not checked here.
+func CodingPlanThresholdCandidates(provider *Record, platform string) []*SchedulingThresholdCandidate {
 	if provider == nil || provider.Platform != platform || !provider.IsCodingPlan() {
 		return nil
 	}
 	// Compare the monitor's version, adapter, and current query fingerprint
 	// before taking any limits; a rejected stored snapshot contributes no
 	// candidates to this provider's scheduling threshold.
-	snapshot := ValidCNUsageMonitorSnapshot(provider)
+	snapshot := ValidUsageMonitorSnapshot(provider)
 	if snapshot == nil || snapshot.Mode != "limits" || snapshot.ObservedAt == nil {
 		return nil
 	}

@@ -7,9 +7,9 @@ import (
 )
 
 // anthropic_auth_scheme.go selects the API-key authentication header scheme for
-// Anthropic and CN provider records.
-// API-key Messages authentication can use x-api-key or a bearer header for
-// Anthropic and CN providers. Provider Extra selects the scheme for those
+// Anthropic and Kimi, Zhipu, and DeepSeek provider records. API-key Messages
+// authentication can use x-api-key or a bearer header for Anthropic and Kimi,
+// Zhipu, and DeepSeek providers. Provider Extra selects the scheme for those
 // API-key records; other configurations keep the x-api-key result returned by
 // this helper before forwarding constructs its headers.
 
@@ -22,14 +22,14 @@ const (
 )
 
 // GetAnthropicAPIKeyAuthScheme selects the Messages authentication scheme for
-// Anthropic or CN API-key records. A trimmed authorization_bearer value selects
-// bearer authentication; nil records, other providers, and unrecognized values
-// select the x-api-key scheme.
+// Anthropic or Kimi, Zhipu, and DeepSeek API-key records. A trimmed
+// authorization_bearer value selects bearer authentication; nil records, other
+// providers, and unrecognized values select the x-api-key scheme.
 func (r *Record) GetAnthropicAPIKeyAuthScheme() string {
 	if r == nil || r.Type != capability.ProviderTypeAPIKey {
 		return AnthropicAPIKeyAuthSchemeXAPIKey
 	}
-	if r.Platform != capability.PlatformAnthropic && !r.IsCNProvider() {
+	if !r.rules().messagesAuthOverride {
 		return AnthropicAPIKeyAuthSchemeXAPIKey
 	}
 

@@ -228,14 +228,7 @@ func (h *Handler) confirmation(ctx context.Context, token *identity.MCPToken, op
 	digest := hex.EncodeToString(hash[:])
 	version := token.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	if input.ConfirmationID == "" {
-		previewData, _ := json.Marshal(arguments)
-		preview := h.redactor.RedactBody(previewData, "application/json")
-		// Indent the redacted bytes without decoding numbers again. Oversized-body
-		// omission markers remain readable even though they are deliberately not JSON documents.
-		var formatted bytes.Buffer
-		if json.Indent(&formatted, []byte(preview), "", "  ") == nil {
-			preview = formatted.String()
-		}
+		preview := h.confirmationPreview(op.ID, arguments)
 		now := time.Now().UTC()
 		approval := &control.Approval{ID: uuid.NewString(), UserID: token.UserID, TokenID: token.ID, Source: token.Source, OperationID: op.ID, TokenVersion: version, Digest: digest, Preview: preview, StepUp: op.RequiresStepUp(arguments), State: "pending", CreatedAt: now, ExpiresAt: now.Add(confirmationTTL)}
 		if err := h.state.CreateApproval(ctx, approval); err != nil {
@@ -337,44 +330,4 @@ func uncertainResult(readOnly bool, message string) *mcp.CallToolResult {
 	result := toolResult(map[string]any{"status": status, "message": message})
 	result.IsError = true
 	return result
-}
-
-// redact copies JSON output and masks sensitive values using the shared audit
-// key policy. Credential containers retain safe configuration fields, while
-// nested keys such as api_key are replaced. Boolean presence markers and
-// numeric usage counters remain readable because existing administrator DTOs
-// expose them as operational metadata.
-//
-// The input objects remain unchanged so file delivery and other response
-// consumers keep their own representation. Excessive nesting produces an
-// omission marker instead of recursively expanding unbounded model content.
-func (h *Handler) redact(value any, depth int) any {
-	if depth > 24 {
-		return "[nested value omitted]"
-	}
-	switch current := value.(type) {
-	case map[string]any:
-		result := make(map[string]any, len(current))
-		for key, child := range current {
-			_, number := child.(float64)
-			if _, exact := child.(json.Number); exact {
-				number = true
-			}
-			_, boolean := child.(bool)
-			if h.redactor.IsSensitiveKey(key) && !number && !boolean {
-				result[key] = "***"
-			} else {
-				result[key] = h.redact(child, depth+1)
-			}
-		}
-		return result
-	case []any:
-		result := make([]any, len(current))
-		for i, child := range current {
-			result[i] = h.redact(child, depth+1)
-		}
-		return result
-	default:
-		return value
-	}
 }

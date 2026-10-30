@@ -234,7 +234,7 @@ func TestGeminiForwardAsResponsesCommitsStreamBeforeReadFailure(t *testing.T) {
 
 	_, err := svc.ForwardAsResponses(context.Background(), gatewayhttp.NewGoogleBoundary(c, svc.Options, false), provider, body, nil)
 
-	require.ErrorContains(t, err, "stream read error")
+	require.ErrorContains(t, err, "stream_read_error")
 	require.Positive(t, recorder.Body.Len(), "首个字节写出后 handler 必须禁止 failover")
 }
 

@@ -3,6 +3,9 @@ package notification
 import (
 	"context"
 	"errors"
+	"html"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,6 +16,11 @@ import (
 	mailtest "github.com/TokenFlux/TokenRouter/internal/notification/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 )
+
+// service_test.go exercises notification rendering, recipient language selection,
+// stored overrides, and coordinated delivery. In-memory settings and captured
+// messages verify customer-visible content while local SMTP fixtures cover the
+// delivery outcomes used by deduplication and retry decisions.
 
 // localeDelivery captures selected language and rendered content for sequential event-send assertions.
 type localeDelivery struct {
@@ -26,10 +34,65 @@ type localeDelivery struct {
 	count                   int // recorded send count
 }
 
-// service_test.go exercises notification rendering, recipient language selection,
-// stored overrides, and coordinated delivery. In-memory settings and captured
-// messages verify customer-visible content while local SMTP fixtures cover the
-// delivery outcomes used by deduplication and retry decisions.
+// TestNotificationUnsubscribeLinksUseFrontendURL renders both optional events with
+// distinct gateway and site addresses. Delivered links preserve the selected site
+// path or relative fallback, and their signed tokens still persist unsubscribe preferences.
+func TestNotificationUnsubscribeLinksUseFrontendURL(t *testing.T) {
+	injected := " https://deployment.example/console/ "
+	empty := ""
+	for _, tc := range []struct {
+		name   string // named address scenario
+		stored string // saved frontend address
+		// override installs an authoritative reader when nonnil, including when
+		// its result is empty and a stored frontend address is available.
+		override *string
+		wantBase string // expected link base
+	}{
+		{name: "stored frontend", stored: "https://console.example", wantBase: "https://console.example"},
+		{name: "trimmed frontend", stored: " https://console.example/// ", wantBase: "https://console.example"},
+		{name: "site path", stored: "https://console.example/portal/", wantBase: "https://console.example/portal"},
+		{name: "legitimate v1 path", stored: "https://console.example/v1", wantBase: "https://console.example/v1"},
+		{name: "missing frontend ignores gateway"},
+		{name: "blank frontend ignores gateway", stored: " \t "},
+		{name: "injected address", stored: "https://ignored.example", override: &injected, wantBase: "https://deployment.example/console"},
+		{name: "injected empty remains relative", stored: "https://ignored.example", override: &empty},
+	} {
+		for _, event := range []string{NotificationEmailEventBalanceLow, NotificationEmailEventSubscriptionExpiryReminder} {
+			for _, language := range []string{"en", "zh-Hans"} {
+				t.Run(tc.name+"/"+event+"/"+language, func(t *testing.T) {
+					ctx := t.Context()
+					repo := mailtest.NewMemorySettings()
+					require.NoError(t, repo.SetMultiple(ctx, map[string]string{
+						"api_base_url":        "https://api.example/v1",
+						SettingKeyFrontendURL: tc.stored,
+					}))
+					sender := &localeDelivery{}
+					svc := NewNotificationEmailService(repo, sender)
+					if tc.override != nil {
+						svc.SetFrontendURLReader(func(context.Context) string { return *tc.override })
+					}
+					require.NoError(t, svc.Send(ctx, SendRequest{Event: event, Locale: language, RecipientEmail: "reader@example.com"}))
+					require.Equal(t, 1, sender.count)
+					match := regexp.MustCompile(`href="([^"]*/api/v1/settings/email-unsubscribe\?[^"]*)"`).FindStringSubmatch(sender.body)
+					require.Len(t, match, 2)
+					link, err := url.Parse(html.UnescapeString(match[1]))
+					require.NoError(t, err)
+					require.NotEmpty(t, link.Query().Get("token"))
+					result, err := svc.Unsubscribe(ctx, link.Query().Get("token"))
+					require.NoError(t, err)
+					require.True(t, result.Done)
+					require.Equal(t, "reader@example.com", result.Email)
+					require.Equal(t, event, result.Event)
+					unsubscribed, err := svc.IsUnsubscribed(ctx, result.Email, event)
+					require.NoError(t, err)
+					require.True(t, unsubscribed)
+					link.RawQuery = ""
+					require.Equal(t, tc.wantBase+"/api/v1/settings/email-unsubscribe", link.String())
+				})
+			}
+		}
+	}
+}
 
 // TestBalanceNotificationDisplayUnits sends both account balance events in both
 // supported languages. It verifies configured symbols in actual delivery and

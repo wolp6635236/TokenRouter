@@ -8,7 +8,8 @@ import (
 
 // TestBuildGeminiAIStudioModelActionURL builds both generation actions and
 // token counting with a common API base. It checks exact resource paths,
-// trimming of model/base text, and the streaming SSE query.
+// trimming of model/base text, the streaming SSE query, and a relay protocol
+// root that already ends in the version segment.
 func TestBuildGeminiAIStudioModelActionURL(t *testing.T) {
 	const base = "https://generativelanguage.googleapis.com"
 
@@ -23,6 +24,10 @@ func TestBuildGeminiAIStudioModelActionURL(t *testing.T) {
 	got, err = BuildGeminiAIStudioModelActionURL(base, "gemini-2.5-pro", "countTokens", false)
 	require.NoError(t, err)
 	require.Equal(t, base+"/v1beta/models/gemini-2.5-pro:countTokens", got)
+
+	got, err = BuildGeminiAIStudioModelActionURL("https://relay.example/google/v1beta/", "gemini-2.5-pro", "generateContent", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://relay.example/google/v1beta/models/gemini-2.5-pro:generateContent", got)
 }
 
 // TestBuildGeminiAIStudioModelActionURLRejectsNonConformingModel supplies

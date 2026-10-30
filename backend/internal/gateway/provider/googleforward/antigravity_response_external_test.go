@@ -295,39 +295,6 @@ func TestAntigravityCompatStreamErrorCommitsSingleTerminalFrame(t *testing.T) {
 	require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: error"))
 }
 
-// TestAntigravityCompatKeepaliveAfterFirstEvent leaves a Responses stream idle
-// after its first content frame. Client output includes a ping and SSE content
-// type, and the reader completes after producer closure.
-func TestAntigravityCompatKeepaliveAfterFirstEvent(t *testing.T) {
-	svc := newAntigravityCompatibilityFixture(
-		googleforward.Options{MaxLineSize: 500 * 1024 * 1024, StreamKeepalive: 1},
-		nil,
-	)
-	c, recorder := newAntigravityCompatContext(http.MethodPost, "/v1/responses", nil)
-	reader, writer := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
-	done := make(chan error, 1)
-
-	// Read concurrently from the pipe while the test writes the first
-	// content frame, allowing idle heartbeat output before producer closure
-	// completes the response.
-	go func() {
-		_, err := googleforward.AntigravityResponseForTest(svc, &googleforward.AttemptForTest{Output: gatewayhttp.NewGoogleBoundary(c, svc.Options, true)}).HandleResponsesStreamingFromAntigravity(upstream.NewOutputContext(gatewayhttp.NewGoogleBoundary(c, svc.Options, true).Sink()), resp, time.Now(), "gemini-3.1-pro-high", bridge.ResponsesClientToolMapping{})
-		done <- err
-	}()
-	_, err := io.WriteString(
-		writer,
-		`data: {"response":{"responseId":"resp_3757","candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1}}}`+"\n\n",
-	)
-	require.NoError(t, err)
-	time.Sleep(1200 * time.Millisecond)
-	require.NoError(t, writer.Close())
-	require.NoError(t, <-done)
-	require.Contains(t, recorder.Body.String(), ": ping\n\n")
-	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
-	require.NoError(t, reader.Close())
-}
-
 // TestHandleGeminiStreamingResponse_NormalComplete feeds native partial content
 // followed by terminal usage with cache reads. The result reports final
 // input/output/cache buckets, and client output contains
@@ -654,7 +621,7 @@ func TestAntigravityClientWriter(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		flusher, _ := c.Writer.(http.Flusher)
-		cw := antigravity.NewClientWriter(c.Writer, flusher, "test")
+		cw := antigravity.NewClientWriter(upstream.NewOutputContext(gatewayhttp.NewResponseSink(c)).Writer, flusher, "test")
 
 		ok := cw.Write([]byte("hello"))
 		require.True(t, ok)
@@ -667,7 +634,7 @@ func TestAntigravityClientWriter(t *testing.T) {
 		c, _ := gin.CreateTestContext(rec)
 		fw := &antigravityFailingWriter{ResponseWriter: c.Writer, failAfter: 0}
 		flusher, _ := c.Writer.(http.Flusher)
-		cw := antigravity.NewClientWriter(fw, flusher, "test")
+		cw := antigravity.NewClientWriter(upstream.NewOutputContext(gatewayhttp.ResponseSink{Writer: fw}).Writer, flusher, "test")
 
 		ok := cw.Write([]byte("hello"))
 		require.False(t, ok)
@@ -679,7 +646,7 @@ func TestAntigravityClientWriter(t *testing.T) {
 		c, _ := gin.CreateTestContext(rec)
 		fw := &antigravityFailingWriter{ResponseWriter: c.Writer, failAfter: 0}
 		flusher, _ := c.Writer.(http.Flusher)
-		cw := antigravity.NewClientWriter(fw, flusher, "test")
+		cw := antigravity.NewClientWriter(upstream.NewOutputContext(gatewayhttp.ResponseSink{Writer: fw}).Writer, flusher, "test")
 
 		cw.Write([]byte("first"))
 		ok := cw.Fprintf("second %d", 2)

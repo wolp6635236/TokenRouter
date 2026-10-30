@@ -11,7 +11,7 @@ import (
 )
 
 // ops_repo_request_details.go queries paginated request details by combining
-// usage records and final-client error observations.
+// customer usage records and final-client error observations.
 // Request drilldown combines usage rows labeled success with final-client error
 // rows through UNION ALL. Both observations can exist for one request, and the
 // query retains that distinction instead of producing one deduplicated HTTP
@@ -27,7 +27,7 @@ import (
 // breaker for equal creation times.
 
 // ListRequestDetails returns a page and separately queried total of combined
-// usage and final-client error observations. A nil filter uses one hour, page
+// customer usage and final-client error observations. A nil filter uses one hour, page
 // one, and fifty rows; Normalize caps size at one hundred and orders supplied
 // endpoints without changing filter fields.
 //
@@ -153,6 +153,7 @@ WITH combined AS (
     ul.stream AS stream
   FROM usage_logs ul
   WHERE ul.created_at >= $1 AND ul.created_at < $2
+    AND ul.request_source = 'user'
 
   UNION ALL
 

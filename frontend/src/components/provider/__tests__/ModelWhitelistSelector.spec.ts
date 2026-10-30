@@ -83,6 +83,15 @@ function mountSelector(props: Record<string, unknown> = {}) {
   })
 }
 
+// syncButton finds the upstream synchronization action rendered for the mounted selector.
+function syncButton(wrapper: ReturnType<typeof mountSelector>) {
+  const button = wrapper
+    .findAll('button')
+    .find((item) => item.text().includes('admin.providers.syncUpstreamModels'))
+  expect(button).toBeTruthy()
+  return button!
+}
+
 describe('ModelWhitelistSelector', () => {
   // Restore real timers after each catalog scenario so a failing assertion cannot leave
   // later tests running under this case fake clock.
@@ -156,7 +165,7 @@ describe('ModelWhitelistSelector', () => {
     expect(button).toBeTruthy()
     await button!.trigger('click')
 
-    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith(syncCredentials)
+    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith(syncCredentials, expect.any(AbortSignal))
     expect(syncUpstreamModels).not.toHaveBeenCalled()
     expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual(['gpt-5.1', 'o3'])
     expect(showSuccess).toHaveBeenCalled()
@@ -183,9 +192,83 @@ describe('ModelWhitelistSelector', () => {
     expect(button).toBeTruthy()
     await button!.trigger('click')
 
-    expect(syncUpstreamModels).toHaveBeenCalledWith(7)
+    expect(syncUpstreamModels).toHaveBeenCalledWith(7, expect.any(AbortSignal))
     expect(syncUpstreamModelsPreview).not.toHaveBeenCalled()
     expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual(['claude-sonnet-4-5'])
+  })
+
+  // An OpenCode create form previews models with its drafted service mode. The sync action
+  // must be offered for that platform, forward provider_mode, and report the response's
+  // protocol suggestions through the synced event before merging the model IDs.
+  it('reports synchronized protocol suggestions for OpenCode previews', async () => {
+    const result = {
+      models: ['custom', 'new'],
+      model_protocols: { custom: 'openai_chat_completions', new: 'anthropic_messages' },
+    }
+    syncUpstreamModelsPreview.mockResolvedValue(result)
+    const syncCredentials = {
+      platform: 'opencode',
+      type: 'apikey',
+      api_key: 'oc-key',
+      provider_mode: 'go',
+    }
+    const wrapper = mountSelector({ platform: 'opencode', syncCredentials })
+
+    await syncButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith(syncCredentials, expect.any(AbortSignal))
+    expect(wrapper.emitted('synced')).toEqual([[result]])
+    expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual(['custom', 'new'])
+  })
+
+  // Preview credentials change and then return to their first value while the first
+  // request is pending. Cancellation must abort that request and drop its response, even
+  // though the final credentials match the ones it was sent with.
+  it('discards a synchronization whose credentials changed while pending', async () => {
+    let finish!: (value: unknown) => void
+    syncUpstreamModelsPreview.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    )
+    const first = { platform: 'openai', type: 'apikey', api_key: 'first' }
+    const wrapper = mountSelector({ syncCredentials: first })
+
+    await syncButton(wrapper).trigger('click')
+    const signal = syncUpstreamModelsPreview.mock.calls[0]![1] as AbortSignal
+    await wrapper.setProps({ syncCredentials: { ...first, api_key: 'second' } })
+    await wrapper.setProps({ syncCredentials: { ...first } })
+    expect(signal.aborted).toBe(true)
+    finish({ models: ['stale'], model_protocols: { stale: 'systemone' } })
+    await flushPromises()
+
+    expect(wrapper.emitted('synced')).toBeUndefined()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(showError).not.toHaveBeenCalled()
+    expect(syncButton(wrapper).attributes('disabled')).toBeUndefined()
+  })
+
+  // A saved-provider synchronization completes after the form closes. The response must
+  // not reach the parent, so a closed dialog cannot receive models or suggestions.
+  it('discards synchronization results after unmount', async () => {
+    let finish!: (value: unknown) => void
+    syncUpstreamModels.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    )
+    const wrapper = mountSelector({ platform: 'opencode', providerId: 44 })
+
+    await syncButton(wrapper).trigger('click')
+    const signal = syncUpstreamModels.mock.calls[0]![1] as AbortSignal
+    wrapper.unmount()
+    finish({ models: ['stale'] })
+    await flushPromises()
+
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.emitted('synced')).toBeUndefined()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
   })
 
   // The caller supplies a model unknown to the catalog and later supplies an empty list.

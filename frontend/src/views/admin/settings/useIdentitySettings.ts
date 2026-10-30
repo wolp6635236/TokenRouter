@@ -10,13 +10,14 @@ import type { WeChatConnectMode } from '@/api/admin/settings'
 import { useClipboard } from '@/composables/useClipboard'
 import type { SettingsForm } from './settingsState'
 import { currentOrigin } from './settingsDefaults'
+import { buildApiUrl } from '@/api/url'
 
 /**
  * useIdentitySettings.ts manages callback URL suggestions and provider-specific
- * controls for administrator identity settings. Suggestions use the configured API
- * base for server callbacks, while Google One Tap uses the browser origin. Copy
- * actions first write callback suggestions into the shared draft, so clipboard
- * feedback does not decide whether the field changes.
+ * controls for administrator identity settings. Suggestions use the browser API
+ * entry that initiates OAuth, while Google One Tap uses the browser origin.
+ * Copy actions first write callback suggestions into the shared draft,
+ * so clipboard feedback does not decide whether the field changes.
  *
  * WeChat exposes separate capability switches alongside a stored mode and scopes.
  * Its handlers reconcile mutually exclusive public-account and mobile capabilities
@@ -31,7 +32,6 @@ import { currentOrigin } from './settingsDefaults'
  */
 export type IdentitySettingsForm = Pick<
   SettingsForm,
-  | 'api_base_url'
   | 'dingtalk_connect_bypass_registration'
   | 'dingtalk_connect_client_id'
   | 'dingtalk_connect_client_secret'
@@ -146,21 +146,17 @@ export function useIdentitySettings(form: IdentitySettingsForm) {
   ])
 
   /**
-   * buildApiCallbackUrl resolves a backend OAuth callback against the configured API
-   * base or current origin. It removes trailing slashes, appends /api/v1 when
-   * absent, and accepts paths with or without a leading slash.
+   * buildApiCallbackUrl resolves a provider callback against the browser API entry.
+   * It shares the API base used by OAuth start requests so host-only state cookies
+   * return to their issuing host. Relative bases resolve against the current origin.
    */
   function buildApiCallbackUrl(path: string): string {
-    // Callback fields require the backend API prefix, while an absent configured base
-    // uses this page's captured origin.
-    const base = (form.api_base_url || currentOrigin).replace(/\/+$/, '')
-    const apiRoot = base.endsWith('/api/v1') ? base : `${base}/api/v1`
-    return `${apiRoot}${path.startsWith('/') ? path : `/${path}`}`
+    return new URL(buildApiUrl(path), currentOrigin).toString()
   }
 
   /**
-   * linuxdoRedirectUrlSuggestion follows the API base draft and supplies the LinuxDo
-   * backend callback shown beside its field.
+   * linuxdoRedirectUrlSuggestion supplies the LinuxDo backend callback using
+   * the browser API entry used for OAuth start.
    */
   const linuxdoRedirectUrlSuggestion = computed(() => {
     return buildApiCallbackUrl('/auth/oauth/linuxdo/callback')
@@ -182,16 +178,16 @@ export function useIdentitySettings(form: IdentitySettingsForm) {
   }
 
   /**
-   * githubOAuthRedirectUrlSuggestion follows the API base draft and supplies the
-   * GitHub backend callback for the copy action.
+   * githubOAuthRedirectUrlSuggestion supplies the GitHub backend callback using
+   * the browser API entry used for OAuth start.
    */
   const githubOAuthRedirectUrlSuggestion = computed(() => {
     return buildApiCallbackUrl('/auth/oauth/github/callback')
   })
 
   /**
-   * googleOAuthRedirectUrlSuggestion follows the API base draft and supplies the
-   * Google backend callback for the copy action.
+   * googleOAuthRedirectUrlSuggestion supplies the Google backend callback using
+   * the browser API entry used for OAuth start.
    */
   const googleOAuthRedirectUrlSuggestion = computed(() => {
     return buildApiCallbackUrl('/auth/oauth/google/callback')
@@ -209,7 +205,7 @@ export function useIdentitySettings(form: IdentitySettingsForm) {
   /**
    * copyGoogleOneTapOrigin copies the current browser origin with translated
    * clipboard feedback. An empty origin does nothing, and this action leaves the
-   * configured API base and OAuth callback fields unchanged.
+   * configured site addresses and OAuth callback fields unchanged.
    */
   async function copyGoogleOneTapOrigin() {
     const origin = googleOneTapOriginSuggestion.value

@@ -127,17 +127,20 @@ func usageHTTPRequest(value *provider.Record, query provider.UpstreamUsageQueryC
 	}, nil
 }
 
-// UpstreamUsageBaseURL returns the platform query root, leaving endpoint paths
-// to native adapters. Nil records return empty text; known platforms apply
-// their protocol defaults, while other platforms use the trimmed stored base
-// URL.
+// UpstreamUsageBaseURL returns the platform forwarding root used when a query
+// configuration has no root, leaving endpoint paths to native adapters. Nil
+// records return empty text; known platforms apply their protocol defaults,
+// while other platforms use the trimmed stored base URL. Adapters with a
+// separate management host receive their root from
+// provider.EffectiveUpstreamUsageConfig instead.
 func UpstreamUsageBaseURL(value *provider.Record) string {
 	if value == nil {
 		return ""
 	}
-	switch value.Platform {
-	case capability.PlatformOpenAI, capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek:
+	if value.IsOpenAI() || value.HasProtocolEndpointDefaults() {
 		return (provider.ProtocolTarget{Record: value}).GetOpenAIBaseURL()
+	}
+	switch value.Platform {
 	case capability.PlatformAnthropic:
 		return value.GetBaseURL()
 	case capability.PlatformGrok:

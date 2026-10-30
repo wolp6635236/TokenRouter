@@ -453,7 +453,7 @@ func (s *OpenAIAuxiliary) openAIAlphaSearchURL(provider *gatewayprovider.Executi
 	case capability.ProviderTypeOAuth, capability.ProviderTypeSetupToken:
 		return chatgptCodexAlphaSearchURL, nil
 	case capability.ProviderTypeAPIKey:
-		baseURL := gatewayprovider.ExecutionProtocolTarget(provider).GetOpenAIBaseURL()
+		baseURL := gatewayprovider.ExecutionProtocolTarget(provider).BaseURL()
 		if baseURL == "" {
 			return openAIPlatformAlphaSearchURL, nil
 		}

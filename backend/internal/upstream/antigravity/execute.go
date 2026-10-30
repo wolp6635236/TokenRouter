@@ -90,6 +90,9 @@ type Executor struct{}
 type observedSink struct {
 	upstream.OutputSink      // borrowed synchronous output event destination
 	nonStream           bool // buffered JSON observation selection
+	// validatedGemini uses the shared reader's whole-response terminal flag,
+	// preventing an individual candidate from ending a multicandidate stream.
+	validatedGemini bool
 }
 
 // TargetID returns the selected provider identifier, using zero for a nil
@@ -171,6 +174,8 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		}
 	}
 	options := target.Response
+	options.Context = ctx
+	options.Candidates = upstream.GeminiCandidateCount(input.Body)
 	var modelObserver protocol.ResponseModelObserver
 	defer func() { result.UpstreamResponseModel = modelObserver.Model() }()
 	priorRaw := options.ObserveRaw
@@ -208,7 +213,7 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		result.HasUsage = result.HasUsage || hasUsage
 		result.Served = result.Served || served
 	}
-	output := upstream.NewOutputContext(&observedSink{OutputSink: sink, nonStream: !input.Stream})
+	output := upstream.NewOutputContext(&observedSink{OutputSink: sink, nonStream: !input.Stream, validatedGemini: target.Mode == ModeGeminiResponse})
 	if result.RequestID != "" {
 		output.Header("x-request-id", result.RequestID)
 	}
@@ -273,7 +278,9 @@ func (s *observedSink) InitialOutput() upstream.OutputHead {
 // Messages, and Gemini observations.
 //
 // Existing semantic and terminal flags remain set as observations accumulate
-// across lines. Any nonempty data marks CommitForRetry even when it carries
+// across lines. Validated native Gemini streams use the reader's whole-response
+// terminal rather than inferring completion from an individual candidate. Any
+// nonempty data marks CommitForRetry even when it carries
 // only keepalive or framing text, so retry closure is independent from model
 // content. The underlying sink decides whether
 // writing succeeds, and its error returns unchanged.
@@ -292,7 +299,10 @@ func (s *observedSink) Emit(event upstream.OutputEvent) error {
 		a := anthropicwire.ObserveEvent(line)
 		g := geminiwire.ObservePayload([]byte(line))
 		event.Semantic = event.Semantic || semantic || a.Semantic || g.Semantic
-		event.Terminal = event.Terminal || terminal || a.Terminal || g.Terminal
+		event.Terminal = event.Terminal || terminal || a.Terminal
+		if !s.validatedGemini {
+			event.Terminal = event.Terminal || g.Terminal
+		}
 	}
 	// Mark nonempty bytes for retry commitment before delegation, including
 	// framing/keepalive output; the underlying sink records its actual write

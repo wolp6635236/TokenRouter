@@ -26,7 +26,8 @@ import (
 // TestModelsCatalogMediaQuotes initializes the offline catalog and reads
 // application pricing snapshots. It checks token-priced multimodal entries,
 // dedicated image/video billing, separate Gemini text/image rates, and the
-// model's video output capability.
+// model's video output capability. Filtered relay rows are absent while
+// registered runtime services remain in the default pricing listing.
 func TestModelsCatalogMediaQuotes(t *testing.T) {
 	service := provider.NewService(provider.Options{
 		DataDir: t.TempDir(),
@@ -35,8 +36,26 @@ func TestModelsCatalogMediaQuotes(t *testing.T) {
 	calculator := billing.NewCalculator(service, billing.CalculatorOptions{})
 	snapshot := providePricingCatalog(calculator, service).Snapshot()
 	rows := map[string]pricing.DefaultModelPrice{}
+	platforms := map[string]bool{}
 	for _, row := range snapshot.Prices {
 		rows[row.Model] = row
+		platforms[row.Platform] = true
+	}
+	for _, platform := range []string{"openrouter", "302ai", "requesty"} {
+		require.NotContains(t, platforms, platform)
+	}
+	require.NotContains(t, rows, "azure/gpt-5.4")
+	for _, model := range []string{
+		"azure/phi-4", "minimax-cn/minimax-m3", "volcengine/doubao-seed-2-0-pro-260215",
+		"alibaba-token-plan/happyhorse-1.1-t2v", "bailing/ling-1t", "nova/nova-2-lite-v1",
+	} {
+		require.Contains(t, rows, model)
+	}
+	for _, platform := range []string{
+		"amazon-bedrock", "google-vertex", "google-vertex-anthropic", "ollama-cloud",
+		"kimi-code-plan-cn", "kimi-code-plan-global", "zhipuai-coding-plan", "zai-coding-plan",
+	} {
+		require.Contains(t, platforms, platform)
 	}
 	for _, model := range []string{"gemini-omni-flash-preview", "deep-research-preview-04-2026", "gpt-image-2"} {
 		t.Run(model, func(t *testing.T) {

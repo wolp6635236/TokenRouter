@@ -6,7 +6,9 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	schedulercore "github.com/TokenFlux/TokenRouter/internal/scheduler"
@@ -14,7 +16,7 @@ import (
 
 // openai_ws_forwarder_support.go resolves previous-response provider affinity
 // and returns an acquired slot or wait plan.
-// A previous OpenAI response binds continuation to the provider that created
+// A previous Responses identifier binds continuation to the provider that created
 // its state. Response lookup is group-scoped and uses the already resolved
 // routing model; provider mapping, endpoint capability, privacy, parent health,
 // and optional database rechecks decide whether that binding can serve this
@@ -27,6 +29,43 @@ import (
 // response affinity, while a busy provider yields a bounded wait plan so the
 // caller can retain the chain's selected provider.
 
+// selectHTTPResponseContinuation selects the provider recorded for an immutable
+// HTTP response chain. Missing or ineligible bindings fail closed, and an
+// acquired slot is released when later request or native-protocol checks fail.
+//
+// Owner authorization runs at HTTP admission before this lookup. Provider
+// affinity then keeps the reference on its recorded upstream provider,
+// including when basic scheduling or failover would otherwise choose another
+// provider. The selected target carries a revalidated route for the attempt.
+func (s *Compatible) selectHTTPResponseContinuation(ctx context.Context, req schedulercore.PlatformSelectionInput) (*gatewayprovider.SelectionResult, error) {
+	if s.CheckGroupModelRestriction(ctx, req.GroupID, req.RequestedModel) {
+		return nil, schedulercore.ErrNoAvailableProviders
+	}
+	selected, err := s.selectProviderByPreviousResponseIDForCapability(ctx, req.GroupID, req.PreviousResponseID, req.RoutingModel, req.ExcludedIDs, req.RequiredCapability, req.RequireCompact)
+	if err != nil {
+		return nil, err
+	}
+	if selected == nil || selected.Provider == nil {
+		return nil, schedulercore.ErrNoAvailableProviders
+	}
+	target, routeErr := gatewayprovider.ProviderForProtocolAttempt(ctx, selected.Provider)
+	picker := &compatiblePicker{service: s}
+	compatible := false
+	if routeErr == nil && target != nil {
+		compatible, _ = picker.isProviderRequestCompatibleReason(ctx, target, req)
+	}
+	if routeErr != nil || !compatible || !s.isOpenAIProviderTransportCompatible(target, egress.OpenAIUpstreamTransport(req.RequiredTransport)) || !gatewayprovider.ExecutionProtocolTarget(target).SupportsHTTPResponsesContinuation() {
+		// Affinity acquisition can precede request revalidation. Release its capacity
+		// before rejecting the chain so later requests can use the same provider.
+		if selected.ReleaseFunc != nil {
+			selected.ReleaseFunc()
+		}
+		return nil, schedulercore.ErrNoAvailableProviders
+	}
+	selected.Provider = target
+	return selected, nil
+}
+
 // selectProviderByPreviousResponseIDForCapability validates a response-bound
 // provider for an already mapped routing model. Missing or unusable bindings
 // return no selection; a usable binding then attempts provider capacity
@@ -37,7 +76,8 @@ import (
 // current acquisition usable. A busy or unsuccessful acquisition with a
 // concurrency service returns a wait plan for that same provider, keeping
 // continuation state associated with the creating target while the caller
-// awaits capacity.
+// awaits capacity. Immutable HTTP callers reject an absent result rather than
+// forwarding the same reference to an unrelated provider.
 func (s *Compatible) selectProviderByPreviousResponseIDForCapability(
 	ctx context.Context,
 	groupID *int64,
@@ -125,8 +165,9 @@ func (s *Compatible) ResolveProviderIDByPreviousResponseIDForScheduler(
 
 // resolveProviderByPreviousResponseIDForCapability returns the group-scoped
 // provider binding, checked target, trimmed response ID, and store. Missing
-// inputs, reads, or eligibility return an empty result so callers can try their
-// other selection paths.
+// inputs, reads, or eligibility return an empty result. Immutable HTTP callers
+// reject that result; movable continuation callers can evaluate other selection
+// paths.
 //
 // The target must support continuation transport, protocol, model, capability,
 // quota, shadow health, privacy, and applicable upstream group restrictions.
@@ -177,10 +218,11 @@ func (s *Compatible) resolveProviderByPreviousResponseIDForCapability(
 		return 0, nil, "", nil
 	}
 
-	if s.ResolveTransport(provider).Transport != egress.OpenAIUpstreamTransportResponsesWebsocketV2 && !provider.View().IsOpenAIApiKey() {
+	httpContinuation := supportsHTTPResponseContinuation(ctx, provider)
+	if s.ResolveTransport(provider).Transport != egress.OpenAIUpstreamTransportResponsesWebsocketV2 && !httpContinuation {
 		return 0, nil, "", nil
 	}
-	if shouldClearStickySession(provider, routingModel) || !provider.View().IsOpenAI() || !provider.View().IsSchedulable() {
+	if shouldClearStickySession(provider, routingModel) || (!provider.View().IsOpenAI() && !httpContinuation) || !provider.View().IsSchedulable() {
 		// Provider status, platform, or model cooldown invalidates this continuation.
 		// Remove its affinity so later requests cannot keep retrying that unusable target.
 		_ = store.DeleteResponseProvider(ctx, derefGroupID(groupID), responseID)
@@ -215,7 +257,7 @@ func (s *Compatible) resolveProviderByPreviousResponseIDForCapability(
 			_ = store.DeleteResponseProvider(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
-		if shouldClearStickySession(latest, routingModel) || !latest.View().IsOpenAI() || !latest.View().IsSchedulable() {
+		if shouldClearStickySession(latest, routingModel) || (!latest.View().IsOpenAI() && !supportsHTTPResponseContinuation(ctx, latest)) || !latest.View().IsSchedulable() {
 			// The database record revokes status, platform, or model eligibility that
 			// the snapshot supplied. Remove affinity so that stale observation cannot drive continuation.
 			_ = store.DeleteResponseProvider(ctx, derefGroupID(groupID), responseID)
@@ -272,4 +314,23 @@ func (s *Compatible) ResolveTransport(value *gatewayprovider.ExecutionProvider) 
 		view.Concurrency = value.Record.Concurrency
 	}
 	return gatewayprovider.ResolveOpenAIWSTransport(view)
+}
+
+// supportsHTTPResponseContinuation checks native HTTP continuation eligibility
+// while a provider still lacks its final attempt route. OpenCode requires a
+// Responses client entry and successful route resolution, keeping its HTTP
+// allowance separate from movable WebSocket selection.
+func supportsHTTPResponseContinuation(ctx context.Context, value *gatewayprovider.ExecutionProvider) bool {
+	if value == nil {
+		return false
+	}
+	if value.View().IsOpenAIApiKey() {
+		return true
+	}
+	source, _ := requeststate.ClientProtocolFromContext(ctx)
+	if source != protocol.ProtocolOpenAIResponses {
+		return false
+	}
+	target, err := gatewayprovider.ProviderForProtocolAttempt(ctx, value)
+	return err == nil && gatewayprovider.ExecutionProtocolTarget(target).SupportsHTTPResponsesContinuation()
 }

@@ -21,15 +21,20 @@ API 用户不会看到 Gemini 文件名、Vertex 作业名、GCS 路径、签名
 
 ## API 路由
 
-创建入口由分组 `allowed_protocols` 的 `image_batches` 控制，API Key/Vertex 提供商须分别启用 `gemini_batch_generate_content`/`vertex_batch_prediction`。提交执行器再次检查协议；已有作业的查询、下载、取消和清理由原 provider 与资源绑定处理，不依赖新建入口开关。
+创建入口由分组 `allowed_protocols` 的 `image_batches` 控制，API Key/Vertex 提供商须分别启用 `gemini_batch_generate_content`/`vertex_batch_prediction`。目录和提交共用协议、凭据、可调度状态与新建存储配置检查；分组权限直接读取统一协议集合。Vertex 未配置受管 GCS 存储桶时不进入新建候选，Gemini API 可以独立使用。提交执行器再次检查协议；已有作业的查询、下载、取消和清理由原 provider 与资源绑定处理。
+
+客户端通过 API 提交和管理批量图片，管理员通过统一协议选择器和价格配置管理其准入与价格。
 
 ```text
 POST   /v1/images/batches
+GET    /v1/images/batches
+GET    /v1/images/batches/models
 GET    /v1/images/batches/{id}
 GET    /v1/images/batches/{id}/items
 GET    /v1/images/batches/{id}/items/{custom_id}/content
 GET    /v1/images/batches/{id}/download
 POST   /v1/images/batches/{id}/cancel
+DELETE /v1/images/batches/{id}
 DELETE /v1/images/batches/{id}/outputs
 ```
 
@@ -75,7 +80,7 @@ DELETE /v1/images/batches/{id}/outputs
 每个条目的 `output_count` 可选，默认为 `1`。它表示"用同一组提示词和参考图重复 N 次"，每次重复都是一个单独的上游请求，Gemini 单次请求返回多张图片的能力不在这里使用。后端会把每次重复展开为独立提供商 JSONL 行，并使用 `cover_001_01`、`cover_001_02` 等带后缀的自定义 ID。当前限制：
 
 - 每个提示词条目最多生成 4 张图片。
-- 展开后每个批量作业最多生成 200 张预期图片。这是单个作业的硬性生成结果上限；客户端和 Codex 技能必须在提交前拆分更大的工作量。
+- 展开后每个批量作业最多生成 200 张预期图片。这是单个作业的硬性生成结果上限；客户端需要在提交前拆分更大的工作量。
 - 输出图片上限有意与默认 ZIP 条目上限保持一致，使新提交作业按条目数都能下载为一个 ZIP。ZIP 字节大小仍单独受 `max_download_bytes_per_request` 限制。
 
 公共批量响应示例：
@@ -149,6 +154,8 @@ output_deleted             -> output_deleted
 
 手工删除输出或 TTL 清理后，状态从 `completed` 变为 `output_deleted`。
 
+新任务自动选择时，将组内合格的 Gemini API 和 Vertex 提供商一起按 `priority` 数值升序、提供商 ID 升序选择。请求中的可选 `platform` 只缩小候选范围。
+
 任务提交时已固定 platform 和执行提供商，轮询、查询、下载、取消与结算沿用该绑定，不因分组成员变化重新选择。使用记录的平台从作业 platform 映射得到，不查询分组平台。
 
 任务提交时必须同时快照三种模型身份：`requested_model` 保存客户端提交值（复合 Key 场景包含自定义分组前缀），`internal_model` 保存复合 Key 选组和 API Key 模型重定向完成后、渠道与提供商映射前的内部模型，`model` 保存最终提交给提供商的上游模型。异步结算写使用记录时以 `internal_model` 作为 `usage_logs.model`，并把 `model` 写入 `upstream_model`；迁移前任务没有内部模型快照时，才兼容回退到上游模型。
@@ -157,7 +164,7 @@ output_deleted             -> output_deleted
 
 Redis 用于唤醒、重试、worker 协调、单作业锁和下载限制。PostgreSQL 始终是权威数据源。
 
-`batch_image.queue_enabled` 默认为 `false`。设为 `true` 后，应用启动会运行 `BatchImageWorker` 的 Redis 就绪队列、延迟队列搬运和过期活跃作业恢复循环。worker 从 Redis 就绪队列预留作业；没有作业时会阻塞等待。
+应用启动自动运行 `BatchImageWorker` 的 Redis 就绪队列、延迟队列搬运和过期活跃作业恢复循环。worker 从 Redis 就绪队列预留作业；没有作业时会阻塞等待。
 
 Redis 结构：
 
@@ -166,7 +173,6 @@ Redis 结构：
 - 活跃集合：`batch_image.queue_active_key`
 - 执行中键：`batch_image.inflight_key_prefix`
 - 单作业锁键：`batch_image.lock_key_prefix`
-- 队列幂等键：`batch_image.idempotency_key_prefix`
 - 由下载限流器管理的下载限制键
 
 `batchimage.Public` 负责提交、目录、查询和取消，`PipelineProcessor` 推进轮询、索引和结算，`Cleanup` 和 `Download` 分别负责清理和读取输出。HTTP 在 `batchimage/httpapi`，元数据和队列在 PostgreSQL 和 Redis 适配层，平台操作在 `batchimage/provider`。app 直接构造 Gemini 和 Vertex 的 provider，把 `batchimage.Registry`（只有一个实例）注入提交、轮询、下载和清理；Vertex 需要的配置也由 app 整理好传入。
@@ -204,7 +210,6 @@ worker 必须从 Redis 预留作业，不应以数据库扫描循环方式运行
 
 - 进入终态后的输入留存时间：24 小时。
 - 进入终态后的输出留存时间：72 小时。
-- 输出最长留存时间：7 天。
 - 清理间隔：30 分钟。
 - 单批清理数量：100。
 
@@ -242,16 +247,16 @@ DELETE /v1/images/batches/{id}/outputs
 
 ## 启用 Google 官方能力
 
-运维人员为任何分组开启 TokenRouter 批量图片前，必须先在 Google 官方控制台启用 Gemini 或 Vertex 能力。TokenRouter 功能开关和分组开关不会自动创建 Google 侧访问权限。
+提供商所属 Google 项目需要具备所用 Gemini 或 Vertex API 的访问权限和计费资格。TokenRouter 的协议配置控制请求准入，Google 侧权限由项目管理。
 
-推荐生产路径：
+Vertex 路径：
 
 - 使用已启用结算的 Google Cloud 项目。
 - 为项目启用相应 Gemini API 或 Vertex AI API。
-- TokenRouter 运行时使用服务账号或应用默认凭据。
+- Vertex 提供商配置服务账号凭据。
 - 为批量图片输入输出创建固定 Cloud Storage 存储桶，并向运行时和 Vertex 服务代理授予最低必要存储桶权限。
 - 在 TokenRouter 中配置项目 ID、区域、受管存储桶、提供商、模型白名单和价格。
-- 全局启用 `BATCH_IMAGE_ENABLED`，在目标分组的 `allowed_protocols` 中开启 `image_batches`。分组可混合任意平台，但新作业只选择组内具备 Gemini 或 Vertex 批处理能力的提供商；未绑定分组时拒绝提交，不从全局提供商池补选。
+- 在目标分组的 `allowed_protocols` 中开启 `image_batches`，并在提供商原生协议中选择相应 Batch 协议。分组可混合任意平台，但新作业只选择组内具备 Gemini 或 Vertex 批处理能力的提供商；未绑定分组时拒绝提交，不从全局提供商池补选。
 
 API Key 路径：
 
@@ -274,9 +279,7 @@ API Key 路径：
 
 ```yaml
 batch_image:
-  enabled: false
   max_items_per_job_default: 200
-  max_items_per_job_trial: 50
   max_output_images_per_job: 200
   max_output_images_per_item: 4
   max_prompt_chars_per_item: 8000
@@ -292,17 +295,14 @@ batch_image:
 
   input_retention_after_terminal_hours: 24
   output_retention_after_terminal_hours: 72
-  output_retention_max_days: 7
   cleanup_interval_minutes: 30
   cleanup_batch_size: 100
 
-  queue_enabled: false
   queue_ready_key: "batch_image:queue:ready"
   queue_delayed_key: "batch_image:queue:delayed"
   queue_active_key: "batch_image:queue:active"
   inflight_key_prefix: "batch_image:queue:inflight:"
   lock_key_prefix: "batch_image:queue:lock:"
-  idempotency_key_prefix: "batch_image:queue:idem:"
   inflight_ttl_seconds: 604800
   job_lock_ttl_seconds: 300
   default_requeue_delay_seconds: 30
@@ -314,29 +314,24 @@ batch_image:
   delayed_move_limit: 100
   recover_limit: 100
 
-  vertex_enabled: false
   vertex_project_id: ""
   vertex_location: "global"
   vertex_managed_gcs_bucket: ""
   vertex_managed_gcs_prefix: "batch-image/{env}/{batch_id}"
-  vertex_input_retention_hours: 24
-  vertex_output_retention_hours: 72
   vertex_batch_prediction_base_url: ""
   vertex_gcs_base_url: ""
 ```
 
-所有功能开关默认关闭。
+worker、恢复和清理随应用生命周期运行。关闭分组或提供商的批量协议只限制新建，已提交作业继续使用保存的提供商与资金快照。Vertex 存储桶为空时允许启动；非空时校验存储桶、区域和包含 `{batch_id}` 的前缀。
 
 ## 运维检查清单
 
-- 启用 `batch_image.enabled`。
 - 配置 Redis。
-- 需要 worker 消费队列作业时启用 `batch_image.queue_enabled`。
 - 配置提供商。
 - 使用 Vertex 时配置受管 GCS 存储桶。
 - 确认存储桶权限正确。
 - 关闭或妥善管理 GCS 软删除。
-- 配置清理 worker。
+- 确认自动启动的 worker、恢复和清理循环正常运行。
 - 配置单作业最大条目数。
 - 配置下载并发。
 - 确认计费价格。

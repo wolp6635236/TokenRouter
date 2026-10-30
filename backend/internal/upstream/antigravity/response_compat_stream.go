@@ -30,7 +30,7 @@ import (
 // when meaningful content arrives. Stream termination, timeout and read
 // failure select different finalization paths, including usage collection
 // after client disconnect. Headers are prepared by the first actual writer
-// call, and keepalive ticks emit only after meaningful data. Scanner stop
+// call. The HTTP boundary owns downstream heartbeat generation. Scanner stop
 // signals request delivery stop while the exchange owner closes a blocked body
 // reader; tool restoration and conversion state stay local to the ordered
 // stream.
@@ -113,7 +113,7 @@ type antigravityCompatStreamSession struct {
 	// order.
 	pendingEvents []protocolanthropic.AnthropicStreamEvent
 	// meaningfulData stays true after a qualifying content/completion observation
-	// and controls prelude release, keepalive eligibility, and empty-stream
+	// and controls prelude release and empty-stream
 	// recovery.
 	meaningfulData bool
 }
@@ -491,7 +491,7 @@ func MergeAntigravityCompatUsage(dst *upstream.TokenUsage, src *protocolanthropi
 }
 
 // HandleAntigravityCompatStream coordinates one ordered upstream stream with
-// compatible output, timeout, and keepalive. Callers supply a nonnil
+// compatible output and upstream timeout handling. Callers supply a nonnil
 // response/body and flushing output writer, required failure callbacks, and
 // close the body after return to release a blocked scanner.
 //
@@ -499,8 +499,7 @@ func MergeAntigravityCompatUsage(dst *upstream.TokenUsage, src *protocolanthropi
 // headers/status are prepared before the first writer call. Every delivered
 // line resets timeout before raw observation and conversion. EOF or timeout
 // before meaningful output selects Failover; disconnected terminal paths
-// finalize usage without further adapter output. Keepalive ticks write only
-// after meaningful data. Disconnected timeout/read paths collect usage
+// finalize usage without further adapter output. Disconnected timeout/read paths collect usage
 // without adapter finalization; EOF still runs ordinary finish. Later errors
 // can emit a committed error event, and scanner stop signals delivery
 // termination without joining a blocked reader.
@@ -537,10 +536,6 @@ func (s *ResponseAdapter) HandleAntigravityCompatStream(
 	if timeoutTimer != nil {
 		defer timeoutTimer.Stop()
 	}
-	keepaliveTicker, keepaliveCh := s.NewAntigravityCompatKeepaliveTicker()
-	if keepaliveTicker != nil {
-		defer keepaliveTicker.Stop()
-	}
 
 	for {
 		select {
@@ -571,11 +566,6 @@ func (s *ResponseAdapter) HandleAntigravityCompatStream(
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (%s)", prefix)
 			WriteAntigravityCompatStreamError(c, adapter, writer, "stream_timeout", s.Options.MarkCommitted)
 			return session.collectResult(false), fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if session.hasMeaningfulData() && !writer.Disconnected() {
-				writer.Write([]byte(": ping\n\n"))
-			}
 		}
 	}
 }
@@ -632,18 +622,6 @@ func (s *ResponseAdapter) StartAntigravityCompatScanner(
 // as a duration.
 func (s *ResponseAdapter) AntigravityCompatStreamTimeout() time.Duration {
 	return time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second
-}
-
-// NewAntigravityCompatKeepaliveTicker returns a ticker and channel for a
-// positive configured interval. Nonpositive intervals return nil values to
-// disable the select path; the caller stops a returned ticker.
-func (s *ResponseAdapter) NewAntigravityCompatKeepaliveTicker() (*time.Ticker, <-chan time.Time) {
-	interval := time.Duration(s.Options.StreamKeepaliveInterval) * time.Second
-	if interval <= 0 {
-		return nil, nil
-	}
-	ticker := time.NewTicker(interval)
-	return ticker, ticker.C
 }
 
 // NewAntigravityCompatTimer returns a timer and channel for a positive

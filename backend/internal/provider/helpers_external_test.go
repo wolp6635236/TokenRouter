@@ -68,10 +68,11 @@ type providerServiceTestRepo struct {
 	bulkUpdates []providercore.ProviderBulkUpdate
 }
 
-// cnProviderTestCredentials builds CN credential fixtures with a custom relay
-// endpoint. Adaptive mode supplies protocol-specific addresses and excludes
-// Responses for Zhipu so tests use platform-supported legacy selections.
-func cnProviderTestCredentials(platform, mode, protocol string) map[string]any {
+// textAPIKeyTestCredentials builds Kimi, Zhipu, and DeepSeek credential
+// fixtures with a custom relay endpoint. Adaptive mode supplies
+// protocol-specific addresses and excludes Responses for Zhipu so tests use
+// platform-supported legacy selections.
+func textAPIKeyTestCredentials(platform, mode, protocol string) map[string]any {
 	credentials := map[string]any{
 		"api_key":       "sk-test",
 		"provider_mode": mode,

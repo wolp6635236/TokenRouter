@@ -32,7 +32,7 @@ import (
 // empty protocol base uses https://api.openai.com. The endpoint helper handles
 // versioned bases, and validation failures are returned with base-URL context.
 func (s *OpenAIRequests) ChatURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
-	baseURL := gatewayprovider.ExecutionProtocolTarget(provider).GetOpenAIBaseURL()
+	baseURL := gatewayprovider.ExecutionProtocolTarget(provider).BaseURL()
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
@@ -126,7 +126,7 @@ func (s *OpenAIRequests) SendChat(
 		},
 		FinalizeHeaders: func(headers http.Header) {
 			provideradapter.ApplyProviderHeaderOverrides(gatewayprovider.ExecutionProtocolRecord(provider), headers)
-			ApplyOpenCodeSessionHeader(c, provider, targetURL, headers)
+			gatewayprovider.FinalizeRequestHeaders(provider, targetURL, clientHeaderReader(c), headers)
 		},
 		Do: func(req *http.Request) (*http.Response, error) {
 			proxyURL := ""
@@ -144,7 +144,7 @@ func (s *OpenAIRequests) SendChat(
 // NativeAnthropicTargetURL; configuration errors reach the caller before
 // request construction.
 func (s *OpenAIRequests) AnthropicURL(provider *gatewayprovider.ExecutionProvider) (string, error) {
-	return forward.NativeAnthropicTargetURL(provider.Record.ID, gatewayprovider.ExecutionProtocolTarget(provider).GetAnthropicProtocolBaseURL(), s.ValidateBaseURL)
+	return forward.NativeAnthropicTargetURL(provider.Record.ID, (providercore.ProtocolTarget{Record: provider.View(), Protocol: capability.ProtocolAnthropicMessages}).BaseURL(), s.ValidateBaseURL)
 }
 
 // BuildAnthropic constructs native Messages input with provider authentication
@@ -162,7 +162,7 @@ func (s *OpenAIRequests) BuildAnthropic(ctx context.Context, c *gin.Context, pro
 	if c != nil && c.Request != nil {
 		headers = c.Request.Header
 	}
-	return forward.BuildNativeAnthropicRequest(ctx, body, apiKey, targetURL, forward.NativeAnthropicRequestOptions{
+	req, prepared, err := forward.BuildNativeAnthropicRequest(ctx, body, apiKey, targetURL, forward.NativeAnthropicRequestOptions{
 		Headers: headers, GetHeader: anthropic.GetHeaderRaw, OverrideValue: gatewayprovider.BindExecutionHeaderValue(provider),
 		Sanitize: anthropic.SanitizeAnthropicBodyForBetaTokens, AllowedHeader: func(key string) bool { return anthropic.AllowedHeaders[key] },
 		WireCasing: anthropic.ResolveWireCasing, AddHeader: anthropic.AddHeaderRaw, SetHeader: anthropic.SetHeaderRaw,
@@ -170,6 +170,11 @@ func (s *OpenAIRequests) BuildAnthropic(ctx context.Context, c *gin.Context, pro
 			anthropic.SetAPIKeyAuthHeader(h, gatewayprovider.ExecutionProtocolRecord(provider).GetAnthropicAPIKeyAuthScheme() == providercore.AnthropicAPIKeyAuthSchemeAuthorizationBearer, key)
 		}, ApplyOverrides: gatewayprovider.BindExecutionHeaders(provider),
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	gatewayprovider.FinalizeRequestHeaders(provider, targetURL, clientHeaderReader(c), req.Header)
+	return req, prepared, nil
 }
 
 // RawChatURL resolves the selected provider's native Chat endpoint before
@@ -197,7 +202,7 @@ func (s *OpenAIRequests) ImagesURL(provider *gatewayprovider.ExecutionProvider, 
 	if endpoint == upstream.OpenAIImagesEditsEndpoint {
 		targetURL = openAIImagesEditsURL
 	}
-	baseURL := gatewayprovider.ExecutionProtocolTarget(provider).GetOpenAIBaseURL()
+	baseURL := gatewayprovider.ExecutionProtocolTarget(provider).BaseURL()
 	if baseURL != "" {
 		validatedURL, err := s.ValidateBaseURL(baseURL)
 		if err != nil {

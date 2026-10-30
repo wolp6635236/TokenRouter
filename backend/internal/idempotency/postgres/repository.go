@@ -18,9 +18,8 @@ import (
 // a separate fingerprint and status decision. Nullable response and lock fields
 // retain their absence when decoded from database rows.
 //
-// Reclaim compares the expected state and lock deadline with its update, while
-// processing extensions also compare the request fingerprint. Ordinary success
-// and failure writes update by row ID and leave their caller responsible for
+// Reclaim compares the expected state and lock deadline with its update.
+// Ordinary success and failure writes update by row ID and leave their caller responsible for
 // identifying the intended execution. Expiry cleanup deletes one limited set at
 // a time, independently of processing state, using the executor supplied as a
 // pool or caller-owned transaction.
@@ -184,51 +183,6 @@ func (r *idempotencyRepository) TryReclaim(
 		newExpiresAt,
 		fromStatus,
 		now,
-	)
-	if err != nil {
-		return false, err
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return affected > 0, nil
-}
-
-// ExtendProcessingLock extends deadlines for a processing record whose request
-// fingerprint matches the caller's execution. False means no matching processing
-// row changed; existing deadline expiry is not part of this update's predicate.
-//
-// The fingerprint identifies the request payload and actor, not an individual
-// acquisition token. Repeated acquisitions of that same request can share it,
-// so this method cannot distinguish those owners. Maintenance lease renewal uses
-// the separate RenewOperation check when acquisition-specific ownership is required.
-func (r *idempotencyRepository) ExtendProcessingLock(
-	ctx context.Context,
-	id int64,
-	requestFingerprint string,
-	newLockedUntil,
-	newExpiresAt time.Time,
-) (bool, error) {
-	// Match the processing fingerprint while replacing both deadlines, so a finished
-	// record or a different request identity cannot be renewed through this command path.
-	query := `
-		UPDATE idempotency_records
-		SET locked_until = $2,
-			expires_at = $3,
-			updated_at = NOW()
-		WHERE id = $1
-			AND status = $4
-			AND request_fingerprint = $5
-	`
-	res, err := r.sql.ExecContext(
-		ctx,
-		query,
-		id,
-		newLockedUntil,
-		newExpiresAt,
-		idempotency.IdempotencyStatusProcessing,
-		requestFingerprint,
 	)
 	if err != nil {
 		return false, err

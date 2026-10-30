@@ -274,11 +274,11 @@ func TestAdminServiceBulkUpdateProvidersRejectsForcedTextRouteWithoutWorkload(t 
 	require.Empty(t, repo.bulkUpdateIDs)
 }
 
-// TestAdminServiceBulkUpdateProvidersRejectsInvalidCNProviderCombination
+// TestAdminServiceBulkUpdateProvidersRejectsInvalidKimiZhipuDeepSeekCombination
 // changes DeepSeek from payg to coding mode in a credential batch. Validation
 // rejects that platform/mode combination before the fixture records any bulk
 // write.
-func TestAdminServiceBulkUpdateProvidersRejectsInvalidCNProviderCombination(t *testing.T) {
+func TestAdminServiceBulkUpdateProvidersRejectsInvalidKimiZhipuDeepSeekCombination(t *testing.T) {
 	repo := &providerRepoStubForBulkUpdate{
 		getByIDsProviders: []*providercore.Record{{
 			ID:       9,
@@ -591,14 +591,14 @@ func TestBulkResponsesWSConnectionModeValidation(t *testing.T) {
 	}
 }
 
-// TestCNProviderBulkProtocolValidationBeforeWrite requests Responses for Kimi
-// and Zhipu in one batch. Validation rejects Zhipu's unsupported protocol
+// TestKimiZhipuDeepSeekBulkProtocolValidationBeforeWrite requests Responses for
+// Kimi and Zhipu in one batch. Validation rejects Zhipu's unsupported protocol
 // before storage and retains each source's legacy adaptive selection.
-func TestCNProviderBulkProtocolValidationBeforeWrite(t *testing.T) {
+func TestKimiZhipuDeepSeekBulkProtocolValidationBeforeWrite(t *testing.T) {
 	t.Parallel()
 	repo := &providerServiceTestRepo{providers: map[int64]*providercore.Record{
-		1: {ID: 1, Platform: capability.PlatformKimi, Type: capability.ProviderTypeAPIKey, Credentials: cnProviderTestCredentials(capability.PlatformKimi, providercore.ProviderModePayG, providercore.APIProtocolAdaptive)},
-		2: {ID: 2, Platform: capability.PlatformZhipu, Type: capability.ProviderTypeAPIKey, Credentials: cnProviderTestCredentials(capability.PlatformZhipu, providercore.ProviderModePayG, providercore.APIProtocolAdaptive)},
+		1: {ID: 1, Platform: capability.PlatformKimi, Type: capability.ProviderTypeAPIKey, Credentials: textAPIKeyTestCredentials(capability.PlatformKimi, providercore.ProviderModePayG, providercore.APIProtocolAdaptive)},
+		2: {ID: 2, Platform: capability.PlatformZhipu, Type: capability.ProviderTypeAPIKey, Credentials: textAPIKeyTestCredentials(capability.PlatformZhipu, providercore.ProviderModePayG, providercore.APIProtocolAdaptive)},
 	}}
 	svc := newProviderEditorForTest(repo)
 	_, err := svc.BulkUpdateProviders(context.Background(), &providercore.BulkUpdateProvidersInput{
@@ -859,6 +859,172 @@ func TestAdminServiceUpdateProviderExplicitEmptyExtraStillClearsConfig(t *testin
 	require.NotContains(t, provider.Extra, "privacy_mode")
 	require.NotContains(t, provider.Extra, "quota_limit")
 	require.Equal(t, float64(7), provider.Extra["quota_used"])
+}
+
+// TestAdminServiceExtraPatchNormalizationFailures submits overlapping validation
+// failures through both patch entry points. The first error preserves the
+// original map, while bulk input exposes only normalization completed before it.
+func TestAdminServiceExtraPatchNormalizationFailures(t *testing.T) {
+	tests := []struct {
+		name            string // normalization failure scenario
+		mode            any    // submitted WebSocket mode
+		model           any    // submitted image model
+		wantReason      string // first validation reason
+		wantModel       any    // visible image model
+		wantSeed        bool   // visible seed presence
+		wantDeprecated  bool   // visible deprecated presence
+		wantOriginalMap bool   // original outer-map alias
+	}{
+		{
+			name:            "websocket precedes image and usage",
+			mode:            "invalid",
+			model:           42,
+			wantReason:      "INVALID_RESPONSES_WS_CONNECTION_MODE",
+			wantModel:       42,
+			wantSeed:        true,
+			wantDeprecated:  true,
+			wantOriginalMap: true,
+		},
+		{
+			name:           "image follows seed filtering",
+			mode:           providercore.ResponsesWSPooled,
+			model:          42,
+			wantReason:     "CODEX_IMAGE_RESPONSES_MODEL_INVALID",
+			wantModel:      42,
+			wantDeprecated: true,
+		},
+		{
+			name:       "usage follows image and deprecated filtering",
+			mode:       providercore.ResponsesWSPooled,
+			model:      " model-id ",
+			wantReason: "UPSTREAM_USAGE_CONFIG_INVALID",
+			wantModel:  "model-id",
+		},
+	}
+	for _, tt := range tests {
+		for _, entry := range []string{"single", "bulk"} {
+			t.Run(tt.name+"/"+entry, func(t *testing.T) {
+				updates := map[string]any{
+					providercore.ResponsesWSConnectionModeKey: tt.mode,
+					providercore.CodexFingerprintSeedExtraKey: "submitted-seed",
+					providercore.CodexImageResponsesModelKey:  tt.model,
+					"openai_long_context_billing_enabled":     true,
+					providercore.UpstreamUsageQueryExtraKey:   map[string]any{"enabled": "invalid"},
+					providercore.UsageMonitorSnapshotExtraKey: "submitted-snapshot",
+				}
+				original := maps.Clone(updates)
+				repo := &deprecatedProviderExtraRepoStub{}
+				svc := newProviderEditorForTest(repo)
+				var err error
+				var input *providercore.BulkUpdateProvidersInput
+				if entry == "single" {
+					err = svc.UpdateProviderExtra(context.Background(), 1, updates)
+				} else {
+					input = &providercore.BulkUpdateProvidersInput{ProviderIDs: []int64{1}, Extra: updates}
+					var result *providercore.BulkUpdateProvidersResult
+					result, err = svc.BulkUpdateProviders(context.Background(), input)
+					require.Nil(t, result)
+				}
+				require.Equal(t, tt.wantReason, apperror.Reason(err))
+				require.Equal(t, original, updates)
+				require.Zero(t, repo.updateExtraCalls)
+				require.Zero(t, repo.bulkUpdateCalls)
+				if input != nil {
+					require.Equal(t, tt.wantModel, input.Extra[providercore.CodexImageResponsesModelKey])
+					_, seedPresent := input.Extra[providercore.CodexFingerprintSeedExtraKey]
+					require.Equal(t, tt.wantSeed, seedPresent)
+					_, deprecatedPresent := input.Extra["openai_long_context_billing_enabled"]
+					require.Equal(t, tt.wantDeprecated, deprecatedPresent)
+					require.Equal(t,
+						map[string]any{"enabled": "invalid"},
+						input.Extra[providercore.UpstreamUsageQueryExtraKey],
+					)
+					require.Equal(t, "submitted-snapshot", input.Extra[providercore.UsageMonitorSnapshotExtraKey])
+					input.Extra["after_return"] = true
+					_, originalChanged := updates["after_return"]
+					require.Equal(t, tt.wantOriginalMap, originalChanged)
+				}
+			})
+		}
+	}
+}
+
+// TestAdminServiceExtraPatchNormalizationWrites submits supported settings with
+// forged maintenance state through both entry points. Storage receives the same
+// normalized patch, and the caller's outer map retains its submitted values.
+func TestAdminServiceExtraPatchNormalizationWrites(t *testing.T) {
+	for _, entry := range []string{"single", "bulk"} {
+		t.Run(entry, func(t *testing.T) {
+			updates := map[string]any{
+				providercore.ResponsesWSConnectionModeKey:        providercore.ResponsesWSPerSession,
+				providercore.CodexFingerprintSeedExtraKey:        "submitted-seed",
+				providercore.CodexImageResponsesModelKey:         " model-id ",
+				"openai_long_context_billing_enabled":            true,
+				"openai_compact_mode":                            " FORCE_OFF ",
+				providercore.UpstreamUsageQueryExtraKey:          map[string]any{"adapter": " new_api ", "base_url": " "},
+				providercore.OllamaCloudUsageSessionExtraKey:     "submitted-session",
+				providercore.OllamaCloudUsageAutoRefreshExtraKey: true,
+				providercore.OllamaCloudUsageSnapshotExtraKey:    "submitted-snapshot",
+				providercore.UsageMonitorSnapshotExtraKey:        "submitted-monitor",
+				"custom": map[string]any{"preserved": true},
+			}
+			original := maps.Clone(updates)
+			want := map[string]any{
+				providercore.ResponsesWSConnectionModeKey: providercore.ResponsesWSPerSession,
+				providercore.CodexImageResponsesModelKey:  "model-id",
+				"openai_compact_mode":                     "force_off",
+				providercore.UpstreamUsageQueryExtraKey:   map[string]any{"adapter": "new_api", "enabled": true},
+				"custom":                                  map[string]any{"preserved": true},
+			}
+			repo := &deprecatedProviderExtraRepoStub{}
+			svc := newProviderEditorForTest(repo)
+			var saved map[string]any
+			if entry == "single" {
+				require.NoError(t, svc.UpdateProviderExtra(context.Background(), 1, updates))
+				require.Equal(t, 1, repo.updateExtraCalls)
+				saved = repo.lastExtraUpdates
+			} else {
+				input := &providercore.BulkUpdateProvidersInput{ProviderIDs: []int64{1}, Extra: updates}
+				result, err := svc.BulkUpdateProviders(context.Background(), input)
+				require.NoError(t, err)
+				require.Equal(t, 1, result.Success)
+				require.Equal(t, 1, repo.bulkUpdateCalls)
+				require.Equal(t, want, input.Extra)
+				saved = repo.lastBulkExtraUpdate
+			}
+			require.Equal(t, want, saved)
+			require.Equal(t, original, updates)
+			require.Equal(t,
+				map[string]any{"adapter": " new_api ", "base_url": " "},
+				updates[providercore.UpstreamUsageQueryExtraKey],
+			)
+			savedCustom, ok := saved["custom"].(map[string]any)
+			require.True(t, ok)
+			originalCustom, ok := updates["custom"].(map[string]any)
+			require.True(t, ok)
+			savedCustom["shared"] = true
+			require.Equal(t, true, originalCustom["shared"])
+		})
+	}
+}
+
+// TestAdminServiceExtraPatchNormalizationEmpty distinguishes omitted and empty
+// maps at both patch entry points. Single edits skip storage, while bulk writes
+// retain the supplied nil or empty shape for their selected target.
+func TestAdminServiceExtraPatchNormalizationEmpty(t *testing.T) {
+	for _, extra := range []map[string]any{nil, {}} {
+		repo := &deprecatedProviderExtraRepoStub{}
+		svc := newProviderEditorForTest(repo)
+		require.NoError(t, svc.UpdateProviderExtra(context.Background(), 1, extra))
+		require.Zero(t, repo.updateExtraCalls)
+		input := &providercore.BulkUpdateProvidersInput{ProviderIDs: []int64{1}, Extra: extra}
+		result, err := svc.BulkUpdateProviders(context.Background(), input)
+		require.NoError(t, err)
+		require.Equal(t, 1, result.Success)
+		require.Equal(t, 1, repo.bulkUpdateCalls)
+		require.Equal(t, extra, input.Extra)
+		require.Equal(t, extra, repo.lastBulkExtraUpdate)
+	}
 }
 
 // TestAdminServiceUpdateProviderExtraIgnoresDeprecatedLongContextBillingExtra

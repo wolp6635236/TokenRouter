@@ -54,7 +54,7 @@ func provideProviderHealthRuntime(
 		Now: time.Now, Warn: slog.Warn, Info: slog.Info,
 		SessionWindows: store, TimeoutCounter: timeouts, ForbiddenCounter: forbidden,
 		UnauthorizedCooldownMinutes: cfg.RateLimit.OAuth401CooldownMinutes,
-		CNIntervalMinutes:           cfg.Gateway.CNProviders.IntervalMinutes,
+		UsageMonitorIntervalMinutes: cfg.Gateway.UsageMonitor.IntervalMinutes,
 		OverloadMinutes:             cfg.RateLimit.OverloadCooldownMinutes,
 		APIKeyHealthWarn:            provideradapter.LogAPIKeyHealthWarning,
 	}

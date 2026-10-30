@@ -12,7 +12,7 @@ import (
 // usage_identity.go computes usage-query identities from provider credentials
 // and connection settings.
 // Normal JSON digest input includes query choices, proxy credentials, and TLS
-// settings so changes to those inputs select another shared query. CN monitor
+// settings so changes to those inputs select another shared query. usage monitor
 // snapshots reuse the digest to reject observations from an earlier identity.
 // When JSON encoding fails, the reduced input contains provider ID, platform,
 // adapter, and formatted credentials; connection settings are omitted on that
@@ -96,22 +96,21 @@ func UpstreamUsageContextFingerprint(provider *Record, config UpstreamUsageQuery
 	return hex.EncodeToString(hash[:])
 }
 
-// CNUsageMonitorIdentityFingerprint returns the query identity for a supported
-// CN API Key provider. Invalid configuration or an unavailable platform/mode
-// adapter returns empty, leaving monitor consumers without trusted snapshot
-// identity.
-func CNUsageMonitorIdentityFingerprint(provider *Record) string {
-	if provider == nil || !provider.IsCNProvider() || provider.Type != ProviderTypeAPIKey {
+// UsageMonitorIdentityFingerprint hashes the query identity for a
+// monitoring-enabled API-key record. Invalid query configuration or an
+// unavailable adapter returns empty, leaving snapshot consumers without a
+// trusted identity for that configuration.
+func UsageMonitorIdentityFingerprint(provider *Record) string {
+	if provider == nil || !provider.SupportsUsageMonitoring() || provider.Type != ProviderTypeAPIKey {
 		return ""
 	}
 	queryConfig, err := EffectiveUpstreamUsageConfig(provider)
-	// Configuration merging compares this identity to decide whether a CN
-	// snapshot still belongs to the record. Query-validation failure therefore
-	// supplies the empty identity marker.
+	// Configuration merging compares this identity to decide whether a Kimi,
+	// Zhipu, or DeepSeek snapshot still belongs to the record. Query-validation
+	// failure therefore supplies the empty identity marker.
 	if err != nil {
 		return ""
 	}
-	queryConfig.Adapter = CNUpstreamUsageAdapterName(provider)
 	if queryConfig.Adapter == "" {
 		return ""
 	}

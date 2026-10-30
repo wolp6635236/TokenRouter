@@ -40,7 +40,6 @@ func googleForwardOptions(cfg *config.Config) googleforward.Options {
 		ResponseReadLimit:    limit,
 		MaxLineSize:          cfg.Gateway.MaxLineSize,
 		StreamInterval:       cfg.Gateway.StreamDataIntervalTimeout,
-		StreamKeepalive:      cfg.Gateway.StreamKeepaliveInterval,
 		URLAllowlistEnabled:  cfg.Security.URLAllowlist.Enabled,
 		AllowInsecureHTTP:    cfg.Security.URLAllowlist.AllowInsecureHTTP,
 		AllowedHosts:         append([]string(nil), cfg.Security.URLAllowlist.UpstreamHosts...),

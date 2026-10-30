@@ -76,11 +76,11 @@
             />
           </div>
 
-          <!-- Options list -->
+          <!-- Created search actions can share a value with catalog options, so their render keys distinguish those two entries. -->
           <div class="select-options" ref="optionsListRef">
             <div
               v-for="(option, index) in filteredOptions"
-              :key="`${typeof getOptionValue(option)}:${String(getOptionValue(option) ?? '')}`"
+              :key="`${option._creatable ? 'created' : 'option'}:${typeof getOptionValue(option)}:${String(getOptionValue(option) ?? '')}`"
               role="option"
               :aria-selected="isSelected(option)"
               :aria-disabled="isOptionDisabled(option)"

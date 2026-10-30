@@ -1,4 +1,4 @@
-// Package usage stores completed-request analysis rows and serves statistics
+// Package usage stores request analysis rows and serves statistics
 // for users, keys, providers and administrator dashboards. Financial effects
 // are recorded by billing; usage rows and rebuildable aggregates supply
 // reports, display data and diagnostic lookup.
@@ -9,8 +9,10 @@
 // coverage and deletion repair, while cleanup_service.go manages persisted
 // deletion tasks.
 //
-// log*.go, request_type.go and views.go define records, query results and
-// loaded display relations. repository.go, query_readers.go and options.go
+// log*.go, request_type.go, request_source.go and views.go define records, query results and
+// loaded display relations. system_usage.go prices internal observations and
+// submits immutable records to provider-only settlement.
+// repository.go, query_readers.go and options.go
 // define storage capabilities and construction inputs. dashboard*.go and
 // query_cache.go own query caches and aggregation work.
 // analytics_aggregation.go and aggregation_state.go define rollup storage and

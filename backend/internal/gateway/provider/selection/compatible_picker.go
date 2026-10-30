@@ -196,7 +196,7 @@ func (s *compatiblePicker) isProviderRequestCompatibleReason(ctx context.Context
 	if s != nil && s.service != nil && !s.service.shadowProtocolsAllowed(ctx, provider) {
 		return false, "parent_protocol_unavailable"
 	}
-	if !gatewayprovider.ExecutionModelPolicy(provider).AllowsProtocol(ctx) {
+	if !gatewayprovider.ExecutionModelPolicy(provider).AllowsProtocol(ctx, "") {
 		return false, "protocol_unavailable"
 	}
 	if provider == nil {
@@ -632,9 +632,10 @@ func (s *Compatible) loadOpenAIGroupRequiresPrivacySet(ctx context.Context, grou
 
 // selectProviderWithSchedulerForRoutingOnce chooses the current group's basic
 // or advanced path using captured candidate, quota, and privacy inputs.
-// Previous-response continuation suppresses guardian-parent lookup, and
-// preserved parent affinity prevents basic fallback from rewriting the parent's
-// session binding.
+// Immutable HTTP continuation resolves its response-bound provider before
+// either scheduler mode. Other previous-response requests suppress guardian
+// lookup, and preserved parent affinity prevents basic fallback from rewriting
+// the parent's session binding.
 //
 // Basic selection can retain a guardian target, then retries with a private
 // exclusion set when transport or image capability fails after choice. Advanced
@@ -668,6 +669,30 @@ func (s *Compatible) selectProviderWithSchedulerForRoutingOnce(
 		guardianParentProviderID = s.resolveOpenAIGuardianParentProviderID(ctx, groupID)
 	}
 	scheduler := s.getOpenAIProviderScheduler(ctx, groupID)
+	// HTTP continuation carries a provider-owned response reference. Resolve that
+	// binding before either scheduler mode so unavailable history cannot reach another credential.
+	source, _ := requeststate.ClientProtocolFromContext(ctx)
+	if strings.TrimSpace(previousResponseID) != "" && !previousResponseCanMove && source == protocol.ProtocolOpenAIResponses {
+		selection, err := s.selectHTTPResponseContinuation(ctx, schedulercore.PlatformSelectionInput{
+			GroupID: groupID, Platform: platform, PreviousResponseID: previousResponseID,
+			RequestedModel: requestedModel, RoutingModel: routingModel, ExcludedIDs: excludedIDs,
+			RequiredTransport: string(requiredTransport), RequiredCapability: requiredCapability,
+			RequiredImageCapability: requiredImageCapability, RequireCompact: requireCompact,
+		})
+		if err != nil {
+			return nil, decision, err
+		}
+		decision.Layer = "previous_response_id"
+		decision.StickyPreviousHit = true
+		decision.SelectedProviderID = selection.Provider.Record.ID
+		decision.SelectedProviderType = selection.Provider.Record.Type
+		if scheduler != nil {
+			selection.AdvancedScheduler = true
+			feedback := s.advancedSchedulerEffectiveSettingsForRequest(ctx, groupID).Feedback
+			selection.AdvancedSchedulerFeedback = &feedback
+		}
+		return selection, decision, nil
+	}
 	if scheduler == nil {
 		decision.Layer = openAIProviderScheduleLayerLoadBalance
 		// Basic mode can still reuse an eligible guardian parent provider. Preserve

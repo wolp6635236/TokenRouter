@@ -132,11 +132,10 @@ type ChatResponseOptions struct {
 	// Scanner builds the upstream line scanner under caller limits; the executor
 	// retains response-body ownership after synchronous or timed reading exits.
 	Scanner func(io.Reader) *bufio.Scanner
-	// StreamInterval is the upstream read-idle budget. KeepaliveInterval is the
-	// client heartbeat spacing after consumed upstream lines. Both callbacks are
-	// queried at stream entry; positive results enable their respective timer work,
-	// and the producer arrival clock remains independent of downstream conversion.
-	StreamInterval, KeepaliveInterval func() time.Duration
+	// StreamInterval supplies the upstream read-idle budget at stream entry.
+	// Positive values enable its timer; the producer arrival clock remains
+	// independent of downstream conversion and HTTP heartbeat activity.
+	StreamInterval func() time.Duration
 	// RestoreToolNames transforms each stream payload before search counting,
 	// typed decoding, usage observation, and protocol conversion. The transformed
 	// bytes therefore supply both accounting inspection and client output.
@@ -483,7 +482,7 @@ func ReadChatStreaming(resp *http.Response, c *upstream.OutputContext, options C
 			return resultWithUsage(), cyberPolicyErr
 		}
 		if streamFailoverErr != nil {
-			if c == nil || c.Writer == nil || !c.Writer.Written() {
+			if c == nil || c.Writer == nil || !c.Writer.ContentWritten() {
 				return nil, streamFailoverErr
 			}
 			return resultWithUsage(), streamFailoverErr
@@ -593,13 +592,9 @@ func ReadChatStreaming(resp *http.Response, c *upstream.OutputContext, options C
 		return processDataLine(payload)
 	}
 
-	// Read heartbeat policy once for this stream attempt; upstream line
-	// consumption determines heartbeat idleness independently of the producer arrival clock.
-	keepaliveInterval := options.KeepaliveInterval()
-
-	// With both timers disabled, direct scanning uses the same frame parser
+	// With upstream timeout disabled, direct scanning uses the same frame parser
 	// and terminal requirement while avoiding read-ahead and a producer goroutine.
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 {
 		var parser wire.OpenAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -670,16 +665,6 @@ func ReadChatStreaming(resp *http.Response, c *upstream.OutputContext, options C
 	// depends on the executor closing that response body to finish its goroutine.
 	defer close(done)
 
-	var keepaliveTicker *time.Ticker
-	if keepaliveInterval > 0 {
-		keepaliveTicker = time.NewTicker(keepaliveInterval)
-		defer keepaliveTicker.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTicker != nil {
-		keepaliveCh = keepaliveTicker.C
-	}
-	lastDataAt := time.Now()
 	var parser wire.OpenAICompatSSEFrameParser
 
 	for {
@@ -703,7 +688,7 @@ func ReadChatStreaming(resp *http.Response, c *upstream.OutputContext, options C
 				}
 				return resultWithUsage(), options.ReadFailure(ev.err)
 			}
-			lastDataAt = time.Now()
+
 			line := ev.line
 			frame, ok := parser.AddLine(line)
 			if !ok {
@@ -730,31 +715,6 @@ func ReadChatStreaming(resp *http.Response, c *upstream.OutputContext, options C
 				zap.Duration("interval", streamInterval),
 			)
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			// Held refusal candidates postpone heartbeat commitment. Elsewhere a
-			// heartbeat writes headers while leaving clientOutputStarted unchanged until
-			// converted content.
-			if clientDisconnected {
-				continue
-			}
-			if refusalDetector.Enabled() && !clientOutputStarted {
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				continue
-			}
-			// A comment heartbeat maintains the client connection after idle line
-			// consumption; failed delivery latches disconnection and leaves upstream observation active.
-			writeStreamHeaders()
-			if _, err := fmt.Fprint(c.Writer, ":\n\n"); err != nil {
-				logger.L().Info("openai chat_completions stream: client disconnected during keepalive",
-					zap.String("request_id", requestID),
-				)
-				clientDisconnected = true
-				continue
-			}
-			c.Writer.Flush()
 		}
 	}
 }

@@ -22,12 +22,12 @@ import (
 )
 
 // chat.go dispatches Chat Completions requests and executes their conversion
-// through Responses when that route is selected.
-// Chat requests can contain Responses input, which a typed Chat round trip
-// would discard. Dispatch examines the resolved upstream protocol and body
-// shape before conversion; native CN, raw Chat, Anthropic, and Grok routes can
-// therefore leave the common Responses path at different stages while retaining
-// the requested client format.
+// through Responses when that route is selected. Chat requests can contain
+// Responses input, which a typed Chat round trip would discard. Dispatch
+// examines the resolved upstream protocol and body shape before conversion;
+// Kimi and DeepSeek, raw Chat, Anthropic, and Grok routes can therefore leave
+// the common Responses path at different stages while retaining the requested
+// client format.
 //
 // The common path maps billing and vendor models before deriving compatibility
 // cache identity, then prepares Responses bytes and provider-scoped sessions.
@@ -119,7 +119,7 @@ func RunChat(ctx context.Context, body []byte, promptCacheKey, defaultMappedMode
 		if !isResponsesShape {
 			return p.DispatchChat(ctx, DispatchRawChat, body, promptCacheKey, defaultMappedModel)
 		}
-		if !profile.SupportsNativeCN {
+		if !profile.NativeResponsesSupported {
 			var responsesReq protocolopenai.ResponsesRequest
 			if err := json.Unmarshal(body, &responsesReq); err != nil {
 				return nil, fmt.Errorf("parse responses-shaped chat completions request: %w", err)
@@ -134,19 +134,21 @@ func RunChat(ctx context.Context, body []byte, promptCacheKey, defaultMappedMode
 			}
 			return p.DispatchChat(ctx, DispatchRawChat, chatBody, promptCacheKey, defaultMappedModel)
 		}
-		// Native CN Responses requests continue to the Responses-to-Chat output conversion below.
+		// Kimi and DeepSeek Responses requests continue to the
+		// Responses-to-Chat output conversion below.
 	}
 
 	if profile.Anthropic {
 		return p.DispatchChat(ctx, DispatchAnthropic, body, promptCacheKey, defaultMappedModel)
 	}
 
-	// RawChat includes CN providers fixed to Chat and API key providers whose resolved
-	// probe or administrator policy selects Chat.
+	// RawChat includes Kimi, Zhipu, and DeepSeek providers fixed to Chat and
+	// API key providers whose resolved probe or administrator policy selects
+	// Chat.
 	if profile.RawChat {
 		return p.DispatchChat(ctx, DispatchRawChat, body, promptCacheKey, defaultMappedModel)
 	}
-	if !profile.CNProvider && p.DefaultChat() {
+	if !profile.ProtocolSlotDefaults && p.DefaultChat() {
 		return p.DispatchChat(ctx, DispatchRawChat, body, promptCacheKey, defaultMappedModel)
 	}
 

@@ -1,14 +1,20 @@
 package antigravity
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// Structured Google RPC retries require matching status/reason observations
-// and model metadata, with delay syntax parsed independently from HTTP
+// retry_loop_test.go checks structured Google RPC retry classification and
+// bounded provider waits. Structured retries require matching status/reason
+// observations and model metadata, with delay syntax parsed independently from HTTP
 // error-code shape. Fixtures pin short/long/capacity decisions using the
 // native boolean and normalize resource names, while exact internal-500
 // matching remains separate.
@@ -253,25 +259,23 @@ func TestParseAntigravitySmartRetryInfo(t *testing.T) {
 	}
 }
 
-// TestShouldTriggerAntigravitySmartRetry selects policy using the native
+// TestClassifyAntigravitySmartRetry selects policy using the native
 // boolean despite historical provider labels in fixture names. Short, long,
 // missing-delay, and capacity bodies must choose their configured retry or
 // model-limit observations.
-func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
+func TestClassifyAntigravitySmartRetry(t *testing.T) {
 	oauthProvider := true
 	setupTokenProvider := true
 	upstreamProvider := true
 	apiKeyProvider := false
 
 	tests := []struct {
-		name                             string        // human-readable table case name
-		provider                         bool          // input native-retry eligibility flag
-		body                             string        // encoded supplier error fixture
-		expectedShouldRetry              bool          // expected same-provider retry selection
-		expectedShouldRateLimit          bool          // expected model-limit selection result
-		expectedIsModelCapacityExhausted bool          // expected accumulated capacity observation
-		minWait                          time.Duration // minimum expected selected wait
-		modelName                        string        // expected selected model identity
+		name         string         // human-readable table case name
+		provider     bool           // input native-retry eligibility flag
+		body         string         // encoded supplier error fixture
+		expectedKind SmartRetryKind // expected structured retry policy
+		waitDuration time.Duration  // exact expected selected wait
+		modelName    string         // expected selected model identity
 	}{
 		{
 			name:     "OAuth provider with short delay (< 7s) - smart retry",
@@ -285,10 +289,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     true,
-			expectedShouldRateLimit: false,
-			minWait:                 1 * time.Second, // a 0.5-second delay is raised to the one-second minimum
-			modelName:               "claude-opus-4",
+			expectedKind: SmartRetryShort,
+			waitDuration: 1 * time.Second, // a 0.5-second delay is raised to the one-second minimum
+			modelName:    "claude-opus-4",
 		},
 		{
 			name:     "SetupToken provider with short delay - smart retry",
@@ -302,10 +305,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     true,
-			expectedShouldRateLimit: false,
-			minWait:                 3 * time.Second,
-			modelName:               "gemini-3-flash",
+			expectedKind: SmartRetryShort,
+			waitDuration: 3 * time.Second,
+			modelName:    "gemini-3-flash",
 		},
 		{
 			name:     "OAuth provider with long delay (>= 7s) - direct rate limit",
@@ -319,9 +321,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: true,
-			modelName:               "claude-sonnet-4-5",
+			expectedKind: SmartRetryModelLimit,
+			waitDuration: 15 * time.Second,
+			modelName:    "claude-sonnet-4-5",
 		},
 		{
 			name:     "Upstream provider with short delay - smart retry",
@@ -335,10 +337,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     true,
-			expectedShouldRateLimit: false,
-			minWait:                 2 * time.Second,
-			modelName:               "claude-sonnet-4-5",
+			expectedKind: SmartRetryShort,
+			waitDuration: 2 * time.Second,
+			modelName:    "claude-sonnet-4-5",
 		},
 		{
 			name:     "API Key provider - should not trigger",
@@ -352,8 +353,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: false,
+			expectedKind: SmartRetryNone,
 		},
 		{
 			name:     "OAuth provider with exactly 7s delay - direct rate limit",
@@ -367,10 +367,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: true,
-			minWait:                 7 * time.Second,
-			modelName:               "gemini-pro",
+			expectedKind: SmartRetryModelLimit,
+			waitDuration: 7 * time.Second,
+			modelName:    "gemini-pro",
 		},
 		{
 			name:     "503 UNAVAILABLE with MODEL_CAPACITY_EXHAUSTED - long delay",
@@ -385,11 +384,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:              true,
-			expectedShouldRateLimit:          false,
-			expectedIsModelCapacityExhausted: true,
-			minWait:                          1 * time.Second,
-			modelName:                        "gemini-3-pro-high",
+			expectedKind: SmartRetryCapacity,
+			waitDuration: 1 * time.Second,
+			modelName:    "gemini-3-pro-high",
 		},
 		{
 			name:     "503 UNAVAILABLE with MODEL_CAPACITY_EXHAUSTED - no retryDelay - use fixed wait",
@@ -404,11 +401,9 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					"message": "No capacity available for model gemini-2.5-flash on the server"
 				}
 			}`,
-			expectedShouldRetry:              true,
-			expectedShouldRateLimit:          false,
-			expectedIsModelCapacityExhausted: true,
-			minWait:                          1 * time.Second,
-			modelName:                        "gemini-2.5-flash",
+			expectedKind: SmartRetryCapacity,
+			waitDuration: 1 * time.Second,
+			modelName:    "gemini-2.5-flash",
 		},
 		{
 			name:     "429 RESOURCE_EXHAUSTED with RATE_LIMIT_EXCEEDED - no retryDelay - use default rate limit",
@@ -423,38 +418,170 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					"message": "You have exhausted your capacity on this model."
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: true,
-			minWait:                 30 * time.Second,
-			modelName:               "claude-sonnet-4-5",
+			expectedKind: SmartRetryModelLimit,
+			waitDuration: 30 * time.Second,
+			modelName:    "claude-sonnet-4-5",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			shouldRetry, shouldRateLimit, wait, model, isModelCapacityExhausted := ShouldTriggerAntigravitySmartRetry(tt.provider, []byte(tt.body))
-			if shouldRetry != tt.expectedShouldRetry {
-				t.Errorf("shouldRetry = %v, want %v", shouldRetry, tt.expectedShouldRetry)
-			}
-			if shouldRateLimit != tt.expectedShouldRateLimit {
-				t.Errorf("shouldRateLimit = %v, want %v", shouldRateLimit, tt.expectedShouldRateLimit)
-			}
-			if isModelCapacityExhausted != tt.expectedIsModelCapacityExhausted {
-				t.Errorf("isModelCapacityExhausted = %v, want %v", isModelCapacityExhausted, tt.expectedIsModelCapacityExhausted)
-			}
-			if shouldRetry {
-				if wait < tt.minWait {
-					t.Errorf("wait = %v, want >= %v", wait, tt.minWait)
-				}
-			}
-			if shouldRateLimit && tt.minWait > 0 {
-				if wait < tt.minWait {
-					t.Errorf("rate limit wait = %v, want >= %v", wait, tt.minWait)
-				}
-			}
-			if (shouldRetry || shouldRateLimit) && model != tt.modelName {
-				t.Errorf("modelName = %q, want %q", model, tt.modelName)
-			}
+			decision := ClassifyAntigravitySmartRetry(tt.provider, []byte(tt.body))
+			require.Equal(t, SmartRetryDecision{
+				Kind:         tt.expectedKind,
+				WaitDuration: tt.waitDuration,
+				ModelName:    tt.modelName,
+			}, decision)
+		})
+	}
+}
+
+// TestClassifyAntigravitySmartRetry_DetailPrecedence supplies repeated
+// reasons, models, and delays in one RPC failure. The selected policy must
+// preserve accumulated capacity and the last usable delay or model observation.
+func TestClassifyAntigravitySmartRetry_DetailPrecedence(t *testing.T) {
+	const (
+		// These independent details let each fixture vary reason, model, and delay
+		// ordering without changing the required Google RPC envelope.
+		rateLimit = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"models/First-Model"}}`
+		capacity  = `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","metadata":{"model":"models/Capacity-Model"}}`
+	)
+	tests := []struct {
+		name      string         // human-readable table case name
+		status    string         // enclosing Google RPC status
+		details   string         // ordered RPC detail entries
+		wantKind  SmartRetryKind // expected structured retry policy
+		wantWait  time.Duration  // exact selected retry duration
+		wantModel string         // expected normalized model identity
+	}{
+		{
+			name: "delay immediately below threshold", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"6.999999999s"}`,
+			wantKind: SmartRetryShort, wantWait: 7*time.Second - time.Nanosecond, wantModel: "first-model",
+		},
+		{
+			name: "invalid delay selects default", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"invalid"}`,
+			wantKind: SmartRetryModelLimit, wantWait: AntigravityDefaultRateLimitDuration, wantModel: "first-model",
+		},
+		{
+			name: "negative delay selects default", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"-2s"}`,
+			wantKind: SmartRetryModelLimit, wantWait: AntigravityDefaultRateLimitDuration, wantModel: "first-model",
+		},
+		{
+			name: "later zero replaces short delay", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0s"}`,
+			wantKind: SmartRetryModelLimit, wantWait: AntigravityDefaultRateLimitDuration, wantModel: "first-model",
+		},
+		{
+			name: "later invalid delay retains parsed delay", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"invalid"}`,
+			wantKind: SmartRetryShort, wantWait: 2 * time.Second, wantModel: "first-model",
+		},
+		{
+			name: "last parsed delay wins", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"20s"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"500ms"}`,
+			wantKind: SmartRetryShort, wantWait: AntigravitySmartRetryMinWait, wantModel: "first-model",
+		},
+		{
+			name: "capacity before rate limit wins", status: "RESOURCE_EXHAUSTED",
+			details:  capacity + "," + rateLimit + `,{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"20s"}`,
+			wantKind: SmartRetryCapacity, wantWait: AntigravityModelCapacityRetryWait, wantModel: "first-model",
+		},
+		{
+			name: "capacity after rate limit wins", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + "," + capacity,
+			wantKind: SmartRetryCapacity, wantWait: AntigravityModelCapacityRetryWait, wantModel: "capacity-model",
+		},
+		{
+			name: "reason and model come from separate details", status: "RESOURCE_EXHAUSTED",
+			details:  rateLimit + `,{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"OTHER_REASON","metadata":{"model":"projects/p/publishers/google/models/Last-Model"}}`,
+			wantKind: SmartRetryModelLimit, wantWait: AntigravityDefaultRateLimitDuration, wantModel: "last-model",
+		},
+		{
+			name: "blank last model rejects accumulated reasons", status: "RESOURCE_EXHAUSTED",
+			details: rateLimit + "," + capacity + `,{"@type":"type.googleapis.com/google.rpc.ErrorInfo","metadata":{"model":" "}}`,
+		},
+		{
+			name: "resource exhausted still requires rate limit reason", status: "RESOURCE_EXHAUSTED",
+			details: capacity,
+		},
+		{
+			name: "unavailable still requires capacity reason", status: "UNAVAILABLE",
+			details: rateLimit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"error":{"status":"` + tt.status + `","details":[` + tt.details + `]}}`)
+			decision := ClassifyAntigravitySmartRetry(true, body)
+			require.Equal(t, SmartRetryDecision{
+				Kind:         tt.wantKind,
+				WaitDuration: tt.wantWait,
+				ModelName:    tt.wantModel,
+			}, decision)
+		})
+	}
+}
+
+// TestHandleSingleProviderRetryInPlace_RefreshesAnyRecognizedDelay changes the
+// structured failure after the first dispatch. Subsequent waiting must accept
+// every recognized delay while retaining the same in-place retry path.
+func TestHandleSingleProviderRetryInPlace_RefreshesAnyRecognizedDelay(t *testing.T) {
+	tests := []struct {
+		name     string        // human-readable table case name
+		body     string        // first retry failure response
+		wantWait time.Duration // second dispatch waiting duration
+	}{
+		{
+			name:     "long model limit updates delay",
+			body:     `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"later-model"}},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"10s"}]}}`,
+			wantWait: 10 * time.Second,
+		},
+		{
+			name:     "short retry updates delay",
+			body:     `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","metadata":{"model":"later-model"}},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2s"}]}}`,
+			wantWait: 2 * time.Second,
+		},
+		{
+			name:     "capacity updates delay without changing retry path",
+			body:     `{"error":{"status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","metadata":{"model":"later-model"}},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39s"}]}}`,
+			wantWait: AntigravityModelCapacityRetryWait,
+		},
+		{
+			name:     "unrecognized body keeps previous delay",
+			body:     `{"error":{"status":"INTERNAL"}}`,
+			wantWait: 3 * time.Second,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Virtual time makes the selected waits observable without relying on
+			// scheduler timing or sending any requests to a real upstream service.
+			synctest.Test(t, func(t *testing.T) {
+				started := time.Now()
+				var dispatchTimes []time.Duration
+				adapter := &RetryAdapter{Options: RetryOptions{
+					ApplyHeaders: func(*http.Request) {},
+					Do: func(*http.Request) (*http.Response, error) {
+						dispatchTimes = append(dispatchTimes, time.Since(started))
+						if len(dispatchTimes) == 1 {
+							return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader(tt.body))}, nil
+						}
+						return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+					},
+				}}
+				input := RetryInput{Ctx: context.Background(), Native: true, Action: "generateContent", Body: []byte(`{}`)}
+				initial := &http.Response{StatusCode: http.StatusServiceUnavailable}
+				result := adapter.HandleSingleProviderRetryInPlace(input, initial, nil, "https://antigravity.test", 3*time.Second, "initial-model")
+				require.Equal(t, SmartRetryActionBreakWithResp, result.Action)
+				require.NoError(t, result.Err)
+				require.Nil(t, result.SwitchError)
+				require.Equal(t, http.StatusOK, result.Resp.StatusCode)
+				require.Equal(t, []time.Duration{3 * time.Second, 3*time.Second + tt.wantWait}, dispatchTimes)
+				require.NoError(t, result.Resp.Body.Close())
+			})
 		})
 	}
 }

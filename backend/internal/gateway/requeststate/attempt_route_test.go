@@ -47,7 +47,7 @@ func TestAttemptRouteRechecksCapabilitiesAndReadsCurrentMapping(t *testing.T) {
 	require.True(t, resolved)
 	require.Equal(t, protocol.ProtocolOpenAIResponses, attempt.Protocol())
 	for _, target := range []string{"first", "latest"} {
-		model, matched := attempt.ResolveModel(1, record.Platform, map[string]string{"group-model": target}, "group-model")
+		model, matched := attempt.ResolveModel(1, map[string]string{"group-model": target}, "group-model")
 		require.True(t, matched)
 		require.Equal(t, target, model)
 	}

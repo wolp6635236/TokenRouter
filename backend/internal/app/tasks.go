@@ -151,11 +151,11 @@ func provideBatchCleanup(repo batchimage.BatchImageRepository, providers *provid
 }
 
 // provideBatchCleanupRuntime prepares the cleanup loop for lifecycle startup.
-// It enables execution when core has a repository, cfg enables batch images,
-// and Cleanup's effective interval is positive; missing dependencies produce an
-// inactive runtime whose Start does not invoke the bound loop.
-func provideBatchCleanupRuntime(core *batchimage.Cleanup, cfg *config.Config) *batchCleanupRuntime {
-	enabled := core != nil && core.Repo != nil && cfg != nil && cfg.BatchImage.Enabled && core.CleanupInterval() > 0
+// It enables execution when core has a repository and a positive cleanup
+// interval. Missing dependencies produce an inactive runtime whose Start
+// does not invoke the bound loop.
+func provideBatchCleanupRuntime(core *batchimage.Cleanup) *batchCleanupRuntime {
+	enabled := core != nil && core.Repo != nil && core.CleanupInterval() > 0
 	return &batchCleanupRuntime{batchimage.NewRuntime("batch image cleanup", enabled, core.Run)}
 }
 

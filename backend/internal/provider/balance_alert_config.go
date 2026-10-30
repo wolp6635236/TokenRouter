@@ -84,9 +84,6 @@ func BalanceAlertSupported(p *Record) bool {
 	if err != nil {
 		return false
 	}
-	if p.IsCNProvider() {
-		c.Adapter = CNUpstreamUsageAdapterName(p)
-	}
 	switch c.Adapter {
 	case UpstreamUsageAdapterSub2API, UpstreamUsageAdapterNewAPI, UpstreamUsageAdapterZivv,
 		UpstreamUsageAdapterDerouter, UpstreamUsageAdapterKimiBalance, UpstreamUsageAdapterDeepseekBalance:

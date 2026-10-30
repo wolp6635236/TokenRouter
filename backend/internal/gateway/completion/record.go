@@ -17,6 +17,8 @@ import (
 // inclusive OpenAI input. They do not infer network success from the presence
 // of usage or repeat a provider attempt after a price failure.
 //
+// Preliminary funding selects captured or inferred subscription evidence before
+// balance overrides; protocol entrypoints then apply their own pricing instant.
 // Calculated user charges and provider statistics use distinct model and rate
 // choices. Financial Apply runs before WriteUsage: committed allocations replace
 // provisional funding metadata, while a settlement error retains measured counts
@@ -24,6 +26,23 @@ import (
 // is observed after that outcome and cannot cause a second funds application.
 // Direct protocol methods normalize their input result in place; Record provides
 // the ordinary snapshotting entrypoint.
+
+// preliminaryFunding holds subscription evidence and rates before time-dependent
+// pricing or transactional allocation changes the recorded funding outcome.
+type preliminaryFunding struct {
+	// subscription retains the selected captured or reader-provided evidence;
+	// final eligibility and allocation remain the responsibility of the funds transaction.
+	subscription *billing.UserSubscription
+	// baseMultiplier prices the provisional charge using the selected plan,
+	// balance override, group rate, or recorder default before peak scaling.
+	baseMultiplier float64
+	// subscriptionMultiplier and balanceMultiplier supply transaction defaults from
+	// the group or recorder. A balance override replaces balanceMultiplier only
+	// when preliminary selection produces no subscription; plan overrides affect
+	// baseMultiplier.
+	subscriptionMultiplier float64 // preliminary subscription allocation factor
+	balanceMultiplier      float64 // preliminary balance allocation factor
+}
 
 // RecordAnthropic records usage whose ordinary input and cache buckets are already
 // separate. Callers provide complete nonnil input, result, key, payer, provider,
@@ -49,7 +68,6 @@ func (s *Recorder) RecordAnthropic(ctx context.Context, input *Input, opts *Pric
 
 	// Sticky-switch billing reclassifies observed uncached input before pricing; add
 	// it to existing cache reads once and clear input so those tokens are not charged twice.
-
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
 		s.printf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (provider=%d)",
 			result.Usage.InputTokens, provider.ID)
@@ -65,31 +83,14 @@ func (s *Recorder) RecordAnthropic(ctx context.Context, input *Input, opts *Pric
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
 
-	// Preliminary funding uses captured mode first: subscription rates come from
-	// the plan/group, while balance user overrides are resolved when no subscription is selected.
-	multiplier := s.defaultMultiplier
-	subscriptionMultiplier := multiplier
-	balanceMultiplier := multiplier
-	subscription = s.resolveSubscription(ctx, apiKey, subscription, user.ID, apiKey.GroupID)
-	if apiKey.GroupID != nil && apiKey.Group != nil {
-		groupDefault := apiKey.Group.RateMultiplier
-		subscriptionMultiplier = groupDefault
-		balanceMultiplier = groupDefault
-		if subscription == nil {
-			balanceMultiplier = s.resolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
-		}
-	}
-	if apiKey.GroupID != nil && apiKey.Group != nil && subscription == nil {
-		multiplier = balanceMultiplier
-	} else {
-		multiplier = ResolveUsageRateMultiplier(ctx, user.ID, apiKey.GroupID, apiKey.Group, multiplier, subscription, nil)
-	}
+	funding := s.resolvePreliminaryFunding(ctx, apiKey, subscription, user.ID)
+	subscription = funding.subscription
 	// Prepare peak and media candidates before the final card mode is known;
 	// RatesForMode later supplies the applicable peak scale for transaction allocation.
 	// The stored user/group base remains reusable across different recording instants.
 	rateNow := s.now()
 	opts.PricingAt = rateNow
-	multiplier, imageMultiplier := ComputePeakAwareMultipliers(apiKey, multiplier, rateNow)
+	multiplier, imageMultiplier := ComputePeakAwareMultipliers(apiKey, funding.baseMultiplier, rateNow)
 
 	billingModel := ForwardResultBillingModel(result.Model, result.UpstreamModel)
 	if input.BillingModelSource == BillingModelSourceUpstream && result.UpstreamModel != "" {
@@ -129,18 +130,23 @@ func (s *Recorder) RecordAnthropic(ctx context.Context, input *Input, opts *Pric
 		s.applyProviderStatsCost(ctx, usageLog,
 			provider.ID, *apiKey.GroupID, result.UpstreamModel, requestedModel, input.GroupMappedModel,
 			// Native input excludes both cache buckets, so statistics receive those buckets
-			// separately; OpenAI recording constructs the analogous disjoint ordinary input.
+			// separately, including cache-write lifetimes for distinct provider statistics
+			// rates; OpenAI recording constructs the analogous disjoint ordinary input.
 			UsageTokens{
-				InputTokens:         result.Usage.InputTokens,
-				OutputTokens:        result.Usage.OutputTokens,
-				CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-				CacheReadTokens:     result.Usage.CacheReadInputTokens,
-				ImageOutputTokens:   result.Usage.ImageOutputTokens,
+				InputTokens:           result.Usage.InputTokens,
+				OutputTokens:          result.Usage.OutputTokens,
+				CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+				CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+				CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+				CacheReadTokens:       result.Usage.CacheReadInputTokens,
+				ImageOutputTokens:     result.Usage.ImageOutputTokens,
 			},
 		)
 	}
 
-	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(apiKey, cost, subscriptionMultiplier, balanceMultiplier, rateNow)
+	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(
+		apiKey, cost, funding.subscriptionMultiplier, funding.balanceMultiplier, rateNow,
+	)
 	// Commit or deduplicate the financial command before writing analysis, so a
 	// later log retry can reuse this row without submitting another funds operation.
 	_, billingErr := s.Apply(ctx, input.SettlementKey(), usageLog, &usageBillingParams{
@@ -297,7 +303,7 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	if s.health != nil && input.Provider != nil && (input.Provider.OpenAI || input.Provider.CNProvider) {
+	if s.health != nil && input.Provider != nil && input.Provider.ResetForbiddenCounterOnSuccess {
 		s.health.ResetOpenAI403Counter(ctx, input.Provider.ID)
 	}
 	apiKey, user, provider, subscription := s.keyWithBillingSettings(ctx, input.APIKey), input.User, input.Provider, input.Subscription
@@ -327,25 +333,11 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 	}
 
-	multiplier := s.defaultMultiplier
-	subscriptionMultiplier := multiplier
-	balanceMultiplier := multiplier
-	subscription = s.resolveSubscription(ctx, apiKey, subscription, user.ID, apiKey.GroupID)
-	if apiKey.GroupID != nil && apiKey.Group != nil {
-		subscriptionMultiplier = apiKey.Group.RateMultiplier
-		balanceMultiplier = apiKey.Group.RateMultiplier
-		if subscription == nil {
-			balanceMultiplier = s.resolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
-		}
-	}
-	if apiKey.GroupID != nil && apiKey.Group != nil && subscription == nil {
-		multiplier = balanceMultiplier
-	} else {
-		multiplier = ResolveUsageRateMultiplier(ctx, user.ID, apiKey.GroupID, apiKey.Group, multiplier, subscription, nil)
-	}
+	funding := s.resolvePreliminaryFunding(ctx, apiKey, subscription, user.ID)
+	subscription = funding.subscription
 	// Keep media and tool factors at the captured base while preparing a peak
 	// candidate for token mode; the final card mode supplies transaction allocation scale.
-	baseMultiplier := multiplier
+	baseMultiplier := funding.baseMultiplier
 	rateNow := s.now()
 	if !input.PricingAt.IsZero() {
 		rateNow = input.PricingAt
@@ -357,7 +349,7 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 	var err error
 	billingModel := OpenAIUsageBillingModel(result, input.PricingUsageFields)
 	billingModels := s.models.Candidates(billingModel, result.BillingModel, input.GroupMappedModel, input.OriginalModel, result.UpstreamModel, result.Model)
-	billingModels = s.FilterCNProviderBillingModelCandidates(ctx, provider, apiKey, billingModels)
+	billingModels = s.FilterCompatibleClaudeBillingCandidates(ctx, provider, apiKey, billingModels)
 	serviceTier := ""
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
@@ -563,7 +555,9 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 			tokens)
 	}
 
-	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(apiKey, cost, subscriptionMultiplier, balanceMultiplier, rateNow)
+	subscriptionMultiplier, balanceMultiplier, subscriptionMultiplierScale := RatesForMode(
+		apiKey, cost, funding.subscriptionMultiplier, funding.balanceMultiplier, rateNow,
+	)
 	// Financial application precedes the analysis write even for zero-cost or partial
 	// records; only an applied transaction can replace provisional allocation metadata.
 	billingErr := func() error {
@@ -593,6 +587,48 @@ func (s *Recorder) RecordOpenAI(ctx context.Context, input *Input) error {
 	}
 	s.WriteUsage(ctx, usageLog, "service.openai_gateway")
 	return nil
+}
+
+// resolvePreliminaryFunding selects subscription evidence and the rates used
+// before peak pricing and settlement. Callers supply a nonnil captured key and
+// the payer identity after loading current billing settings.
+//
+// Funding mode first decides whether to retain, ignore, or infer a subscription.
+// A selected subscription suppresses the balance override lookup and uses its
+// covered plan rate for the provisional charge. Allocation defaults retain group
+// rates because settlement reloads plan rates itself. Missing group evidence
+// leaves recorder defaults, and automatic eligibility errors permit balance pricing.
+func (s *Recorder) resolvePreliminaryFunding(
+	ctx context.Context,
+	key *KeySnapshot,
+	current *billing.UserSubscription,
+	userID int64,
+) preliminaryFunding {
+	defaultMultiplier := s.defaultMultiplier
+	funding := preliminaryFunding{
+		baseMultiplier:         defaultMultiplier,
+		subscriptionMultiplier: defaultMultiplier,
+		balanceMultiplier:      defaultMultiplier,
+	}
+	funding.subscription = s.resolveSubscription(ctx, key, current, userID, key.GroupID)
+	if key.GroupID != nil && key.Group != nil {
+		groupDefault := key.Group.RateMultiplier
+		funding.subscriptionMultiplier = groupDefault
+		funding.balanceMultiplier = groupDefault
+		if funding.subscription == nil {
+			funding.balanceMultiplier = s.resolveUserGroupRateMultiplier(ctx, userID, *key.GroupID, groupDefault)
+		}
+	}
+	if key.GroupID != nil && key.Group != nil && funding.subscription == nil {
+		funding.baseMultiplier = funding.balanceMultiplier
+	} else {
+		// Plan coverage can retain the recorder default when the captured group is
+		// excluded; pass no balance resolver because its eligible lookup already ran above.
+		funding.baseMultiplier = ResolveUsageRateMultiplier(
+			ctx, userID, key.GroupID, key.Group, funding.baseMultiplier, funding.subscription, nil,
+		)
+	}
+	return funding
 }
 
 // RecordCyber snapshots eligible Cyber inputs and invokes ordinary completion

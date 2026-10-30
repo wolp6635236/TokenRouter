@@ -545,6 +545,17 @@ export default {
   },
   // Usage Records
   usage: {
+    requestSource: 'Request source',
+    sourcesAll: 'All requests',
+    requestSources: {
+      user: 'User request',
+      system: 'System request',
+      group_probe: 'Group probe',
+      provider_test: 'Manual provider test',
+      scheduled_test: 'Scheduled provider test',
+      quota_probe: 'Quota probe',
+    },
+    costStatus: 'Cost completeness',
     title: 'Usage Records',
     description: 'View and manage all user usage records',
     userFilter: 'User',

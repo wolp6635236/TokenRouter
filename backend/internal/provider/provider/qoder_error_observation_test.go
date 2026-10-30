@@ -91,7 +91,7 @@ func TestQoderGatewayNonStreamingSSEAgentLimitSetsRateLimited(t *testing.T) {
 		)),
 	}
 
-	events, err := qoder.ReadQoderSSEEventsContext(context.Background(), resp, nil)
+	events, err := qoder.ReadQoderSSEEventsContext(context.Background(), resp)
 	if err != nil {
 		ObserveQoderUpstreamError(context.Background(), providerID, repo, err)
 	}

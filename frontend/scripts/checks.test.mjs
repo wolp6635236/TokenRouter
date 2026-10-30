@@ -139,7 +139,6 @@ test('private ownership admits declared entries and rejects external implementat
   for (const [directory, owner] of [
     ['src/views/user/payment/', 'src/views/user/PaymentView.vue'],
     ['src/views/admin/risk-control/', 'src/views/admin/RiskControlView.vue'],
-    ['src/views/user/batch-image/', 'src/views/user/BatchImageGuideView.vue'],
   ]) {
     assert.equal(importViolation(owner, `${directory}privateHelper`), null)
     assert.equal(importViolation(`${directory}child.ts`, `${directory}privateHelper`), null)

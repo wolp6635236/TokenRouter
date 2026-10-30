@@ -155,7 +155,7 @@ func provideUsageCleanupRepository(client *dbent.Client, db *sql.DB) usage.Usage
 // settings dependencies. It installs singleton acquisition using Redis and
 // optional database advisory locks; the aggregation service owns recurring
 // execution and the returned release callbacks.
-func provideUsageAggregation(repo usage.DashboardAggregationRepository, wheel *timingwheel.Wheel, cache provider.CNMonitorLeader, db *sql.DB, options *usage.Options, settings *preaggregation.PreAggregationSettingsService) *usage.DashboardAggregationService {
+func provideUsageAggregation(repo usage.DashboardAggregationRepository, wheel *timingwheel.Wheel, cache provider.LeaderLocker, db *sql.DB, options *usage.Options, settings *preaggregation.PreAggregationSettingsService) *usage.DashboardAggregationService {
 	s := usage.NewDashboardAggregationService(repo, wheel, options)
 	s.SetSingletonLocker(func(ctx context.Context, key, owner string, ttl time.Duration) (func(), bool) {
 		return provider.AcquireSingletonLease(ctx, cache, databaseAdvisoryLease(db), key, owner, ttl)

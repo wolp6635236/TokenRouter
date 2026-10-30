@@ -1106,6 +1106,11 @@ func ParseSSELine(line string) ([]SSEEvent, error) {
 		return nil, nil
 	}
 	data := strings.TrimSpace(line[5:])
+	// Empty data is upstream heartbeat activity, not a malformed Qoder wrapper.
+	// Consume it without emitting an event or interrupting later payload decoding.
+	if data == "" {
+		return nil, nil
+	}
 
 	if data == "[DONE]" {
 		return []SSEEvent{{IsDone: true}}, nil

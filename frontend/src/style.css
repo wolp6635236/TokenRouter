@@ -1677,12 +1677,19 @@
     @apply bg-white/80 backdrop-blur-xl dark:bg-dark-900/90;
   }
 
-  /* Hidden scrollbars leave overflow behavior to the owning scroll container. */
-  .scrollbar-hide {
+  /*
+   * Dialog panels and nested scroll regions hide native scrollbar tracks while
+   * retaining their overflow behavior for wheel, touch, and keyboard navigation.
+   */
+  .scrollbar-hide,
+  .modal-content,
+  .modal-content * {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
-  .scrollbar-hide::-webkit-scrollbar {
+  .scrollbar-hide::-webkit-scrollbar,
+  .modal-content::-webkit-scrollbar,
+  .modal-content *::-webkit-scrollbar {
     display: none;
   }
 

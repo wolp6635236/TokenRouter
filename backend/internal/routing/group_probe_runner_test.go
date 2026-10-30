@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 )
@@ -121,12 +122,24 @@ func TestGroupAvailabilityProbeRunDueSkipsOverlappingRun(t *testing.T) {
 
 // TestRunGroupAvailabilityProbeAttemptsStopsAfterSuccess fails two callbacks
 // before the third succeeds with retries still available. Each callback has a
-// deadline, and success ends the sequence at three attempts.
+// deadline, and success ends the sequence at three attempts. Retries also
+// retain one shared request identity for their cost records.
 func TestRunGroupAvailabilityProbeAttemptsStopsAfterSuccess(t *testing.T) {
 	attempts := 0
+	roundID := ""
 	// A positive timeout makes each attempt's deadline observable.
 	result := runGroupAvailabilityProbeAttempts(context.Background(), 3, time.Second, func(ctx context.Context) *GroupAvailabilityProbeResult {
 		attempts++
+		id := telemetry.RequestIDValue(ctx)
+		if id == "" {
+			t.Fatal("probe attempt has no round identity")
+		}
+		if roundID == "" {
+			roundID = id
+		}
+		if id != roundID {
+			t.Fatal("probe retries changed their round identity")
+		}
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("each probe attempt must have its own deadline")
 		}

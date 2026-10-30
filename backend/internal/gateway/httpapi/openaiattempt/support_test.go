@@ -132,7 +132,7 @@ func TestResolveOpenAIUpstreamEndpointPrefersForwardResult(t *testing.T) {
 func TestOpenAIForwardMayFailoverOnlyAfterNonSemanticWrite(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	before := gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+	before := gatewayhttp.HeartbeatAdjustedWrittenSize(c)
 
 	_, err := fmt.Fprint(c.Writer, ":\n\n")
 	require.NoError(t, err)

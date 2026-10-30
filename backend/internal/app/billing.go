@@ -118,17 +118,17 @@ func provideBalanceAdjuster(client *dbent.Client) billing.BalanceAdjuster {
 	return billingpostgres.NewBalanceStore(client)
 }
 
-// provideBillingPlans combines subscription-plan storage with payment-instance
-// usage checks.
-func provideBillingPlans(client *dbent.Client, orders *paymentpostgres.InstanceStore) *billing.Plans {
-	return billing.NewPlans(billingpostgres.NewPlanStore(client), orders)
+// provideBillingPlans combines subscription-plan storage with payment-instance usage checks
+// and the routing group lookup that confirms declared group selections.
+func provideBillingPlans(client *dbent.Client, orders *paymentpostgres.InstanceStore, groups *routingpostgres.GroupStore) *billing.Plans {
+	return billing.NewPlans(billingpostgres.NewPlanStore(client), orders, planGroupValidator{lookup: groups})
 }
 
 // provideSubscriptionExpiry constructs one-minute reminders using notification
 // settings and singleton leases. The generated owner identifies this instance;
 // the lease helper receives Redis and database acquisition capabilities, and
 // lifecycle startup begins the reminder loop.
-func provideSubscriptionExpiry(repo billing.UserSubscriptionRepository, settings settingscore.Repository, notification *notificationcore.NotificationEmailService, lock provider.CNMonitorLeader, db *sql.DB) *billing.SubscriptionExpiryService {
+func provideSubscriptionExpiry(repo billing.UserSubscriptionRepository, settings settingscore.Repository, notification *notificationcore.NotificationEmailService, lock provider.LeaderLocker, db *sql.DB) *billing.SubscriptionExpiryService {
 	return billing.NewSubscriptionExpiryService(repo, billing.ExpiryOptions{Interval: time.Minute, Owner: uuid.NewString(), Now: time.Now, Observe: func(format string, args ...any) { logging.LegacyPrintf("service.subscription_expiry", format, args...) }, Settings: settings, Notifier: expiryNotifications{Service: notification}, Lease: func(ctx context.Context, key, owner string, ttl time.Duration) (func(), bool) {
 		return provider.AcquireSingletonLease(ctx, lock, databaseAdvisoryLease(db), key, owner, ttl)
 	}})

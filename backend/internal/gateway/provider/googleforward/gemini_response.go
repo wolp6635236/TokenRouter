@@ -3,7 +3,9 @@ package googleforward
 import (
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
@@ -15,10 +17,12 @@ import (
 // tool names during synchronous response adaptation.
 
 // geminiResponseAdapter binds provider response reading to this attempt image
-// and tool state. The executor owns response-body closure; callbacks borrow
-// its reader for bounded reads and apply the injected HTTP header policy.
+// and tool state. SSE readers install an idempotent body closer before executor
+// cleanup; buffered JSON callbacks retain bounded reads and the HTTP header policy.
 func (s *Gemini) geminiResponseAdapter(c *attempt) *gemininative.ResponseAdapter {
 	return &gemininative.ResponseAdapter{Options: gemininative.ResponseOptions{
+		Context:     c.RequestContext(),
+		Stream:      upstream.GeminiStreamOptions{IdleTimeout: time.Duration(s.Options.StreamInterval) * time.Second, MaxFrameBytes: s.Options.MaxLineSize},
 		GoogleError: func(status int, message string) error { return c.GoogleError(status, message) },
 
 		ReadBody: func(body io.Reader) ([]byte, error) {

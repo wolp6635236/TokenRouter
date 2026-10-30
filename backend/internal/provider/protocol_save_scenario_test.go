@@ -13,17 +13,17 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// CN legacy input becomes a unified native selection during saving. These
-// scenarios exercise creation, ordinary editing, credential replacement, and
-// bulk validation through the administrative service, with stored fields and
-// recorded bulk updates checked for the supplied platform combinations. The
-// save paths exercise create_record.go, admin_edit.go, protocol_legacy.go, and
-// protocols.go together.
+// Kimi, Zhipu, and DeepSeek legacy input becomes a unified native selection
+// during saving. These scenarios exercise creation, ordinary editing,
+// credential replacement, and bulk validation through the administrative
+// service, with stored fields and recorded bulk updates checked for the
+// supplied platform combinations. The save paths exercise create_record.go,
+// admin_edit.go, protocol_legacy.go, and protocols.go together.
 
-// cnProviderProtocolCases lists explicit platform/mode/legacy-variant combinations
+// textAPIKeyProtocolCases lists explicit platform/mode/legacy-variant combinations
 // for save scenarios, independently of the validator's own capability lookup.
-var cnProviderProtocolCases = []struct {
-	platform  string   // CN provider platform under test
+var textAPIKeyProtocolCases = []struct {
+	platform  string   // Kimi/Zhipu/DeepSeek provider platform under test
 	mode      string   // configured provider billing mode
 	protocols []string // accepted legacy routing variants
 }{
@@ -34,21 +34,22 @@ var cnProviderProtocolCases = []struct {
 	{capability.PlatformZhipu, provider.ProviderModeCoding, []string{provider.APIProtocolAdaptive, provider.APIProtocolChatCompletions, provider.APIProtocolAnthropic}},
 }
 
-// TestCNProviderProviderProtocolPersistence runs supported legacy variants through
-// creation, editing, and bulk credential updates. It checks stored canonical
-// protocols, fixed endpoint migration, ordinary-field retention, and the recorded
-// bulk protocol patch for each supplied platform/mode combination.
-func TestCNProviderProviderProtocolPersistence(t *testing.T) {
+// TestKimiZhipuDeepSeekProviderProtocolPersistence runs supported legacy
+// variants through creation, editing, and bulk credential updates. It checks
+// stored canonical protocols, fixed endpoint migration, ordinary-field
+// retention, and the recorded bulk protocol patch for each supplied
+// platform/mode combination.
+func TestKimiZhipuDeepSeekProviderProtocolPersistence(t *testing.T) {
 	t.Parallel()
-	for _, tc := range cnProviderProtocolCases {
+	for _, tc := range textAPIKeyProtocolCases {
 		for _, protocol := range tc.protocols {
 			t.Run(tc.platform+"/"+tc.mode+"/"+protocol, func(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				repo := &providerServiceTestRepo{}
 				svc := newProviderEditorForTest(repo)
-				credentials := cnProviderTestCredentials(tc.platform, tc.mode, protocol)
-				wantCredentials := cnProviderTestCredentials(tc.platform, tc.mode, protocol)
+				credentials := textAPIKeyTestCredentials(tc.platform, tc.mode, protocol)
+				wantCredentials := textAPIKeyTestCredentials(tc.platform, tc.mode, protocol)
 				delete(wantCredentials, "api_protocol")
 				wantProtocols := []protocolcore.ProtocolID{protocolcore.ProtocolOpenAIChatCompletions}
 				switch protocol {
@@ -84,11 +85,11 @@ func TestCNProviderProviderProtocolPersistence(t *testing.T) {
 
 				// Switch to a legacy Chat record before applying new credentials so edit and
 				// bulk-update normalization derive selections from incoming protocol fields.
-				repo.providers[created.ID].Credentials = cnProviderTestCredentials(tc.platform, tc.mode, provider.APIProtocolChatCompletions)
+				repo.providers[created.ID].Credentials = textAPIKeyTestCredentials(tc.platform, tc.mode, provider.APIProtocolChatCompletions)
 				updated, err = svc.UpdateProvider(ctx, created.ID, &provider.UpdateProviderInput{Credentials: credentials})
 				require.NoError(t, err)
 				require.Equal(t, wantCredentials, updated.Credentials)
-				repo.providers[created.ID].Credentials = cnProviderTestCredentials(tc.platform, tc.mode, provider.APIProtocolChatCompletions)
+				repo.providers[created.ID].Credentials = textAPIKeyTestCredentials(tc.platform, tc.mode, provider.APIProtocolChatCompletions)
 				result, err := svc.BulkUpdateProviders(ctx, &provider.BulkUpdateProvidersInput{
 					ProviderIDs: []int64{created.ID}, Credentials: credentials,
 				})
@@ -101,10 +102,11 @@ func TestCNProviderProviderProtocolPersistence(t *testing.T) {
 	}
 }
 
-// TestCNProviderLegacyCredentialDefaults compares editing a record with omitted
-// legacy fields against creating a new record. It checks payg/Chat defaults while
-// ordinary edits keep legacy keys absent and creation stores the provider mode.
-func TestCNProviderLegacyCredentialDefaults(t *testing.T) {
+// TestKimiZhipuDeepSeekLegacyCredentialDefaults compares editing a record with
+// omitted legacy fields against creating a new record. It checks payg/Chat
+// defaults while ordinary edits keep legacy keys absent and creation stores the
+// provider mode.
+func TestKimiZhipuDeepSeekLegacyCredentialDefaults(t *testing.T) {
 	t.Parallel()
 	for _, platform := range []string{capability.PlatformDeepseek, capability.PlatformKimi, capability.PlatformZhipu} {
 		t.Run(platform, func(t *testing.T) {

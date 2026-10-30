@@ -56,8 +56,11 @@
         :key="resolveKey(item, index)"
         :data-rule-list-row="listId"
         :data-testid="testIdFor('row')"
-        class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2"
-        :class="rowClass"
+        class="grid min-w-0 items-start gap-2"
+        :class="[
+          rowClass,
+          reorderable || removable || itemLabel ? 'grid-cols-[minmax(0,1fr)_auto]' : 'grid-cols-1',
+        ]"
       >
         <p
           v-if="itemLabel"
@@ -142,7 +145,8 @@ import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 // RuleListEditor.vue renders editable rows and requests collection operations from its
 // parent. Object rows receive stable display keys, while primitive rows use indices
 // unless the caller supplies itemKey. Surviving row identity lets input nodes remain
-// associated with their data across removal and reordering.
+// associated with their data across removal and reordering. Rows whose child
+// owns its actions use the full width when no outer actions or heading are supplied.
 //
 // Leave hooks count outgoing rows so the empty message appears after their transitions
 // finish. A trailing row remains in document flow while fading; earlier rows yield

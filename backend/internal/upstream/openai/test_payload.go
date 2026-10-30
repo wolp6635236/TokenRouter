@@ -64,6 +64,7 @@ func TestChatCompletionsPayload(modelID string, prompt string) map[string]any {
 				"content": testPrompt,
 			},
 		},
-		"stream": true,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
 	}
 }

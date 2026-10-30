@@ -33,6 +33,11 @@
           :wide-label="limit.wideLabel"
           color="indigo"
         />
+        <p
+          v-if="limit.status === 'rate-limited'"
+          class="text-xs text-amber-600 dark:text-amber-400"
+          >{{ t('admin.providers.upstreamUsage.status.rateLimited') }}</p
+        >
         <div
           v-if="limit.hasAmount && limit.showAmount"
           class="min-w-0 break-words pl-9 text-xs leading-tight text-gray-400 dark:text-gray-500"
@@ -409,9 +414,10 @@ const visibleLimits = computed(() =>
     wideLabel: limitDisplayName(limit.name).length > 4,
     utilization:
       limit.limit && limit.limit > 0 && limit.used != null
-        ? Math.min(100, Math.max(0, (limit.used / limit.limit) * 100))
+        ? Math.max(0, (limit.used / limit.limit) * 100)
         : 0,
     resetAt: limit.reset_at ?? null,
+    status: limit.status,
   })),
 )
 

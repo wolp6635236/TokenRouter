@@ -52,18 +52,19 @@ type messagesCountSink struct {
 // ForwardSelectedCountTokens dispatches to the selected provider's count path without generation slots or usage
 // submission.
 // Missing target or parsed input returns an error. Qoder and Antigravity write
-// unsupported output with nil error; Grok estimates locally. Other platforms
+// unsupported output with nil error; Grok estimates locally, and other
+// compatible platforms use the auxiliary count path. Remaining platforms
 // require their matching bound executor, and missing execution support writes
 // unavailable output with a terminal error.
 func ForwardSelectedCountTokens(ctx context.Context, c *gin.Context, target *gatewayadapter.ExecutionProvider, parsed *requeststate.ParsedRequest, messages *MessagesExecutor, auxiliary *OpenAIAuxiliary, gemini *GeminiExecutor) error {
 	if target == nil || parsed == nil {
 		return errors.New("count_tokens target is unavailable")
 	}
-	switch target.Record.Platform {
-	case "qoder", "antigravity":
+	switch platform := target.Record.Platform; {
+	case platform == "qoder" || platform == "antigravity":
 		WriteAnthropicError(c, http.StatusNotFound, "not_found_error", "", "count_tokens endpoint is not supported for this provider")
 		return nil
-	case "grok":
+	case platform == "grok":
 		// This provider path supplies a local Messages estimate. Return the same
 		// client count shape while leaving network execution and generation resources out of this branch.
 		count, err := tokenestimate.Anthropic(parsed.Body.Bytes())
@@ -73,15 +74,15 @@ func ForwardSelectedCountTokens(ctx context.Context, c *gin.Context, target *gat
 		}
 		c.JSON(http.StatusOK, gin.H{"input_tokens": count})
 		return nil
-	case "openai", "kimi", "zhipu", "deepseek":
+	case target.View().IsOpenAICompatible():
 		if auxiliary != nil {
 			return auxiliary.ForwardCountTokensAsAnthropic(ctx, c, target, parsed.Body.Bytes(), parsed.Model)
 		}
-	case "anthropic":
+	case platform == "anthropic":
 		if messages != nil {
 			return messages.ForwardCountTokens(ctx, c, target, parsed)
 		}
-	case "gemini":
+	case platform == "gemini":
 		if gemini != nil && gemini.Runtime != nil {
 			return forwardGeminiMessagesCount(ctx, c, target, parsed, gemini)
 		}

@@ -18,8 +18,8 @@ import (
 //
 // The model chain retains client, key, group, and provider identities
 // separately so restriction and billing consumers can select their configured
-// stage. Candidate resolution adds the chosen provider and protocol but leaves
-// provider mapping for the attempt's current snapshot. Each attempt receives
+// stage. Candidate resolution binds the chosen provider, protocol, and final model
+// from the same snapshot before execution. Each attempt receives
 // the scalar chain by value, keeping its provider mapping in that candidate
 // copy. Gateway admission authorizes the group and client entry before using
 // the plan.
@@ -85,11 +85,12 @@ type RoutePlan struct {
 // CandidatePlan records the provider and protocol selected for one request
 // attempt.
 type CandidatePlan struct {
-	Models           ModelChain            // attempt-specific model identity stages
-	ProviderID       int64                 // selected provider row identifier
-	GroupID          int64                 // authorized final group identifier
-	ClientProtocol   capability.ProtocolID // resolved client entry identity
-	UpstreamProtocol capability.ProtocolID // selected provider execution protocol
+	ModelMappingMatched bool                  // one-hop provider mapping match
+	Models              ModelChain            // attempt-specific model identity stages
+	ProviderID          int64                 // selected provider row identifier
+	GroupID             int64                 // authorized final group identifier
+	ClientProtocol      capability.ProtocolID // resolved client entry identity
+	UpstreamProtocol    capability.ProtocolID // selected provider execution protocol
 }
 
 // Mapping returns the retained group mapping, restriction settings, and billing
@@ -109,15 +110,6 @@ func (p RoutePlan) Mapping() GroupMappingResult {
 
 // Models returns the plan's retained scalar model-chain value by copy.
 func (p RoutePlan) Models() ModelChain { return p.models }
-
-// ResolveModel returns a candidate copy with requested resolved through the
-// supplied provider snapshot. The match flag describes that one mapping step;
-// callers supply the appropriate group-mapped input for the attempt.
-func (p CandidatePlan) ResolveModel(snapshot provider.ProviderSnapshot, requested string) (CandidatePlan, bool) {
-	mapped, matched := snapshot.ModelPolicy.Resolve(requested)
-	p.Models.ProviderMappedModel = mapped
-	return p, matched
-}
 
 // Plan captures the caller's admitted group and completed model mapping for
 // later attempts. It copies admitted protocol lists and fallback targets, and a
@@ -149,16 +141,27 @@ func Plan(input PlanInput) RoutePlan {
 	return plan
 }
 
-// ResolveCandidate resolves the provider's enabled protocols against the
-// retained client source and conversion policy. It returns false for an
-// unusable route; callers repeat resolution for refreshed provider snapshots
-// and enforce entry admission separately.
+// ResolveCandidate binds the final model and upstream protocol from one provider
+// snapshot. An unusable route returns false; callers resolve again for each
+// refreshed candidate and enforce client entry admission separately.
+//
+// The retained group model feeds exactly one provider mapping hop. Its result
+// selects the model's protocol from the same snapshot, so consumers can send
+// the captured model directly. Retrying with a
+// different provider rebuilds the complete candidate while preserving request,
+// group, restriction, and billing identities in the retained plan.
 func (p RoutePlan) ResolveCandidate(candidate provider.ProviderSnapshot) (CandidatePlan, bool) {
-	target, ok := capability.ResolveRoute(candidate.Protocols(), p.clientProtocol, p.fallbacks)
+	model := p.models.GroupMappedModel
+	if model == "" {
+		model = p.models.RequestedModel
+	}
+	resolved, ok := candidate.ResolveModelRoute(model, p.clientProtocol, p.fallbacks)
 	if !ok {
 		return CandidatePlan{}, false
 	}
-	return CandidatePlan{Models: p.models, ProviderID: candidate.ID, GroupID: p.groupID, ClientProtocol: p.clientProtocol, UpstreamProtocol: target}, true
+	models := p.models
+	models.ProviderMappedModel = resolved.Model
+	return CandidatePlan{Models: models, ModelMappingMatched: resolved.MappingMatched, ProviderID: candidate.ID, GroupID: p.groupID, ClientProtocol: p.clientProtocol, UpstreamProtocol: resolved.Protocol}, true
 }
 
 // GroupID returns the captured final group identifier for this request.

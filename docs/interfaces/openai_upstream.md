@@ -87,7 +87,7 @@ app 分别装配文本、Responses、WS、Images 和辅助执行器，它们复�
 
 Compact 的请求白名单、reasoning replay 和 store=false 的修复由请求 codec 执行，是否触发由入站决定。Responses 的 Header 和 CC 请求的发送也使用原生实现，提供商身份、代理和 TLS、请求状态通过小接口传入，覆写顺序不变。UA 和 originator 字符串的识别在 `gateway/clientmeta`；规范的 Codex 出站身份和动态 UA resolver 只在原生包里，请求字段何时改写由 `gateway/httpapi` 决定。
 
-Responses 的标准和透传读取、Responses 转 Chat 或 Messages、Raw Chat 直通、Chat 转 Responses 或 Messages 的响应执行，都在 `upstream/openai`；协议算法只在 `protocol/bridge`。缓冲的终态、空响应检测和流状态按每次尝试创建，终态 usage 的覆盖顺序和断开时的返回方式各自保持。执行适配传入提供商策略和观察接口；HTTP 在输出时才取得 Header，等待心跳不会因为创建了适配器而提前结束。
+Responses 的标准和透传读取、Responses 转 Chat 或 Messages、Raw Chat 直通、Chat 转 Responses 或 Messages 的响应执行，都在 `upstream/openai`；协议算法只在 `protocol/bridge`。缓冲的终态、空响应检测和流状态按每次尝试创建，终态 usage 的覆盖顺序和断开时的返回方式各自保持。执行适配传入提供商策略和观察接口；HTTP 在输出时才取得可修改的 Header，等待心跳不会因为创建了适配器而提前结束；统一的下游时钟和上游心跳消费见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)。
 
 HTTP Responses 的标准流和透传流兼容第三方的生命周期事件：
 
@@ -287,11 +287,15 @@ Responses 的工具定义，在进入 OAuth passthrough、Codex transform、Grok
 
 Responses 请求降级到 Chat Completions 时，工具结果里的 `input_image`、`image_url` 和完整的图片 data URL，不能留在只接受文本的 `tool` message 里。转换器按 `call_id` 从工具结果里取出图片，把原位置替换成稳定的标记，并在这一组工具回复之后追加一条用户的多模态消息；并行调用按工具声明的顺序归属图片，孤立的或没有回答的调用不带媒体。没有可识别图片的工具结果保留原始字节，无关的 JSON 不会被重新编码，提示缓存的前缀因此保持不变。
 
-OpenAI API Key 提供商以 `force_chat_completions` 处理 `/v1/messages` 时，Chat 流里并行的 `tool_calls`，按 `tool_calls[].index` 聚合 ID、名称和全部参数分片，在流结束时，再按 index 的顺序，为每个调用生成连续闭合的 `content_block_start`、`input_json_delta`、`content_block_stop`。参数分片先暂存，最后一次拼接；聚合期间用 Anthropic 的 `ping` 保持下游活跃，文本和 thinking 照常即时流式输出。
+OpenAI API Key 提供商以 `force_chat_completions` 处理 `/v1/messages` 时，Chat 流里并行的 `tool_calls`，按 `tool_calls[].index` 聚合 ID、名称和全部参数分片，在流结束时，再按 index 的顺序，为每个调用生成连续闭合的 `content_block_start`、`input_json_delta`、`content_block_stop`。参数分片先暂存，最后一次拼接；聚合期间由统一组件按下游空闲时间保活，帧格式见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)；文本和 thinking 照常即时流式输出。
 
 空的工具参数归一化为 `{}`，call ID 保持原样，下一轮的 `tool_result.tool_use_id` 才能配对。Anthropic 的 `tool_choice.disable_parallel_tool_use=true` 映射为 Chat 顶层的 `parallel_tool_calls=false`，字段缺失或为 `false` 时，保持默认的 `true`；`auto`、`any`、`none` 和具名工具的选择含义不变。
 
 Responses 生图有一个明确的协议适配例外：请求的图片模型进入 `image_generation` 工具，文本模型承载 Responses 请求；请求模型、承载模型和图片计费模型分别记录。这个例外不开放普通文本模型的隐式别名。管理员手动配置的 Compact 回退照常生效，目标型号不会被再次纠正。
+
+OpenAI OAuth 的图片生成、编辑、后台图片测试，以及 Responses 顶层图片模型的转换，共用提供商的 `extra.codex_image_responses_model` 选择文本主控模型。非空字符串使用指定型号，缺省、空字符串和 null 使用 `gpt-6-luna`；设置属于当前选中的提供商，影子提供商也使用自己的设置。创建、编辑和批量编辑中的「生图主控模型」可写入或清空该值，复制和导入导出随 Extra 保留。这个配置与自动添加图片工具的策略分别保存，图片工具型号仍经过原有模型映射。客户端已指定文本模型的 Responses 请求保留该型号；API Key 图片模型转换使用默认值 `gpt-5.4-mini`。
+
+主控型号在账号上的可用性由 Codex 校验。上游 HTTP 400 明确拒绝本次主控型号时，图片入口和自动转换图片型号的 Responses HTTP 返回 `image_main_model_unsupported`，说明中同时包含主控和图片型号；该错误直接结束当前请求，不写图片能力冷却，也不自动切换主控型号。后台图片测试输出相同的型号说明。最终展示仍应用管理员的错误规则，包括状态码、文案和监控跳过设置；这些覆盖不改变主控拒绝的重试分类。响应提交前返回 JSON，已建立 SSE 的请求返回对应的流内错误，Images 非流式的空白心跳继续使用 JSON。普通响应中的其他错误继续使用各自的错误和故障转移规则。
 
 ## 模型与能力
 
@@ -347,7 +351,7 @@ API Key passthrough 的池模式，把命中 `pool_mode_retry_status_codes` 的 
 
 上行写入继承控制面的取消，以便快速回收上游连接。HTTP 200 的 SSE 里出现 `rate_limit_exceeded`，视为状态 429，进入故障转移和池模式重试，但不用这个 200 响应里正常的配额快照头，写入默认的提供商冷却。上游容量降载时，通常先发 `error`，再以 `response.failed` 收尾；`server_is_overloaded` 和 `slow_down` 的前置错误帧，在还没有业务输出时继续留在 attempt 缓冲里，触发有上限的同提供商重试和输出前的 failover，按请求级的瞬时故障处理，不冷却当前的提供商。
 
-已经有实际输出，或者重试用完、不能再重放请求时，SSE 和 WS HTTP bridge 只在发给客户端的副本里，把这两个致命错误码改成可以重试的 `server_error`，原始事件仍用于提供商策略和观测。客户端还没收到业务输出时，池模式提供商的其他瞬时流内处理错误，也可以在请求级的预算内重试同一个提供商。旧版 Compact 桥接的心跳注释不算业务输出：即使已经提交了 200 响应头，只要没有语义上的 SSE 载荷，最终失败时仍要追加 `response.failed`。OpenAI Responses 的标准流和透传流，如果只收到前导事件，以及完全不含 output、usage、error 的 `response.completed` 或 `response.done`，在还没向客户端写出业务内容时，按静默拒绝换提供商，不会记成一次 0/0 的成功；终态带有 usage、error、任何输出项，或者之前已经出现过语义输出时，不触发这条规则。
+已经有实际输出，或者重试用完、不能再重放请求时，SSE 和 WS HTTP bridge 只在发给客户端的副本里，把这两个致命错误码改成可以重试的 `server_error`，原始事件仍用于提供商策略和观测。客户端还没收到业务输出时，池模式提供商的其他瞬时流内处理错误，也可以在请求级的预算内重试同一个提供商。所有已记录的心跳按[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)的统一口径从业务输出中扣除：即使已经提交了 200 响应头，只有心跳时仍允许既有策略内的重试，最终失败则追加 `response.failed`。OpenAI Responses 的标准流和透传流，如果只收到前导事件，以及完全不含 output、usage、error 的 `response.completed` 或 `response.done`，在还没向客户端写出业务内容时，按静默拒绝换提供商，不会记成一次 0/0 的成功；终态带有 usage、error、任何输出项，或者之前已经出现过语义输出时，不触发这条规则。
 
 实际输出一旦开始，网关就不再重放请求或换提供商。最终的错误还可以命中[网关错误响应策略](gateway_error_policy.md)，但规则不会把失败结算成成功。排查问题时，同时检查提供商类型、需要的 transport 和 capability、客户端限制、privacy status、模型映射、配额重置时间、代理和 TLS，以及 attempt 记录。
 

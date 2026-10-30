@@ -417,7 +417,7 @@ func (b *messageAttemptBridge) Forward(state textflow.AttemptState) textflow.Out
 	// Capture after queue waits so forwarding output can be distinguished
 	// from earlier keepalives when the outer loop decides whether replay
 	// remains permitted.
-	b.writerSizeBeforeForward = b.c.Writer.Size()
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	if b.provider.Record.Platform == capability.PlatformAntigravity {
 		b.result, err = b.binding().forwardAntigravity(requestCtx, b.c, b.provider, attemptBody, b.hasBoundSession)
 	} else {
@@ -440,7 +440,7 @@ func (b *messageAttemptBridge) Forward(state textflow.AttemptState) textflow.Out
 	}
 	b.binding().reportSchedule(b.selection, b.provider.Record.ID, err == nil, b.result)
 
-	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: b.c.Writer.Size() != b.writerSizeBeforeForward}
+	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != b.writerSizeBeforeForward}
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
 	out.Attempt.RetryCommitted = out.OutputChanged
 	var policy *anthropic.BetaBlockedError

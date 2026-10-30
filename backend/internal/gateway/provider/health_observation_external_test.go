@@ -29,7 +29,8 @@ import (
 
 const (
 	// openAI403HTMLBody represents HTML forbidden output for endpoint-level
-	// exemption tests, including the OpenAI and CN provider paths exercised below.
+	// exemption tests, including the OpenAI and Kimi, Zhipu, and DeepSeek
+	// provider paths exercised below.
 	openAI403HTMLBody = "<!DOCTYPE html>\n<html><head><title>403 Forbidden</title></head>" +
 		"<body><h1>403 Forbidden</h1></body></html>"
 
@@ -192,11 +193,11 @@ type grokHealthTestClock struct {
 	nanos atomic.Int64 /* zero selects wall time */
 }
 
-// TestHandle403_OtherCNProviderWithKimiConcurrencyMessageUsesNormalPolicy
+// TestHandle403_OtherPlatformWithKimiConcurrencyMessageUsesNormalPolicy
 // supplies the Kimi concurrency phrase on a Zhipu API Key target. Normal 403
 // handling consumes the permanent counter and writes an error, with no Kimi
 // temporary pause.
-func TestHandle403_OtherCNProviderWithKimiConcurrencyMessageUsesNormalPolicy(t *testing.T) {
+func TestHandle403_OtherPlatformWithKimiConcurrencyMessageUsesNormalPolicy(t *testing.T) {
 	repo := &gatewaytestkit.HealthStoreRecorder{}
 	counter := &gatewaytestkit.ForbiddenCounter{Counts: []int64{providercore.OpenAI403DisableThresholdDefault}}
 	blocker := &gatewaytestkit.RuntimeBlockRecorder{}
@@ -209,16 +210,16 @@ func TestHandle403_OtherCNProviderWithKimiConcurrencyMessageUsesNormalPolicy(t *
 	shouldDisable := gatewayprovider.ApplyExecutionHealth(context.Background(), service, provider, gatewayprovider.HealthObservationFromContext(context.Background(), http.StatusForbidden, http.Header{}, []byte(`{"error":{"message":"You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."}}`), nil)).StopScheduling
 
 	require.True(t, shouldDisable)
-	require.Equal(t, 1, repo.SetErrorCalls, "non-Kimi CN provider must retain the normal permanent-error policy")
+	require.Equal(t, 1, repo.SetErrorCalls, "Zhipu must use the normal permanent-error policy")
 	require.Equal(t, 0, repo.TempCalls)
-	require.Empty(t, counter.Counts, "normal CN 403 policy must consume the counter result")
+	require.Empty(t, counter.Counts, "Zhipu forbidden handling must consume the counter result")
 	require.Equal(t, []string{"auth_error"}, blocker.Reasons, "the Kimi-specific runtime block must not apply")
 }
 
-// TestHandle403_CNProviderConcurrencyLimitAlwaysUsesTemporaryCooldown supplies
-// the exact concurrency-limit phrase on Kimi. Health records a temporary pause
-// and runtime block while leaving the permanent-error counter unused.
-func TestHandle403_CNProviderConcurrencyLimitAlwaysUsesTemporaryCooldown(t *testing.T) {
+// TestHandle403_KimiConcurrencyLimitAlwaysUsesTemporaryCooldown supplies the
+// exact concurrency-limit phrase on Kimi. Health records a temporary pause and
+// runtime block while leaving the permanent-error counter unused.
+func TestHandle403_KimiConcurrencyLimitAlwaysUsesTemporaryCooldown(t *testing.T) {
 	repo := &gatewaytestkit.HealthStoreRecorder{}
 	counter := &gatewaytestkit.ForbiddenCounter{Counts: []int64{providercore.OpenAI403DisableThresholdDefault}}
 	blocker := &gatewaytestkit.RuntimeBlockRecorder{}
@@ -233,10 +234,10 @@ func TestHandle403_CNProviderConcurrencyLimitAlwaysUsesTemporaryCooldown(t *test
 	require.True(t, shouldDisable, "the request must still fail over to another provider")
 	require.Equal(t, 0, repo.SetErrorCalls)
 	require.Equal(t, 1, repo.TempCalls)
-	require.Contains(t, repo.LastTempReason, providercore.CNConcurrencyLimitReason)
+	require.Contains(t, repo.LastTempReason, providercore.KimiConcurrencyLimitReason)
 	require.Equal(t, []int64{providercore.OpenAI403DisableThresholdDefault}, counter.Counts, "transient concurrency 403 must bypass the permanent-error counter")
 	require.Len(t, blocker.Providers, 1)
-	require.Equal(t, providercore.CNConcurrencyLimitReason, blocker.Reasons[0])
+	require.Equal(t, providercore.KimiConcurrencyLimitReason, blocker.Reasons[0])
 	require.True(t, blocker.Until[0].After(time.Now()))
 }
 
@@ -266,14 +267,14 @@ func TestHandle403_KimiConcurrencyLimitRepositoryFailureKeepsRuntimeBlock(t *tes
 	expectedProvider.Record.Now, observedProvider.Record.Now = nil, nil
 	expectedProvider.Record.LoadLocation, observedProvider.Record.LoadLocation = nil, nil
 	require.Equal(t, expectedProvider, observedProvider)
-	require.Equal(t, providercore.CNConcurrencyLimitReason, blocker.Reasons[0])
+	require.Equal(t, providercore.KimiConcurrencyLimitReason, blocker.Reasons[0])
 	require.True(t, blocker.Until[0].After(time.Now()))
 }
 
-// TestHandle403_CNProviderNearMatchRetainsNormalPermanentErrorPolicy changes
+// TestHandle403_KimiNearMatchRetainsNormalPermanentErrorPolicy changes
 // the ending of the Kimi concurrency message so it is a near match. Health
 // retains the permanent-error write and produces no temporary pause.
-func TestHandle403_CNProviderNearMatchRetainsNormalPermanentErrorPolicy(t *testing.T) {
+func TestHandle403_KimiNearMatchRetainsNormalPermanentErrorPolicy(t *testing.T) {
 	repo := &gatewaytestkit.HealthStoreRecorder{}
 	counter := &gatewaytestkit.ForbiddenCounter{Counts: []int64{providercore.OpenAI403DisableThresholdDefault}}
 	service := newUpstreamHealthForTest(repo, nil, nil, providercore.HealthOptions{ForbiddenCounter: counter}, nil)
@@ -631,10 +632,10 @@ func TestHandleUpstreamError_OpenAIHTML403DoesNotPenalizeProvider(t *testing.T) 
 	}
 }
 
-// TestHandleUpstreamErrorCNProviderHTML403DoesNotPenalizeProvider supplies the
-// HTML 403 fixture to Kimi, Zhipu, and DeepSeek API Key targets. Those
-// compatible paths avoid provider penalties and counter increments.
-func TestHandleUpstreamErrorCNProviderHTML403DoesNotPenalizeProvider(t *testing.T) {
+// TestHandleUpstreamErrorKimiZhipuDeepSeekHTML403DoesNotPenalizeProvider
+// supplies the HTML 403 fixture to Kimi, Zhipu, and DeepSeek API Key targets.
+// Those compatible paths avoid provider penalties and counter increments.
+func TestHandleUpstreamErrorKimiZhipuDeepSeekHTML403DoesNotPenalizeProvider(t *testing.T) {
 	for _, platform := range []string{capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
 		t.Run(platform, func(t *testing.T) {
 			h := newOpenAI403TestHarness(t, 507, 1)
@@ -647,11 +648,11 @@ func TestHandleUpstreamErrorCNProviderHTML403DoesNotPenalizeProvider(t *testing.
 	}
 }
 
-// TestHandleUpstreamErrorCNProviderStructured403UsesCumulativeCooldown
-// supplies structured forbidden errors to three CN platforms with a first
-// counter value. Each increments the counter and writes temporary cooldown
-// rather than permanent error.
-func TestHandleUpstreamErrorCNProviderStructured403UsesCumulativeCooldown(t *testing.T) {
+// TestHandleUpstreamErrorKimiZhipuDeepSeekStructured403UsesCumulativeCooldown
+// supplies structured forbidden errors to three Kimi, Zhipu, and DeepSeek
+// platforms with a first counter value. Each increments the counter and writes
+// temporary cooldown rather than permanent error.
+func TestHandleUpstreamErrorKimiZhipuDeepSeekStructured403UsesCumulativeCooldown(t *testing.T) {
 	for _, platform := range []string{capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
 		t.Run(platform, func(t *testing.T) {
 			h := newOpenAI403TestHarness(t, 508, 1)
@@ -1035,13 +1036,13 @@ func TestHandleUpstreamError_Anthropic429Without7dOiKeepsLegacyBehavior(t *testi
 
 // newUpstreamHealthForTest binds the production observer to fixture storage,
 // cache, settings, and health options. A supplied config replaces
-// unauthorized, overload, and CN interval options before gatewaytestkit
+// unauthorized, overload, and usage-monitor interval options before gatewaytestkit
 // creates the shared components.
 func newUpstreamHealthForTest(store gatewayprovider.ExecutionProviderStore, cfg *config.Config, cache providercore.TempUnschedCache, options providercore.HealthOptions, readers *gatewayprovider.RuntimeReaders) *provideradapter.UpstreamHealth {
 	if cfg != nil {
 		options.UnauthorizedCooldownMinutes = cfg.RateLimit.OAuth401CooldownMinutes
 		options.OverloadMinutes = cfg.RateLimit.OverloadCooldownMinutes
-		options.CNIntervalMinutes = cfg.Gateway.CNProviders.IntervalMinutes
+		options.UsageMonitorIntervalMinutes = cfg.Gateway.UsageMonitor.IntervalMinutes
 	}
 	return gatewaytestkit.NewHealthObserver(gatewaytestkit.HealthInput{Store: store, Cache: cache, Options: options, Readers: readers})
 }

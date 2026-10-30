@@ -330,7 +330,9 @@ type MessagePorts interface {
 	// other stream failures can return PartialUsage from already observed token
 	// counts.
 	StreamError(error) (string, bool)
-	// Size reports the response writer byte count used for stream-progress comparisons.
+	// Size reports accepted body bytes after excluding recorded heartbeats.
+	// Implementations return the unwritten sentinel for heartbeat-only output,
+	// preserving provider recovery after queue or header-wait commitment.
 	Size() int
 	// Written reports whether the HTTP response writer has committed its response.
 	Written() bool

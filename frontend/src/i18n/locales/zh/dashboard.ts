@@ -66,8 +66,6 @@ export default {
     quickActions: '快捷操作',
     createApiKey: '创建 API 密钥',
     generateNewKey: '生成新的 API 密钥',
-    batchImageAgent: '批量生图助手',
-    batchImageAgentDesc: '复制给 Agent 的任务说明',
     viewUsage: '查看使用记录',
     checkDetailedLogs: '查看详细的使用日志',
     purchasePlanOrRecharge: '购买套餐或充值余额',
@@ -434,6 +432,9 @@ export default {
     totalCost: '总消费',
     standardCost: '标准',
     actualCost: '实际',
+    costUnknown: '费用未知',
+    costPartial: '（部分成本）',
+    incompleteCosts: '{count} 个请求的费用不完整',
     providerCost: '成本',
     actualDescription:
       '用户实际消耗的费用。按分组倍率和用户专属倍率计算，用于扣减用户余额或订阅配额。',

@@ -10,6 +10,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
 // model_qualification.go checks protocol and model-window eligibility and
@@ -35,39 +36,62 @@ func (p ModelPolicy) CandidateSnapshot() provider.ProviderSnapshot {
 		return provider.ProviderSnapshot{}
 	}
 	snapshot := p.Record.RoutingSnapshot()
+	mapping := provider.ResolveModelMapping(p.Record, provideradapter.ModelDefaults())
+	if p.models != nil {
+		mapping = p.models.Mapping()
+	}
+	snapshot.ModelPolicy = provider.NewModelRoutingSnapshot(mapping)
 	snapshot.EnabledProtocols = slices.Clone(p.Record.UpstreamProtocolsForLegacy(p.protocolTarget().GetAPIProtocol()))
 	return snapshot
 }
 
 // ProtocolRoute checks provider protocol support against the supplied group
-// and client protocol using routing.Plan. Nil records return false; the result
-// identifies a native or allowed single-step upstream route.
+// and client protocol independently of model identity. Nil records return false;
+// AllowsProtocol adds the model-specific check for a known model.
 func (p ModelPolicy) ProtocolRoute(group *routing.Group, source protocol.ProtocolID) (protocol.ProtocolID, bool) {
 	if p.Record == nil {
 		return "", false
 	}
-	var projected *routing.Group
+	var fallbacks map[capability.ProtocolID][]capability.ProtocolID
 	if group != nil {
-		projected = &routing.Group{ID: group.ID, SchedulerType: group.SchedulerType, AllowedProtocols: group.AllowedProtocols, ProtocolFallbacks: group.ProtocolFallbacks}
+		fallbacks = group.ProtocolFallbacks
 	}
-	plan := routing.Plan(routing.PlanInput{Group: projected, ClientProtocol: source})
-	candidate, ok := plan.ResolveCandidate(p.CandidateSnapshot())
-	return candidate.UpstreamProtocol, ok
+	return capability.ResolveRoute(p.CandidateSnapshot().Protocols(), source, fallbacks)
 }
 
-// AllowsProtocol checks group OAuth/privacy requirements and resolves the
-// client protocol when present. Missing provider records fail; an absent
-// client protocol passes after the group requirements are satisfied.
-func (p ModelPolicy) AllowsProtocol(ctx context.Context) bool {
+// AllowsProtocol checks group OAuth/privacy requirements and the protocol
+// route for model. Missing provider records fail. An empty model asks only
+// whether the provider can serve the client protocol at all, which pool
+// checks use before a model is known.
+//
+// Providers whose models each declare one protocol also need a route for the
+// final mapped model, so a known model resolves a complete candidate. That
+// resolution reuses the retained request plan when model is one of its
+// spellings, keeping group mapping and conversion policy, and builds a fresh
+// plan for other models. Without a client protocol, the other providers pass
+// because their execution adapters validate the selected entry later.
+func (p ModelPolicy) AllowsProtocol(ctx context.Context, model string) bool {
 	group, _ := requeststate.GroupFromContext(ctx)
 	if p.Record == nil || group != nil && (group.RequireOAuthOnly && !p.Record.IsOAuth() || group.RequirePrivacySet && !p.Record.IsPrivacySet()) {
 		return false
 	}
 	source, _ := requeststate.ClientProtocolFromContext(ctx)
-	if source == "" {
-		return true
+	snapshot := p.CandidateSnapshot()
+	if model == "" || snapshot.ModelProtocols == nil {
+		if source == "" {
+			return true
+		}
+		_, ok := p.ProtocolRoute(group, source)
+		return ok
 	}
-	_, ok := p.ProtocolRoute(group, source)
+	plan := routing.Plan(routing.PlanInput{Group: group, ClientProtocol: source, RequestedModel: model})
+	if retained, planned := requeststate.RoutePlanFromContext(ctx); planned && (group == nil || retained.GroupID() == group.ID) {
+		models := retained.Models()
+		if model == models.RequestedModel || model == models.GroupMappedModel {
+			plan = retained.WithClientProtocol(source)
+		}
+	}
+	_, ok := plan.ResolveCandidate(snapshot)
 	return ok
 }
 
@@ -78,7 +102,7 @@ func (p ModelPolicy) Schedulable(ctx context.Context, model string) bool {
 	if p.Record == nil {
 		return false
 	}
-	if !p.AllowsProtocol(ctx) || !p.Record.IsSchedulable() {
+	if !p.AllowsProtocol(ctx, model) || !p.Record.IsSchedulable() {
 		return false
 	}
 	return p.AllowsModel(ctx, model)

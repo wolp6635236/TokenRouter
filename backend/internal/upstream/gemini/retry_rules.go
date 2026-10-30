@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"context"
 	mathrand "math/rand"
 	"net/http"
 	"strings"
@@ -41,11 +42,10 @@ func IsGeminiSignatureRelatedError(respBody []byte) bool {
 	return strings.Contains(msg, "thought_signature") || strings.Contains(msg, "signature")
 }
 
-// SleepGeminiBackoff sleeps for a positive one-based attempt using the capped
-// exponential base and twenty-percent jitter. Exchange callers use their
-// bounded attempt counter; sleeping runs for its duration even if request
-// context is cancelled.
-func SleepGeminiBackoff(attempt int) {
+// SleepGeminiBackoff waits for jittered backoff or caller cancellation.
+// Attempts are positive and one-based. A false result means cancellation won,
+// and the exchange must return the context error before constructing another request.
+func SleepGeminiBackoff(ctx context.Context, attempt int) bool {
 	delay := min(geminiRetryBaseDelay*time.Duration(1<<uint(attempt-1)), geminiRetryMaxDelay)
 
 	// Jitter spreads simultaneous retries around the exponential base. The
@@ -54,7 +54,16 @@ func SleepGeminiBackoff(attempt int) {
 	r := mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
 	jitter := time.Duration(float64(delay) * 0.2 * (r.Float64()*2 - 1))
 	sleepFor := max(delay+jitter, 0)
-	time.Sleep(sleepFor)
+	// Cancellation ends the retry wait so disconnected clients do not retain
+	// sleeping exchanges or dispatch another request after their budget is gone.
+	timer := time.NewTimer(sleepFor)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return ctx.Err() == nil
+	}
 }
 
 // IsGeminiInsufficientScope recognizes OAuth scope rejection in the challenge

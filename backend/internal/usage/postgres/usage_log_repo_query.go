@@ -37,7 +37,7 @@ import (
 // usageLogSelectColumns defines the positional raw-row read shape; scanUsageLog
 // consumes the same order, and financial BillingKey is currently outside this
 // shape.
-const usageLogSelectColumns = "id, user_id, billing_user_id, team_id, api_key_id, provider_id, request_id, model, requested_model, upstream_model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, subscription_amount_usd, balance_amount_usd, billing_allocations, rate_multiplier, provider_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, timings, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, pricing_config_id, model_mapping_chain, billing_tier, billing_mode, provider_stats_cost, upstream_request_id, session_id, created_at, requested_reasoning_effort, native_compaction_v2, platform, upstream_response_model, upstream_model_mismatch"
+const usageLogSelectColumns = "id, user_id, billing_user_id, team_id, api_key_id, provider_id, request_id, model, requested_model, upstream_model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, image_input_tokens, image_input_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, subscription_amount_usd, balance_amount_usd, billing_allocations, rate_multiplier, provider_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, timings, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, long_context_billing_applied, pricing_config_id, model_mapping_chain, billing_tier, billing_mode, provider_stats_cost, upstream_request_id, session_id, created_at, requested_reasoning_effort, native_compaction_v2, platform, upstream_response_model, upstream_model_mismatch, request_source, system_usage"
 
 // UsageLogFilters carries the usage module's selectors for authorized record
 // listings.
@@ -204,6 +204,7 @@ func (r *Store) ListWithFilters(ctx context.Context, params pagination.Paginatio
 		conditions = append(conditions, usageRequestIDCondition("", len(args)+1))
 		args = append(args, requestID)
 	}
+	conditions, args = appendRequestSourceCondition(conditions, args, filters.RequestSource, "")
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
 	conditions, args = appendNativeCompactionV2WhereCondition(conditions, args, filters.NativeCompactionV2, "")
@@ -252,14 +253,15 @@ func (r *Store) ListWithFilters(ctx context.Context, params pagination.Paginatio
 // that incoming text. For example, local req-1 keeps a different row whose
 // upstream alias is req-1 out of the direct alias branch. When no local record
 // exists, that branch also finds older usage rows with a missing local request
-// ID.
+// ID. Parent-run matches require system metadata explicitly, allowing the
+// partial parent index to participate even in generic prepared plans.
 func usageRequestIDCondition(prefix string, parameter int) string {
 	lookup := fmt.Sprintf("ARRAY(SELECT id FROM request_lookup_ids($%d))", parameter)
 	// Guard the direct upstream comparison with saved-local existence so external
 	// evidence sharing that text cannot enlarge the exact local lookup.
 	return fmt.Sprintf("(%srequest_id = ANY(%s) OR (%supstream_request_id = $%d"+
-		" AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$%d)))",
-		prefix, lookup, prefix, parameter, parameter)
+		" AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$%d)) OR (%ssystem_usage IS NOT NULL AND %ssystem_usage->>'parent_request_id' = $%d))",
+		prefix, lookup, prefix, parameter, parameter, prefix, prefix, parameter)
 }
 
 // buildUsageLogScopeSource returns a raw source, an optional scope predicate,
@@ -660,10 +662,10 @@ func scanUsageLog(scanner interface {
 ) (*usage.UsageLog, error) {
 	var (
 		id                        int64
-		userID                    int64
-		billingUserID             int64
+		userID                    sql.NullInt64
+		billingUserID             sql.NullInt64
 		teamID                    sql.NullInt64
-		apiKeyID                  int64
+		apiKeyID                  sql.NullInt64
 		providerID                int64
 		requestID                 sql.NullString
 		model                     string
@@ -728,6 +730,8 @@ func scanUsageLog(scanner interface {
 		requestedReasoningEffort  sql.NullString
 		nativeCompactionV2        bool
 		platform                  string
+		requestSource             string
+		systemJSON                []byte
 	)
 
 	if err := scanner.Scan(
@@ -800,15 +804,18 @@ func scanUsageLog(scanner interface {
 		&platform,
 		&upstreamResponseModel,
 		&upstreamModelMismatch,
+		&requestSource,
+		&systemJSON,
 	); err != nil {
 		return nil, err
 	}
 
 	log := &usage.UsageLog{
 		ID:                        id,
-		UserID:                    userID,
-		BillingUserID:             billingUserID,
-		APIKeyID:                  apiKeyID,
+		RequestSource:             requestSource,
+		UserID:                    userID.Int64,
+		BillingUserID:             billingUserID.Int64,
+		APIKeyID:                  apiKeyID.Int64,
 		ProviderID:                providerID,
 		Platform:                  platform,
 		Model:                     model,
@@ -841,6 +848,11 @@ func scanUsageLog(scanner interface {
 		LongContextBillingApplied: longContextBillingApplied,
 		CreatedAt:                 createdAt,
 		NativeCompactionV2:        nativeCompactionV2,
+	}
+	if len(systemJSON) > 0 {
+		if err := json.Unmarshal(systemJSON, &log.SystemUsage); err != nil {
+			return nil, fmt.Errorf("decode system usage: %w", err)
+		}
 	}
 	// Unknown stored types need both legacy flags to recover transport identity;
 	// explicit types then normalize those flags for consumers of older fields.

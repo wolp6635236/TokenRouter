@@ -24,9 +24,9 @@ export interface UsageLog {
   // during migration.
   platform: string // Upstream service platform.
   id: number // Record numeric identifier.
-  user_id: number // Owning account identifier.
+  user_id: number | null // Customer account, absent for system requests.
   team_id?: number | null // Owning team identifier.
-  api_key_id: number // Used credential identifier.
+  api_key_id: number | null // Customer key, absent for system requests.
   provider_id: number | null // Upstream provider identifier.
   request_id: string // Canonical request identifier.
   model: string // Requested model identifier.
@@ -105,6 +105,19 @@ export interface UsageLogProviderSummary {
 // AdminUsageLog extends user usage records with upstream identity and provider billing
 // observations.
 export interface AdminUsageLog extends UsageLog {
+  request_source?: string // Customer or internal request source.
+  system_usage?: {
+    parent_request_id: string // Owning internal test run.
+    operator_user_id?: number // Initiating administrator, when available.
+    outcome: string // Observed upstream execution result.
+    usage_state: string // Complete, partial, or missing measurements.
+    cost_state: string // Calculated, partial, or unknown cost.
+    mapped_model?: string // Model before provider mapping.
+    pricing_model?: string // Hosted-image pricing lookup model.
+    pricing_source?: string // Cost calculation provenance.
+    http_status?: number // Observed upstream HTTP status.
+  } // Internal attribution never represents customer funding.
+
   detailed_timing?: UsageLogTiming | null // Administrative request timing observations.
   upstream_model?: string | null // Requested upstream model identifier.
   upstream_response_model?: string | null // Upstream-reported model identifier.
@@ -190,6 +203,7 @@ export interface UsageLogTiming {
 // UsageStatsResponse aggregates request consumption and charges over the selected
 // reporting period.
 export interface UsageStatsResponse {
+  incomplete_cost_requests?: number // System requests with partial or unknown cost.
   period?: string // Requested reporting period.
   total_requests: number // Total observed requests.
   total_input_tokens: number // Total input tokens.
@@ -301,6 +315,7 @@ export interface UserErrorListParams {
 // UsageQueryParams selects usage records by ownership, request attributes, and reporting
 // period.
 export interface UsageQueryParams {
+  request_source?: string // Optional customer or internal source selector.
   request_id?: string // Canonical request identifier.
   page?: number // Current page number.
   page_size?: number // Records per page.

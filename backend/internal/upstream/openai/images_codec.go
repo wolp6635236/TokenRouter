@@ -486,19 +486,23 @@ func IsOpenAIImagesSelfBuiltRequest(ctx context.Context) bool {
 
 // BuildOpenAIImagesResponsesRequest constructs a streaming Responses request
 // from a parsed Images request and image-tool model. Nil input, a blank trimmed
-// prompt, empty upload data, and edits without an input image return errors.
+// prompt or main model, empty upload data, and edits without an input image
+// return errors.
 // Upload masks take precedence over a supplied mask URL.
 //
-// The Responses model is ImagesResponsesMainModel while the tool carries
+// The Responses model is supplied by provider policy while the tool carries
 // toolModel, keeping text execution separate from image selection. Gateway
 // instructions request verbatim use of the trimmed prompt, and the request
 // declares image_generation as its selected tool. Response readers still
 // classify replies that produce text instead of an image.
 // Optional numeric fields retain supplied zero values through their pointers; n
 // is sent only for eligible multi-image models.
-func BuildOpenAIImagesResponsesRequest(parsed *upstream.ImageRequest, toolModel string) ([]byte, error) {
+func BuildOpenAIImagesResponsesRequest(parsed *upstream.ImageRequest, toolModel, mainModel string) ([]byte, error) {
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
+	}
+	if strings.TrimSpace(mainModel) == "" {
+		return nil, fmt.Errorf("image Responses main model is required")
 	}
 	prompt := strings.TrimSpace(parsed.Prompt)
 	if prompt == "" {
@@ -525,7 +529,7 @@ func BuildOpenAIImagesResponsesRequest(parsed *upstream.ImageRequest, toolModel 
 	// Set the Responses carrier model separately from the image tool model, with
 	// gateway-owned streaming, storage, and tool-choice fields.
 	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
-	req, _ = sjson.SetBytes(req, "model", ImagesResponsesMainModel)
+	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(mainModel))
 	req, _ = sjson.SetBytes(req, "instructions", ImagesVerbatimPromptInstructions)
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
@@ -589,6 +593,36 @@ func BuildOpenAIImagesResponsesRequest(parsed *upstream.ImageRequest, toolModel 
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	req, _ = sjson.SetRawBytes(req, "tools.-1", tool)
 	return req, nil
+}
+
+// OpenAIImagesMainModelError identifies a Codex rejection of the image request's
+// text driver and includes both model roles in the returned diagnostic. A
+// matching HTTP 400 plan rejection must name the exact driver in quotes;
+// unrelated messages and image-tool denials return nil for ordinary handling.
+//
+// The text driver is selected before the image tool executes, so rejecting that
+// driver does not establish that the account lacks the requested image model.
+// Callers present this error before image capability cooldown or provider
+// failover. The upstream message is sanitized before inclusion in client text.
+func OpenAIImagesMainModelError(status int, body []byte, mainModel, imageModel string) *OpenAIImagesUpstreamError {
+	if mainModel == "" || imageModel == "" || !IsCodexPlanGatedModelError(status, body) {
+		return nil
+	}
+	message := upstream.ExtractErrorMessage(body)
+	if !strings.Contains(message, "'"+mainModel+"'") && !strings.Contains(message, "\""+mainModel+"\"") {
+		return nil
+	}
+	return &OpenAIImagesUpstreamError{
+		StatusCode: status,
+		ErrorType:  "invalid_request_error",
+		Code:       "image_main_model_unsupported",
+		Param:      "model",
+		Message: fmt.Sprintf(
+			"Image Responses main model %q is not supported by this Codex account (image model: %q). "+
+				"Configure the provider's image Responses model. Upstream: %s",
+			mainModel, imageModel, logredact.SanitizeUpstreamQueries(message),
+		),
+	}
 }
 
 // ShouldPassOpenAIImagesN allows n greater than one unless model is dall-e-3

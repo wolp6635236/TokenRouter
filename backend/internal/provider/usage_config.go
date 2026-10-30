@@ -15,16 +15,23 @@ import (
 // return structured errors so a configured but unusable query does not silently
 // adopt another format.
 //
-// CN platform and provider mode select their adapter regardless of a supplied
-// generic adapter name. Write normalization accepts the same small field set and
-// creates a replacement object after validation. Query execution still performs
-// its own provider eligibility and URL policy checks; format validation here
+// PlatformUsageAdapter is the single rule for platforms whose platform and
+// provider mode select the query format regardless of a supplied generic
+// adapter name. A fixed selection without a format leaves the effective
+// adapter empty and disables the query. Adapters whose management host differs
+// from the forwarding host receive their default query root during resolution.
+// Write normalization accepts the same small field set and creates a
+// replacement object after validation. Query execution still performs its own
+// provider eligibility and URL policy checks; format validation here
 // establishes the shape of the saved query configuration.
 
 // These Extra keys name query configuration and platform-maintained usage
 // snapshots shared by provider administration, monitoring and usage display.
 const (
-	CNUsageMonitorSnapshotExtraKey   = "cn_usage_monitor_snapshot"
+	// UsageMonitorSnapshotExtraKey retains the persisted name read by existing
+	// provider records and administrative clients when displaying upstream
+	// usage.
+	UsageMonitorSnapshotExtraKey     = "cn_usage_monitor_snapshot"
 	UpstreamUsageQueryExtraKey       = "upstream_usage_query"
 	OllamaCloudUsageSnapshotExtraKey = "ollama_cloud_usage_snapshot"
 )
@@ -32,25 +39,62 @@ const (
 // EffectiveUpstreamUsageConfig resolves stored query choices over defaults for
 // the supplied provider. Nil input uses enabled Sub2API defaults, and Jev
 // defaults to disabled. A missing or nil configuration object inherits those
-// defaults. Derouter uses its official account management root when its query
-// address is empty.
+// defaults. Derouter and OpenCode Go use their official management roots when
+// the query address is empty.
 //
 // Present fields require their expected types, and unknown fields are rejected.
-// CN providers keep the adapter selected by platform and mode even when a
-// generic adapter name is supplied. Unsupported adapters and invalid query-root
-// formats return structured errors instead of replacing configured choices.
+// Providers with a platform-selected adapter keep it even when a generic
+// adapter name is supplied. When their platform and mode have no query format,
+// the result has an empty adapter and stays disabled even when a query-enabled
+// flag is supplied. Unsupported adapters and invalid query-root formats return
+// structured errors instead of replacing configured choices.
 func EffectiveUpstreamUsageConfig(provider *Record) (UpstreamUsageQueryConfig, error) {
 	config := UpstreamUsageQueryConfig{Enabled: provider == nil || provider.Platform != PlatformJev, Adapter: UpstreamUsageDefaultAdapter}
-	if adapter := CNUpstreamUsageAdapterName(provider); adapter != "" {
-		config.Adapter = adapter
+	platformAdapter, fixed := PlatformUsageAdapter(provider)
+	if fixed {
+		config.Adapter = platformAdapter
 	}
-	if provider == nil || provider.Extra == nil {
-		return config, nil
+	if provider != nil && provider.Extra[UpstreamUsageQueryExtraKey] != nil {
+		var err error
+		config, err = mergeStoredUpstreamUsageConfig(config, provider.Extra[UpstreamUsageQueryExtraKey], fixed)
+		if err != nil {
+			return UpstreamUsageQueryConfig{}, err
+		}
 	}
-	raw, exists := provider.Extra[UpstreamUsageQueryExtraKey]
-	if !exists || raw == nil {
-		return config, nil
+	// A platform mode without a query format has nothing to enable. Clearing the
+	// stored flag keeps the empty adapter out of monitors and reminders, while
+	// query execution reports the mode as unsupported.
+	if fixed && config.Adapter == "" {
+		config.Enabled = false
+	} else if !IsKnownUpstreamUsageAdapter(config.Adapter) {
+		return UpstreamUsageQueryConfig{}, ErrUpstreamUsageUnsupported
 	}
+	// Derouter and OpenCode Go management use a separate host from model
+	// forwarding. Resolve their defaults here so execution and query identity
+	// checks use the same destination.
+	if config.BaseURL == "" {
+		switch config.Adapter {
+		case UpstreamUsageAdapterDerouter:
+			config.BaseURL = DerouterUsageDefaultBaseURL
+		case UpstreamUsageAdapterOpenCodeGo:
+			config.BaseURL = OpenCodeGoUsageDefaultBaseURL
+		}
+	}
+	if config.BaseURL != "" {
+		if err := egress.ValidateUsageBaseURLFormat(config.BaseURL); err != nil {
+			return UpstreamUsageQueryConfig{}, ErrUpstreamUsageConfigInvalid.WithCause(err)
+		}
+	}
+	return config, nil
+}
+
+// mergeStoredUpstreamUsageConfig applies a saved query object over config and
+// returns the merged copy. A supplied adapter name replaces config.Adapter only
+// when fixed is false, but its type is checked either way. A non-object value,
+// a field with the wrong type, an empty adapter name or an unknown field
+// returns ErrUpstreamUsageConfigInvalid; adapter registration and root format
+// are left to the caller.
+func mergeStoredUpstreamUsageConfig(config UpstreamUsageQueryConfig, raw any, fixed bool) (UpstreamUsageQueryConfig, error) {
 	object, ok := UpstreamUsageConfigMap(raw)
 	if !ok {
 		return UpstreamUsageQueryConfig{}, ErrUpstreamUsageConfigInvalid
@@ -67,9 +111,9 @@ func EffectiveUpstreamUsageConfig(provider *Record) (UpstreamUsageQueryConfig, e
 		if !ok || strings.TrimSpace(parsed) == "" {
 			return UpstreamUsageQueryConfig{}, ErrUpstreamUsageConfigInvalid
 		}
-		// CN platform and mode own adapter selection; a supplied generic name cannot
-		// change their fixed query format, though its input type is still checked.
-		if !provider.IsCNProvider() {
+		// Platform-selected formats own adapter selection; a supplied generic name
+		// cannot change them, though its input type is still checked.
+		if !fixed {
 			config.Adapter = strings.TrimSpace(parsed)
 		}
 	}
@@ -83,19 +127,6 @@ func EffectiveUpstreamUsageConfig(provider *Record) (UpstreamUsageQueryConfig, e
 	for key := range object {
 		if key != "enabled" && key != "adapter" && key != "base_url" {
 			return UpstreamUsageQueryConfig{}, ErrUpstreamUsageConfigInvalid
-		}
-	}
-	if !IsKnownUpstreamUsageAdapter(config.Adapter) {
-		return UpstreamUsageQueryConfig{}, ErrUpstreamUsageUnsupported
-	}
-	// Derouter management uses a separate host from model forwarding. Resolve its
-	// default here so execution and query identity checks use the same destination.
-	if config.Adapter == UpstreamUsageAdapterDerouter && config.BaseURL == "" {
-		config.BaseURL = DerouterUsageDefaultBaseURL
-	}
-	if config.BaseURL != "" {
-		if err := egress.ValidateUsageBaseURLFormat(config.BaseURL); err != nil {
-			return UpstreamUsageQueryConfig{}, ErrUpstreamUsageConfigInvalid.WithCause(err)
 		}
 	}
 	return config, nil
@@ -216,31 +247,24 @@ func IsKnownUpstreamUsageAdapter(name string) bool {
 	return false
 }
 
-// CNUpstreamUsageAdapterName selects a fixed query adapter from CN platform and
-// Coding Plan mode. Nil, non-CN and unsupported mode/platform combinations
-// return empty so query execution can report unsupported.
-func CNUpstreamUsageAdapterName(provider *Record) string {
-	if provider == nil || !provider.IsCNProvider() {
-		return ""
-	}
-	if provider.IsCodingPlan() {
-		switch provider.Platform {
-		case PlatformKimi:
-			return UpstreamUsageAdapterKimiCoding
-		case PlatformZhipu:
-			return UpstreamUsageAdapterZhipuCoding
-		default:
-			return ""
+// PlatformUsageAdapter reports the query format selected by a provider's
+// platform and mode. fixed is true for Kimi, Zhipu, and DeepSeek and OpenCode
+// providers, whose saved generic adapter choice is ignored; other platforms and
+// nil return "", false and use the administrator's choice.
+//
+// A fixed result with an empty name means the current mode has no registered
+// query format, such as Zhipu or OpenCode pay-as-you-go.
+// EffectiveUpstreamUsageConfig resolves that case as disabled, and query
+// execution reports it as unsupported before sending a request.
+func PlatformUsageAdapter(provider *Record) (name string, fixed bool) {
+	if provider.IsOpenCode() {
+		if provider.OpenCodeMode() == ProviderModeGo {
+			return UpstreamUsageAdapterOpenCodeGo, true
 		}
+		return "", true
 	}
-	switch provider.Platform {
-	case PlatformKimi:
-		return UpstreamUsageAdapterKimiBalance
-	case PlatformDeepseek:
-		return UpstreamUsageAdapterDeepseekBalance
-	default:
-		// Zhipu PAYG and unsupported CN combinations have no registered balance
-		// format; an empty adapter lets query execution report unsupported before HTTP.
-		return ""
+	if !provider.rules().usage.fixedAdapter {
+		return "", false
 	}
+	return provider.textMode().usageAdapter, true
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/promotion"
 	promotionhttp "github.com/TokenFlux/TokenRouter/internal/promotion/httpapi"
 	"github.com/TokenFlux/TokenRouter/internal/server/middleware"
-	"github.com/TokenFlux/TokenRouter/internal/settings/composite"
 	"github.com/TokenFlux/TokenRouter/internal/site"
 )
 
@@ -52,7 +51,6 @@ type identityHTTPSettings struct {
 	*identityAuthSettings                      // shared authentication settings
 	*admission.BackendMode                     // backend admission reader
 	public                 *site.PublicService // public setting reads
-	composite              *composite.Runtime  // combined setting reads
 }
 
 // SendNotifyVerification delegates the prepared identity notice to notification
@@ -133,29 +131,24 @@ func (s identityHTTPSettings) GoogleOneTap(ctx context.Context) (identityhttp.Go
 	return identityhttp.GoogleOneTapOptions{ClientID: value.ClientID, FrontendRedirectURL: value.FrontendRedirectURL}, err
 }
 
-// APIBaseURL returns the trimmed API origin from combined settings. Failed or
-// absent settings return an empty string, allowing the OAuth absolute-URL
-// resolver to handle its request-derived fallback.
-func (s identityHTTPSettings) APIBaseURL(ctx context.Context) string {
-	value, err := s.composite.GetAllSettings(ctx)
-	if err == nil && value != nil {
-		return strings.TrimSpace(value.APIBaseURL)
-	}
-	// Combined settings failure leaves no configured API origin. The HTTP
-	// URL resolver can then derive the absolute callback from the incoming request.
-	return ""
-}
-
-// WeChat combines the requested mode, API origin, and shared WeChat
+// WeChat combines the requested mode with shared WeChat application
 // credentials. OAuth read failures return an error; mode-specific AppID,
 // secret, and scope come from the settings object's selectors.
 func (s identityHTTPSettings) WeChat(ctx context.Context, mode string) (identity.WeChatOAuthOptions, error) {
-	base := s.APIBaseURL(ctx)
 	value, err := s.oauth.GetWeChatConnectOAuthConfig(ctx)
 	if err != nil {
 		return identity.WeChatOAuthOptions{}, err
 	}
-	return identity.WeChatOAuthOptions{Mode: mode, AppID: value.AppIDForMode(mode), AppSecret: value.AppSecretForMode(mode), Scope: value.ScopeForMode(mode), RedirectURI: value.RedirectURL, FrontendCallback: value.FrontendRedirectURL, APIBaseURL: base, OpenEnabled: value.OpenEnabled, MPEnabled: value.MPEnabled}, nil
+	return identity.WeChatOAuthOptions{
+		Mode:             mode,
+		AppID:            value.AppIDForMode(mode),
+		AppSecret:        value.AppSecretForMode(mode),
+		Scope:            value.ScopeForMode(mode),
+		RedirectURI:      value.RedirectURL,
+		FrontendCallback: value.FrontendRedirectURL,
+		OpenEnabled:      value.OpenEnabled,
+		MPEnabled:        value.MPEnabled,
+	}, nil
 }
 
 // WeChatFrontend returns a nonblank trimmed frontend callback from shared OAuth
@@ -176,8 +169,21 @@ func (s identityHTTPSettings) WeChatFrontend(ctx context.Context) string {
 // logout captures pending before it is assigned but is invoked after assembly,
 // and DingTalk completion uses tracked profile tasks. WeChat payment callbacks
 // use the same credential reader with payment-only token conversion.
-func provideIdentityHTTP(g *identityAuthGraph, users *identity.UserService, cfg *config.Config, settings *identityAuthSettings, backend *admission.BackendMode, public *site.PublicService, composite *composite.Runtime, promo *promotion.PromoService, redeems *billing.RedeemService, totp *identity.TotpService, attributes *identity.UserAttributeService, tasks *lifecycle.Tasks, payments *payment.Runtime) *identityHTTP {
-	runtime := identityHTTPSettings{identityAuthSettings: settings, BackendMode: backend, public: public, composite: composite}
+func provideIdentityHTTP(
+	g *identityAuthGraph,
+	users *identity.UserService,
+	cfg *config.Config,
+	settings *identityAuthSettings,
+	backend *admission.BackendMode,
+	public *site.PublicService,
+	promo *promotion.PromoService,
+	redeems *billing.RedeemService,
+	totp *identity.TotpService,
+	attributes *identity.UserAttributeService,
+	tasks *lifecycle.Tasks,
+	payments *payment.Runtime,
+) *identityHTTP {
+	runtime := identityHTTPSettings{identityAuthSettings: settings, BackendMode: backend, public: public}
 	flow := &identity.PendingFlow{Store: identitypostgres.NewPendingRepository(g.Client, time.Now), Database: &identitypostgres.PendingFlowDatabase{Client: g.Client, Auth: g.Core, Profiles: users}, Auth: g.Core, Profiles: users}
 	var pending *identityhttp.PendingHandler
 	session := identityhttp.NewSessionHandler(g.Core, users, runtime, redeems, totp, flow, identityhttp.SessionHTTPOptions{
@@ -210,8 +216,8 @@ func provideIdentityHTTP(g *identityAuthGraph, users *identity.UserService, cfg 
 		WeChat:  wechat, DingTalk: identityhttp.NewDingTalkHandler(pending, bind, syncer, identityhttp.DingTalkHTTPOptions{LoadConfig: runtime.DingTalk, RegistrationEnabled: settings.IsRegistrationEnabled}),
 	}
 	pay := paymenthttp.NewWeChatPaymentHandler(paymenthttp.WeChatPaymentHTTPOptions{
-		Config: wechat.GetConfig, CallbackURL: func(ctx context.Context, c *gin.Context) string {
-			return identityhttp.ResolveWeChatOAuthAbsoluteURL(runtime.APIBaseURL(ctx), c, "/api/v1/auth/oauth/wechat/payment/callback")
+		Config: wechat.GetConfig, CallbackURL: func(_ context.Context, c *gin.Context) string {
+			return identityhttp.ResolveWeChatOAuthAbsoluteURL(c, "/api/v1/auth/oauth/wechat/payment/callback")
 		}, Exchange: func(ctx context.Context, cfg identity.WeChatOAuthOptions, code string) (paymenthttp.WeChatPaymentToken, error) {
 			token, err := identityadapter.ExchangeWeChatOAuthCode(ctx, identityadapter.WeChatOptions{AppID: cfg.AppID, AppSecret: cfg.AppSecret, TokenURL: identityadapter.DefaultWeChatTokenURL}, code)
 			if err != nil {

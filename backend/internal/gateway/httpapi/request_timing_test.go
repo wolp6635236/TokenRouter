@@ -268,13 +268,14 @@ func TestTimingOutputProvenanceSurvivesWriterWrappers(t *testing.T) {
 	})
 }
 
-// TestTextRequestTimingConvertedChat verifies actual Chat readers and conversion
-// into each supported client text protocol. Native CN and OpenAI routes share
-// observation after conversion, while usage and terminal delivery remain intact.
+// TestTextRequestTimingConvertedChat verifies actual Chat readers and
+// conversion into each supported client text protocol. Kimi and DeepSeek and
+// OpenAI routes share observation after conversion, while usage and terminal
+// delivery remain intact.
 func TestTextRequestTimingConvertedChat(t *testing.T) {
 	payload := "data: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"id\":\"chat-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"
 	for _, platform := range []string{capability.PlatformOpenAI, capability.PlatformDeepseek, capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformGrok} {
-		for _, ingress := range cnProtocolIngressCases() {
+		for _, ingress := range textAPIKeyProtocolIngressCases() {
 			t.Run(platform+"/"+ingress.name, func(t *testing.T) {
 				body := strings.ReplaceAll(string(ingress.body), "false", "true")
 				if platform == capability.PlatformGrok {

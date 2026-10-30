@@ -27,9 +27,8 @@ import (
 // continues collecting usage after client writes fail.
 //
 // A scanner goroutine owns the pooled buffer until input ends, while the
-// consumer separately monitors last upstream reads and downstream keepalive
-// spacing. Heartbeats are emitted only between complete SSE events, preventing
-// a ping from splitting a vendor frame. Return signals stop channel
+// consumer monitors last upstream reads for idle expiry. Downstream heartbeats
+// belong to the HTTP boundary and do not alter that read clock. Return signals stop channel
 // publication, and the execution caller closes the body to release a scanner
 // blocked on upstream input; partial usage remains available beside incomplete-
 // stream errors.
@@ -52,13 +51,13 @@ type NativeAnthropicOptions struct {
 	CopyHeaders   func(http.Header, http.Header) // filtered response header copier
 	ReverseTools  func([]byte) []byte            // request-bound tool name restorer
 	MaxLineSize   func() int                     // configured scanner growth limit
-	// StreamInterval governs upstream idle checks from the last scanner read;
-	// KeepaliveInterval governs client pings between complete events. Nonpositive
-	// durations disable their corresponding timer paths.
-	StreamInterval, KeepaliveInterval func() time.Duration        // StreamInterval is upstream read spacing; KeepaliveInterval is downstream ping spacing
-	ExtractData                       func(string) (string, bool) // SSE data value extractor
-	IsTerminal                        func(string, string) bool   // SSE terminal evidence classifier
-	Log                               func(string, ...any)        // native output diagnostic writer
+	// StreamInterval governs upstream idle checks from the last scanner read.
+	// Nonpositive durations disable that timer; HTTP middleware independently
+	// supplies downstream heartbeats without renewing upstream activity.
+	StreamInterval func() time.Duration        // upstream idle timeout duration
+	ExtractData    func(string) (string, bool) // SSE data value extractor
+	IsTerminal     func(string, string) bool   // SSE terminal evidence classifier
+	Log            func(string, ...any)        // native output diagnostic writer
 	// provider stream-timeout policy observer
 	HandleTimeout func(context.Context, string)
 }
@@ -113,6 +112,7 @@ func NativeAnthropicBuffered(ctx context.Context, resp *http.Response, c *upstre
 		RequestID:        resp.Header.Get("x-request-id"),
 		Headers:          resp.Header,
 		Usage:            AnthropicUsageToOpenAI(usage),
+		NativeUsage:      usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,
 		UpstreamModel:    upstreamModel,
@@ -129,8 +129,8 @@ func NativeAnthropicBuffered(ctx context.Context, resp *http.Response, c *upstre
 // abandoned scanner can finish and release pooled storage.
 //
 // The scanner publishes lines independently and atomically records the latest
-// read time. Consumer idle checks use that read time, while keepalives use
-// completed output events and wait whenever a frame is partial. Client write
+// read time. Consumer idle checks use that read time independently of
+// downstream heartbeat activity. Client write
 // failure stops output but continues usage collection. EOF or scanner failure
 // succeeds after terminal evidence; incomplete input and idle expiry return the
 // accumulated result beside an error.
@@ -228,38 +228,30 @@ func NativeAnthropicStreaming(ctx context.Context, resp *http.Response, c *upstr
 		intervalCh = intervalTicker.C
 	}
 
-	keepaliveInterval := o.KeepaliveInterval()
-	var keepaliveTimer *time.Timer
-	if keepaliveInterval > 0 {
-		keepaliveTimer = time.NewTimer(keepaliveInterval)
-		defer keepaliveTimer.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTimer != nil {
-		keepaliveCh = keepaliveTimer.C
-	}
-	lastDataAt := time.Now()
-	resetKeepaliveTimer := func() {
-		if keepaliveTimer == nil {
-			return
-		}
-		// Drain an available expired notification before resetting keepalive spacing
-		// so an earlier idle period does not trigger a ping immediately after fresh
-		// output.
-		if !keepaliveTimer.Stop() {
-			select {
-			case <-keepaliveTimer.C:
-			default:
+	var heartbeatFilter upstream.SSEHeartbeatLineFilter
+	// Filtered lines retain their delimiters; only complete forwarded frames flush.
+	// A write failure stops delivery while the scanner continues collecting usage.
+	writeFilteredLines := func(lines [][]byte) {
+		for _, raw := range lines {
+			if clientDisconnected {
+				return
+			}
+			if _, err := w.Write(o.ReverseTools(raw)); err != nil {
+				clientDisconnected = true
+				o.Log("[Messages passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", o.ProviderID)
+				return
+			}
+			if string(raw) == "\n" {
+				flusher.Flush()
 			}
 		}
-		keepaliveTimer.Reset(keepaliveInterval)
 	}
-	inPartialEvent := false
 
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				writeFilteredLines(heartbeatFilter.Flush())
 				if !clientDisconnected {
 					flusher.Flush()
 				}
@@ -270,6 +262,7 @@ func NativeAnthropicStreaming(ctx context.Context, resp *http.Response, c *upstr
 				return NativeAnthropicStreamResult(resp, usage, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime), nil
 			}
 			if ev.err != nil {
+				writeFilteredLines(heartbeatFilter.Flush())
 				// Terminal evidence makes a later scanner failure a completed stream;
 				// return the collected observation before incomplete-usage handling can
 				// replace that conclusion.
@@ -285,7 +278,7 @@ func NativeAnthropicStreaming(ctx context.Context, resp *http.Response, c *upstr
 						fmt.Errorf("stream usage incomplete: %w", ev.err)
 				}
 				if errors.Is(ev.err, bufio.ErrTooLong) {
-					o.Log("[CN Anthropic passthrough] SSE line too long: provider=%d max_size=%d error=%v", o.ProviderID, maxLineSize, ev.err)
+					o.Log("[Messages passthrough] SSE line too long: provider=%d max_size=%d error=%v", o.ProviderID, maxLineSize, ev.err)
 					return NativeAnthropicStreamResult(resp, usage, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime), ev.err
 				}
 				return NativeAnthropicStreamResult(resp, usage, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime),
@@ -311,25 +304,7 @@ func NativeAnthropicStreaming(ctx context.Context, resp *http.Response, c *upstr
 			// Output failure changes the client-disconnect flag while the scanner
 			// continues publishing; later data still updates usage and terminal evidence
 			// for completion handling.
-			if !clientDisconnected {
-				restored := string(o.ReverseTools([]byte(line)))
-				if _, err := io.WriteString(w, restored); err != nil {
-					clientDisconnected = true
-					o.Log("[CN Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", o.ProviderID)
-				} else if _, err := io.WriteString(w, "\n"); err != nil {
-					clientDisconnected = true
-					o.Log("[CN Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", o.ProviderID)
-				} else if line == "" {
-					// A blank line completes the SSE frame; flush then refresh keepalive
-					// spacing so heartbeats are measured from completed client output.
-					flusher.Flush()
-					lastDataAt = time.Now()
-					resetKeepaliveTimer()
-					inPartialEvent = false
-				} else {
-					inPartialEvent = true
-				}
-			}
+			writeFilteredLines(heartbeatFilter.Push([]byte(line + "\n")))
 
 		// Check elapsed upstream silence from the atomically published scanner
 		// timestamp; queued consumer work alone does not reset the vendor read
@@ -343,33 +318,10 @@ func NativeAnthropicStreaming(ctx context.Context, resp *http.Response, c *upstr
 				return NativeAnthropicStreamResult(resp, usage, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime),
 					fmt.Errorf("stream usage incomplete after timeout")
 			}
-			o.Log("[CN Anthropic passthrough] Stream data interval timeout: provider=%d model=%s interval=%s", o.ProviderID, upstreamModel, streamInterval)
+			o.Log("[Messages passthrough] Stream data interval timeout: provider=%d model=%s interval=%s", o.ProviderID, upstreamModel, streamInterval)
 			o.HandleTimeout(ctx, upstreamModel)
 			return NativeAnthropicStreamResult(resp, usage, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime),
 				fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if clientDisconnected {
-				continue
-			}
-			// Wait while a vendor frame is partial, because inserting a ping between its
-			// lines would combine two event payloads into an invalid SSE frame.
-			if inPartialEvent {
-				resetKeepaliveTimer()
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				resetKeepaliveTimer()
-				continue
-			}
-			if _, err := fmt.Fprint(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n"); err != nil {
-				clientDisconnected = true
-				o.Log("[CN Anthropic passthrough] Client disconnected during keepalive ping, continue draining upstream for usage: provider=%d", o.ProviderID)
-				continue
-			}
-			flusher.Flush()
-			lastDataAt = time.Now()
-			resetKeepaliveTimer()
 		}
 	}
 }
@@ -386,6 +338,7 @@ func NativeAnthropicStreamResult(resp *http.Response, usage *upstream.TokenUsage
 		RequestID:        resp.Header.Get("x-request-id"),
 		Headers:          resp.Header,
 		Usage:            AnthropicUsageToOpenAI(usage),
+		NativeUsage:      usage,
 		Model:            originalModel,
 		BillingModel:     billingModel,
 		UpstreamModel:    upstreamModel,

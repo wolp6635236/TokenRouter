@@ -345,3 +345,74 @@ func TestImageToolRequiresDeclaredOutput(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenCodeClaudeRequestUsesAdaptiveEncoding prepares a Messages body containing
+// an explicit budget and temperature. The declared Claude model changes thinking
+// to adaptive, removes its budget and temperature, and retains OpenCode identity.
+func TestOpenCodeClaudeRequestUsesAdaptiveEncoding(t *testing.T) {
+	service := &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
+	value := &ExecutionProvider{Record: providercore.Record{Platform: "opencode", Type: "apikey", Credentials: map[string]any{"api_key": "test"}}}
+	body, err := PrepareModelAttributeParameters(context.Background(), value, "claude-opus-4-7", []byte(`{"model":"claude-opus-4-7","thinking":{"type":"enabled","budget_tokens":10240},"max_tokens":8192,"temperature":0.4}`), service, "anthropic_messages")
+	require.NoError(t, err)
+	require.Equal(t, "adaptive", gjson.GetBytes(body, "thinking.type").String())
+	require.False(t, gjson.GetBytes(body, "thinking.budget_tokens").Exists())
+	require.False(t, gjson.GetBytes(body, "temperature").Exists())
+	require.Equal(t, "opencode", value.Capabilities.Target.Platform)
+}
+
+// TestCanonicalModelParameterBodyParity sends the same parameters through author
+// routes and explicitly identified OpenCode aliases. The resulting JSON follows
+// model sampling and field restrictions while retaining API-key output controls.
+func TestCanonicalModelParameterBodyParity(t *testing.T) {
+	for _, test := range []struct {
+		name      string // parameter scenario label
+		platform  string // author route platform
+		model     string // author model identity
+		canonical string // qualified metadata identity
+		protocol  string // upstream request encoding
+		body      string // original request parameters
+		expected  string // final request parameters
+	}{
+		{"gpt high responses", "openai", "gpt-5.4", "openai/gpt-5.4", "openai_responses", `{"reasoning":{"effort":"high"},"temperature":0.4,"top_p":0.8,"max_output_tokens":4096}`, `{"reasoning":{"effort":"high"},"max_output_tokens":4096}`},
+		{"gpt none responses", "openai", "gpt-5.4", "openai/gpt-5.4", "openai_responses", `{"reasoning":{"effort":"none"},"temperature":0.4,"top_p":0.8}`, `{"reasoning":{"effort":"none"},"temperature":0.4,"top_p":0.8}`},
+		{"gpt default responses", "openai", "gpt-5.4", "openai/gpt-5.4", "openai_responses", `{"temperature":0.4,"top_p":0.8}`, `{"temperature":0.4,"top_p":0.8}`},
+		{"gpt high chat", "openai", "gpt-5.4", "openai/gpt-5.4", "openai_chat_completions", `{"reasoning_effort":"high","temperature":0.4,"top_p":0.8}`, `{"reasoning_effort":"high"}`},
+		{"gpt none chat", "openai", "gpt-5.4", "openai/gpt-5.4", "openai_chat_completions", `{"reasoning_effort":"none","temperature":0.4,"top_p":0.8}`, `{"reasoning_effort":"none","temperature":0.4,"top_p":0.8}`},
+		{"deepseek enabled", "deepseek", "deepseek-v4-pro", "deepseek/deepseek-v4-pro", "openai_chat_completions", `{"thinking":{"type":"enabled"},"temperature":0.4,"top_p":0.98}`, `{"thinking":{"type":"enabled"},"top_p":0.98}`},
+		{"deepseek disabled", "deepseek", "deepseek-v4-pro", "deepseek/deepseek-v4-pro", "anthropic_messages", `{"thinking":{"type":"disabled"},"temperature":0.4,"top_p":0.98}`, `{"thinking":{"type":"disabled"},"temperature":0.4}`},
+		{"deepseek default", "deepseek", "deepseek-v4-pro", "deepseek/deepseek-v4-pro", "openai_chat_completions", `{"temperature":0.4,"top_p":0.98}`, `{"top_p":0.98}`},
+		{"grok penalties", "grok", "grok-4.5", "xai/grok-4.5", "openai_chat_completions", `{"presence_penalty":1,"presencePenalty":1,"frequency_penalty":1,"frequencyPenalty":1,"stop":["end"],"max_tokens":100}`, `{"max_tokens":100}`},
+		{"grok logprobs", "grok", "grok-4.20", "xai/grok-4.20", "openai_responses", `{"logprobs":true,"top_logprobs":2,"max_output_tokens":100}`, `{"max_output_tokens":100}`},
+		{"apikey output controls", "openai", "gpt-5.6-sol", "openai/gpt-5.6-sol", "openai_responses", `{"reasoning":{"effort":"max"},"max_output_tokens":4096,"frequency_penalty":0.2,"presence_penalty":0.3}`, `{"reasoning":{"effort":"max"},"max_output_tokens":4096,"frequency_penalty":0.2,"presence_penalty":0.3}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, target := range []modelcatalog.Target{
+				{Platform: test.platform, ProviderType: "apikey", Model: test.model, UpstreamProtocol: test.protocol},
+				{Platform: "opencode", ProviderType: "apikey", Model: "service-alias", AttributeModel: test.canonical, UpstreamProtocol: test.protocol},
+			} {
+				resolved := testkit.OfflineView().Resolve(target, modelcatalog.Attributes{})
+				body, err := ApplyModelAttributeParameters([]byte(test.body), resolved)
+				require.NoError(t, err)
+				require.JSONEq(t, test.expected, string(body), "%s", target.Platform)
+				require.Equal(t, target.Platform, resolved.Target.Platform)
+				require.Equal(t, target.Model, resolved.Target.Model)
+			}
+		})
+	}
+}
+
+// TestReferencedAttributesPreserveOutboundModel borrows sampling rules for a custom alias.
+// Parameter preparation applies the target's effort condition while the JSON
+// model and retained route still name the actual upstream alias.
+func TestReferencedAttributesPreserveOutboundModel(t *testing.T) {
+	repo := &mediaAttributeRepo{config: &routing.ModelAttributeConfig{Status: routing.StatusActive, Rules: []routing.ModelAttributeRule{{Models: []string{"custom-*"}, ReferenceModel: "gpt-5.4"}}}}
+	service := &routing.ModelAttributeService{Repo: repo, Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
+	target := modelcatalog.Target{Model: "custom-openai", Platform: "openai", ProviderType: "apikey", ClientProtocol: "openai_chat_completions", UpstreamProtocol: "openai_chat_completions"}
+	result, err := service.NewSession().Resolve(t.Context(), 7, target)
+	require.NoError(t, err)
+	require.Equal(t, "custom-openai", result.Target.Model)
+	body, err := ApplyModelAttributeParameters([]byte(`{"model":"custom-openai","reasoning":{"effort":"high"},"temperature":0.5}`), result)
+	require.NoError(t, err)
+	require.Equal(t, "custom-openai", gjson.GetBytes(body, "model").String())
+	require.False(t, gjson.GetBytes(body, "temperature").Exists())
+}

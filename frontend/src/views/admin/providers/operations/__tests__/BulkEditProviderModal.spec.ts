@@ -1402,6 +1402,19 @@ describe('BulkEditProviderModal', () => {
     expect(wrapper.emitted('close')).toBeUndefined()
     wrapper.unmount()
   })
+  // OAuth bulk editing submits a selected text driver and supports explicitly clearing it.
+  // The opt-in checkbox controls persistence independently from the image tool policy.
+  it.each(['gpt-6.1-sol', ''])('bulk updates the image Responses driver to %s', async (model) => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    await wrapper.get('#bulk-edit-image-responses-model-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-image-responses-model-input"]').setValue(model)
+    await wrapper.get('#bulk-edit-provider-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.providers.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { codex_image_responses_model: model },
+    })
+    wrapper.unmount()
+  })
 })
 
 useProtocolCatalogFixture()

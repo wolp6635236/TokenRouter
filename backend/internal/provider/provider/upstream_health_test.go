@@ -161,15 +161,15 @@ func TestJevOverloadHonorsTemporaryRule(t *testing.T) {
 	require.Equal(t, 1, repo.tempCalls)
 }
 
-// TestIsCNProviderConcurrencyLimit403_ExactClassification checks Kimi's
-// recognized message, trimmed form, near matches, and other platforms. Only the
-// exact platform-supported concurrency wording must classify as that
-// recoverable limit.
-func TestIsCNProviderConcurrencyLimit403_ExactClassification(t *testing.T) {
+// TestKimiConcurrencyLimit403_ExactClassification checks Kimi's recognized
+// message, trimmed form, near matches, and other platforms. Only the exact
+// platform-supported concurrency wording must classify as that recoverable
+// limit.
+func TestKimiConcurrencyLimit403_ExactClassification(t *testing.T) {
 	kimi := &providercore.Record{Platform: capability.PlatformKimi}
 
-	require.True(t, CNConcurrencyLimit403(kimi, upstreamkimi.ConcurrentRequestLimitMessage))
-	require.True(t, CNConcurrencyLimit403(kimi, "  "+upstreamkimi.ConcurrentRequestLimitMessage+"\n"))
+	require.True(t, KimiConcurrencyLimit403(kimi, upstreamkimi.ConcurrentRequestLimitMessage))
+	require.True(t, KimiConcurrencyLimit403(kimi, "  "+upstreamkimi.ConcurrentRequestLimitMessage+"\n"))
 
 	for name, tc := range map[string]struct {
 		provider *providercore.Record // provider record under evaluation
@@ -178,12 +178,12 @@ func TestIsCNProviderConcurrencyLimit403_ExactClassification(t *testing.T) {
 		"permission denied":              {kimi, "You do not have permission to access this resource."},
 		"generic concurrency wording":    {kimi, "concurrent request limit reached"},
 		"near match missing punctuation": {kimi, "You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again"},
-		"other CN provider":              {&providercore.Record{Platform: capability.PlatformZhipu}, upstreamkimi.ConcurrentRequestLimitMessage},
-		"non CN provider":                {&providercore.Record{Platform: capability.PlatformOpenAI}, upstreamkimi.ConcurrentRequestLimitMessage},
+		"Zhipu provider":                 {&providercore.Record{Platform: capability.PlatformZhipu}, upstreamkimi.ConcurrentRequestLimitMessage},
+		"OpenAI provider":                {&providercore.Record{Platform: capability.PlatformOpenAI}, upstreamkimi.ConcurrentRequestLimitMessage},
 		"nil provider":                   {nil, upstreamkimi.ConcurrentRequestLimitMessage},
 	} {
 		t.Run(name, func(t *testing.T) {
-			require.False(t, CNConcurrencyLimit403(tc.provider, tc.message))
+			require.False(t, KimiConcurrencyLimit403(tc.provider, tc.message))
 		})
 	}
 }
@@ -1976,4 +1976,35 @@ func (*unauthorizedHealthStore) UpdateSessionWindow(context.Context, int64, *tim
 func (s *unauthorizedTokenRecorder) InvalidateToken(_ context.Context, value *providercore.Record) error {
 	s.providers = append(s.providers, value)
 	return s.err
+}
+
+// TestOpenCodeHealthUsesRetryAfterDeadline presents a Gemini-shaped quota
+// failure with Retry-After to shared provider health, which serves OpenCode for
+// every encoding. The cooldown must follow the thirty-second response deadline.
+func TestOpenCodeHealthUsesRetryAfterDeadline(t *testing.T) {
+	repo := &jevRateLimitRepoStub{}
+	before := time.Now()
+	health := &UpstreamHealth{Core: providercore.NewHealthService(repo, nil, providercore.HealthOptions{})}
+	value := &providercore.Record{ID: 13, Platform: providercore.PlatformOpenCode, Type: providercore.ProviderTypeAPIKey}
+	headers := http.Header{"Retry-After": {"30"}}
+	health.ApplyUpstreamError(context.Background(), value, HealthObservation{Status: 429, Headers: headers})
+	require.Equal(t, 1, repo.calls)
+	require.WithinDuration(t, before.Add(30*time.Second), repo.reset, time.Second)
+}
+
+// TestOpenCodeCustomPolicyPrecedesRetryAfter supplies an enabled custom status
+// rule alongside a concrete retry deadline. Both ordinary and pool records must
+// apply the configured error state before default quota handling.
+func TestOpenCodeCustomPolicyPrecedesRetryAfter(t *testing.T) {
+	for _, pool := range []bool{false, true} {
+		repo := &errorPolicyRepoStub{}
+		observer := newErrorPolicyObserver(repo)
+		value := &providercore.Record{ID: 18, Platform: providercore.PlatformOpenCode, Type: providercore.ProviderTypeAPIKey, Credentials: map[string]any{
+			"pool_mode": pool, "custom_error_codes_enabled": true, "custom_error_codes": []any{float64(429)},
+		}}
+		headers := http.Header{"Retry-After": {"30"}}
+		observer.ApplyUpstreamError(context.Background(), value, HealthObservation{Status: 429, Headers: headers, Body: []byte(`{"error":{"message":"limited"}}`)})
+		require.Equal(t, 1, repo.setErrCalls)
+		require.Zero(t, repo.tempCalls)
+	}
 }

@@ -480,12 +480,12 @@ func (_q *UsageLogQuery) WithTeam(opts ...func(*TeamQuery)) *UsageLogQuery {
 // Example:
 //
 //	var v []struct {
-//		UserID int64 `json:"user_id,omitempty"`
+//		RequestSource string `json:"request_source,omitempty"`
 //		Count int `json:"count,omitempty"`
 //	}
 //
 //	client.UsageLog.Query().
-//		GroupBy(usagelog.FieldUserID).
+//		GroupBy(usagelog.FieldRequestSource).
 //		Aggregate(ent.Count()).
 //		Scan(ctx, &v)
 func (_q *UsageLogQuery) GroupBy(field string, fields ...string) *UsageLogGroupBy {
@@ -503,11 +503,11 @@ func (_q *UsageLogQuery) GroupBy(field string, fields ...string) *UsageLogGroupB
 // Example:
 //
 //	var v []struct {
-//		UserID int64 `json:"user_id,omitempty"`
+//		RequestSource string `json:"request_source,omitempty"`
 //	}
 //
 //	client.UsageLog.Query().
-//		Select(usagelog.FieldUserID).
+//		Select(usagelog.FieldRequestSource).
 //		Scan(ctx, &v)
 func (_q *UsageLogQuery) Select(fields ...string) *UsageLogSelect {
 	_q.ctx.Fields = append(_q.ctx.Fields, fields...)
@@ -625,7 +625,10 @@ func (_q *UsageLogQuery) loadUser(ctx context.Context, query *UserQuery, nodes [
 	ids := make([]int64, 0, len(nodes))
 	nodeids := make(map[int64][]*UsageLog)
 	for i := range nodes {
-		fk := nodes[i].UserID
+		if nodes[i].UserID == nil {
+			continue
+		}
+		fk := *nodes[i].UserID
 		if _, ok := nodeids[fk]; !ok {
 			ids = append(ids, fk)
 		}
@@ -654,7 +657,10 @@ func (_q *UsageLogQuery) loadAPIKey(ctx context.Context, query *APIKeyQuery, nod
 	ids := make([]int64, 0, len(nodes))
 	nodeids := make(map[int64][]*UsageLog)
 	for i := range nodes {
-		fk := nodes[i].APIKeyID
+		if nodes[i].APIKeyID == nil {
+			continue
+		}
+		fk := *nodes[i].APIKeyID
 		if _, ok := nodeids[fk]; !ok {
 			ids = append(ids, fk)
 		}

@@ -4,7 +4,7 @@
 
 TokenRouter 按 [GNU Lesser General Public License v3.0 或更高版本](LICENSE)发布。在遵守适用开源许可证的前提下，允许使用本项目搭建和运营商业 API 中转服务。运营者应自行承担其服务的运营、收费、客户支持及合规责任。
 
-TokenFlux 的官方主站为 [tokenflux.dev](https://tokenflux.dev)。使用 TokenRouter 不代表第三方服务由 TokenFlux 运营，也不代表其获得 TokenFlux 的授权、认可或背书。软件开源许可不授予冒用 TokenFlux 品牌或以误导方式使用其名称、Logo、域名及其他品牌标识的权利。
+TokenFlux 的官方主站为 [tokenflux.com](https://tokenflux.com)。使用 TokenRouter 不代表第三方服务由 TokenFlux 运营，也不代表其获得 TokenFlux 的授权、认可或背书。软件开源许可不授予冒用 TokenFlux 品牌或以误导方式使用其名称、Logo、域名及其他品牌标识的权利。
 
 第三方运营者不得冒充 TokenFlux 官方服务，或通过站点名称、域名、Logo、页面文案、界面呈现、宣传材料等，使用户误认为其服务与 TokenFlux 存在官方运营、授权、合作或背书关系。此要求适用于故意误导及其他足以造成上述混淆的呈现。
 

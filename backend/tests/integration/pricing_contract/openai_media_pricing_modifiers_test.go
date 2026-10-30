@@ -22,7 +22,7 @@ import (
 // Modifier-only token cards can inherit token buckets from a catalog entry
 // whose model also produces media. These fixtures check that resolved token
 // mode receives the configured factors, then separately exercise media
-// operation rates and CN alias filtering for an
+// operation rates and compatible Claude alias filtering for an
 // administrator-provided zero price.
 
 // TestOpenAIMediaPricingUsesModifierOnlyCards combines media catalog token
@@ -122,10 +122,11 @@ func TestOpenAIMediaModifiersPreserveInheritedRequestBilling(t *testing.T) {
 	}
 }
 
-// TestCNProviderPricingModifiersDoNotCountAsExplicitPrices gives CN providers
-// a Claude alias with a multiplier-only card. It checks that filtering removes
-// the alias, then retains it when the card supplies an explicit zero price.
-func TestCNProviderPricingModifiersDoNotCountAsExplicitPrices(t *testing.T) {
+// TestKimiZhipuDeepSeekPricingModifiersDoNotCountAsExplicitPrices gives compatible
+// providers a Claude alias with a multiplier-only card. It checks that
+// filtering removes the alias, then retains it when the card supplies an
+// explicit zero price.
+func TestKimiZhipuDeepSeekPricingModifiersDoNotCountAsExplicitPrices(t *testing.T) {
 	for _, platform := range []string{capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
 		for _, scope := range []string{"channel"} {
 			t.Run(platform+"/"+scope, func(t *testing.T) {
@@ -139,12 +140,12 @@ func TestCNProviderPricingModifiersDoNotCountAsExplicitPrices(t *testing.T) {
 
 				key := &apikey.APIKey{Group: group}
 				require.NotNil(t, svc.ResolveConfigPricing(context.Background(), model, gatewaycapture.ProjectCompletionKey(key)))
-				require.Empty(t, svc.FilterCNProviderBillingModelCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
+				require.Empty(t, svc.FilterCompatibleClaudeBillingCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
 				// An explicit zero price is an administrator-provided price,
 				// so the candidate remains billable.
 				resolver = billingtestkit.SharedPriceResolver(newCalculator(nil), group.ID, pricing.DefaultBillingSettings(), []routing.ModelPricingEntry{{Models: []string{model}, InputPrice: testPtrFloat64(0)}})
 				svc = completion.NewRecorder(completion.Dependencies{Calculator: newCalculator(nil), Prices: resolver}, completion.RecorderOptions{DefaultMultiplier: 1})
-				require.Equal(t, []string{model}, svc.FilterCNProviderBillingModelCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
+				require.Equal(t, []string{model}, svc.FilterCompatibleClaudeBillingCandidates(context.Background(), gatewaycapture.ProjectCompletionProvider(gatewaycapture.ExecutionCompletionRecord(&gatewaycapture.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, Platform: platform}})), gatewaycapture.ProjectCompletionKey(key), []string{model}))
 			})
 		}
 	}

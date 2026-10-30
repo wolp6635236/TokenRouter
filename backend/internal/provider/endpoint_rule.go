@@ -72,7 +72,7 @@ func (r *Record) SupportsOpenAIEndpointCapability(requested OpenAIEndpointCapabi
 		has := func(p capability.ProtocolID) bool { return slices.Contains(enabled, p) }
 		switch requested {
 		case OpenAIEndpointCapabilityTextGeneration:
-			if !has(capability.ProtocolOpenAIResponses) && !has(capability.ProtocolOpenAIChatCompletions) && !has(capability.ProtocolAnthropicMessages) {
+			if !has(capability.ProtocolOpenAIResponses) && !has(capability.ProtocolOpenAIChatCompletions) && !has(capability.ProtocolAnthropicMessages) && !has(capability.ProtocolGeminiGenerateContent) {
 				return false
 			}
 		case OpenAIEndpointCapabilityResponses, OpenAIEndpointCapabilityRemoteCompactionV2:

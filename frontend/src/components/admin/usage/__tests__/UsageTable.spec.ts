@@ -212,6 +212,55 @@ describe('admin UsageTable request ID column', () => {
 
   // A complete request identifier appears in a rendered usage row. The test protects the
   // clipboard payload and the copied feedback shown after clicking its action.
+  // A system probe has no customer identity and no reliable price. The row must
+  // identify its source and retain unknown expense instead of displaying free usage.
+  it('shows system attribution and unknown provider cost', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          {
+            ...baseImageRow,
+            actual_cost: 0,
+            total_cost: 0,
+            user_id: null,
+            api_key_id: null,
+            request_source: 'group_probe',
+            provider_rate_multiplier: 1,
+            system_usage: {
+              parent_request_id: 'run',
+              outcome: 'success',
+              usage_state: 'missing',
+              cost_state: 'unknown',
+            },
+          },
+        ],
+        loading: false,
+        columns: [
+          { key: 'user', label: 'User' },
+          { key: 'cost', label: 'Cost' },
+        ],
+        showProviderBilling: true,
+      },
+      global: {
+        stubs: {
+          DataTable: {
+            props: ['data'],
+            template:
+              '<div v-for="row in data" :key="row.request_id"><slot name="cell-user" :row="row" /><slot name="cell-cost" :row="row" /></div>',
+          },
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+    expect(wrapper.text()).toContain('admin.usage.requestSources.group_probe')
+    expect(wrapper.text()).toContain('usage.costUnknown')
+    expect(wrapper.text()).not.toContain('#null')
+    expect(wrapper.text()).not.toContain('A $0.000000')
+    wrapper.unmount()
+  })
+
   it('renders and copies the complete request ID', async () => {
     const wrapper = mount(UsageTable, {
       props: {

@@ -963,15 +963,24 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
  */
 export interface SyncUpstreamModelsResult {
   models: string[] // Model identifier list.
+  // Catalogue suggestions describe returned IDs and exclude saved manual overrides,
+  // so forms can display them independently from the administrator's editable choices.
+  model_protocols?: Record<string, import('@/api/protocols.types').ProtocolID>
 }
 
 /**
  * syncUpstreamModels requests a fresh supported-model list from the selected
- * provider's upstream endpoint.
+ * provider's saved upstream endpoint and credentials. Configuration changes
+ * must be saved before calling; an optional signal cancels the HTTP request.
  */
-export async function syncUpstreamModels(id: number): Promise<SyncUpstreamModelsResult> {
+export async function syncUpstreamModels(
+  id: number,
+  signal?: AbortSignal,
+): Promise<SyncUpstreamModelsResult> {
   const { data } = await apiClient.post<SyncUpstreamModelsResult>(
     `/admin/providers/${id}/models/sync-upstream`,
+    undefined,
+    { signal },
   )
   return data
 }
@@ -985,18 +994,25 @@ export interface SyncUpstreamPreviewParams {
   type: string // Represented record category.
   base_url?: string // Requested base url.
   api_key: string // Upstream provider credential.
+  // provider_mode is the drafted credentials.provider_mode for platforms with modes;
+  // OpenCode selects its payg or Go service root and catalog from it.
+  provider_mode?: string
 }
 
 /**
  * syncUpstreamModelsPreview queries upstream models with temporary credentials
- * supplied by the creation form.
+ * supplied by the creation form. The optional signal cancels the request when
+ * the draft changes or closes, and returned protocol suggestions remain separate
+ * from saved administrator overrides.
  */
 export async function syncUpstreamModelsPreview(
   params: SyncUpstreamPreviewParams,
+  signal?: AbortSignal,
 ): Promise<SyncUpstreamModelsResult> {
   const { data } = await apiClient.post<SyncUpstreamModelsResult>(
     '/admin/providers/models/sync-upstream-preview',
     params,
+    { signal },
   )
   return data
 }

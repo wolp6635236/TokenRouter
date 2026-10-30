@@ -212,11 +212,6 @@ type PassthroughPorts interface {
 	// client tools. Its wrapper retains closure of the underlying response body
 	// for the runner after successful reading or failure handling.
 	WrapResponseBody(r *http.Response)
-	// ObserveProvenance records returned turn-state source after successful HTTP
-	// headers and before client reading. That publication does not wait for
-	// confirmed client delivery; the later response reader owns output commitment
-	// observations.
-	ObserveProvenance(h http.Header)
 	// ResponseOptions returns request-bound passthrough reading, health, and
 	// synchronous output callbacks.
 	ResponseOptions(ctx context.Context) openai.PassthroughOptions

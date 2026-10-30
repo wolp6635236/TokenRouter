@@ -16,8 +16,8 @@ import type {
 } from '@/components/provider/form/providerFormOptions'
 import type {
   CnApiProtocol,
-  CnProviderMode,
-  CnNativeApiProtocol,
+  EndpointSlotAddresses,
+  ProviderMode,
 } from '@/components/provider/form/providerEndpoints'
 import { DEFAULT_POOL_MODE_RETRY_COUNT } from '@/components/provider/form/poolMode'
 import { defaultUpstreamBalanceAlert } from '@/utils/upstreamBalanceAlert'
@@ -61,13 +61,14 @@ export function createProviderEditDraft() {
     geminiProviderType: ref<GeminiProviderType>('official'), // Gemini endpoint source selection.
     geminiAIStudioTier: ref<'aistudio_free' | 'aistudio_paid'>('aistudio_free'), // Official AI Studio tier.
     editApiProtocol: ref<CnApiProtocol>('adaptive'), // CN endpoint editing protocol.
-    editProviderMode: ref<CnProviderMode>('payg'), // CN billing mode selection.
+    editProviderMode: ref<ProviderMode>('payg'), // CN billing or OpenCode service mode.
     // Organization and project values apply to Zhipu Coding Plan credentials; clearing the
     // organization removes both values from the credential update.
     editZhipuOrganization: ref(''), // Zhipu organization credential value.
     editZhipuProject: ref(''), // Zhipu project credential value.
-    // Protocol-specific CN forwarding addresses.
-    editAdaptiveBaseUrls: ref<Record<CnNativeApiProtocol, string>>({
+    // Protocol-specific forwarding addresses: complete CN adaptive endpoints, or optional
+    // overrides for platforms whose addresses derive from one service root.
+    editAdaptiveBaseUrls: ref<EndpointSlotAddresses>({
       chat_completions: '', // Chat Completions endpoint.
       anthropic: '', // Anthropic Messages endpoint.
       responses: '', // OpenAI Responses endpoint.
@@ -162,6 +163,7 @@ export function createProviderEditDraft() {
     openAIOAuthClientPolicy: ref<OpenAIOAuthClientPolicy>('any'), // Allowed OAuth client policy.
     codexFingerprintMode: ref<CodexFingerprintMode>('off'), // Codex client fingerprint mode.
     codexImageToolMode: ref<CodexImageToolMode>('inherit'), // Codex image tool policy.
+    codexImageResponsesModel: ref(''), // Blank selects the backend image driver default.
     anthropicPassthroughEnabled: ref(false), // Anthropic direct forwarding switch.
     anthropicAPIKeyAuthScheme: ref<AnthropicAPIKeyAuthScheme>('x_api_key'), // Anthropic API authentication scheme.
     webSearchEmulationMode: ref('default'), // Provider web search override.

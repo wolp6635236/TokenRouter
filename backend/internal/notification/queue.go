@@ -60,10 +60,7 @@ type EmailQueueService struct {
 	emailService TaskProcessor  // identity credential processor
 	taskChan     chan EmailTask // bounded accepted tasks
 	wg           sync.WaitGroup // registered worker lifetime
-	// stopChan closes on terminal shutdown; workers consume taskChan until it
-	// drains, and this channel currently has no reader in the queue implementation.
-	stopChan chan struct{}
-	workers  int // configured worker count
+	workers      int            // configured worker count
 	// lifecycleMu protects started, stopped, stopErr, and admission against
 	// task-channel closure. A shutdown records stopped before later Start or
 	// Enqueue calls can register additional work through that lifecycle gate.
@@ -97,7 +94,6 @@ func NewEmailQueueService(emailService TaskProcessor, workers int) *EmailQueueSe
 		runCtx: ctx, cancel: cancel, done: make(chan struct{}),
 		emailService: emailService,
 		taskChan:     make(chan EmailTask, 100),
-		stopChan:     make(chan struct{}),
 		workers:      workers,
 	}
 
@@ -253,7 +249,6 @@ func (s *EmailQueueService) StopContext(ctx context.Context) error {
 		// lock excludes enqueue sends and startup registration while the completion monitor is installed.
 		s.stopped = true
 		close(s.taskChan)
-		close(s.stopChan)
 		go func() {
 			// Waiting precedes the final queued-length check, so registered workers
 			// finish consuming accepted tasks before the monitor reports work that never obtained a worker.

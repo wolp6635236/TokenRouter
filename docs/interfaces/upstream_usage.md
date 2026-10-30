@@ -1,6 +1,6 @@
 # API Key 上游用量查询
 
-本文定义 `type=apikey` 提供商的上游用量查询、钱包余额邮件提醒，以及国产供应商可选的周期监控。管理员手动查询只用于展示，和 TokenRouter 的调度、自动暂停、提供商倍率、本地配额和结算都无关；只有手动开启的 CN 周期监控，才会写入统一快照，并在余额过低时临时停调。`type=bedrock` 不在本文范围内；OAuth 和 Setup Token 的官方用量窗口由 `provider.OAuthUsageService` 单独维护。
+本文定义 `type=apikey` 提供商的上游用量查询、钱包余额邮件提醒，以及国产供应商可选的周期监控。管理员手动查询只用于展示，和 TokenRouter 的调度、自动暂停、提供商倍率、本地配额和结算都无关；只有手动开启的上游用量周期监控，才会写入统一快照，并在余额过低时临时停调。`type=bedrock` 不在本文范围内；OAuth 和 Setup Token 的官方用量窗口由 `provider.OAuthUsageService` 单独维护。
 
 ## 配置
 
@@ -14,7 +14,7 @@
 }
 ```
 
-普通 API Key 提供商没有这个对象时，按 `enabled=true`、`adapter=sub2api` 处理，根地址使用提供商现有的 API Base URL。Jev 缺少这个对象时默认关闭查询，管理员可配置兼容中继的查询适配器。其他 API Key 提供商通过 `enabled=false` 关闭查询。管理员可以选择的 `adapter` 只有 `sub2api`、`new_api`、`zivv` 和 `derouter`；Kimi、Zhipu、DeepSeek 忽略这个字段，按平台和 `provider_mode` 选择固定的内置适配器。`base_url` 只能覆盖查询的根地址，不能带用户信息、查询串或片段。后端照常执行 HTTPS、allowlist、私网地址和 URL 格式的校验。`derouter` 的查询地址留空时使用 `https://cf-api.derouter.ai`；其他适配器留空时复用转发地址。
+普通 API Key 提供商没有这个对象时，按 `enabled=true`、`adapter=sub2api` 处理，根地址使用提供商现有的 API Base URL。Jev 缺少这个对象时默认关闭查询，管理员可配置兼容中继的查询适配器。其他 API Key 提供商通过 `enabled=false` 关闭查询。管理员可以选择的 `adapter` 只有 `sub2api`、`new_api`、`zivv` 和 `derouter`；Kimi、Zhipu、DeepSeek 和 OpenCode 忽略这个字段，按平台和 `provider_mode` 选择固定的内置适配器；当前模式没有查询协议时，有效配置的 `enabled` 固定为 `false`。`base_url` 只能覆盖查询的根地址，不能带用户信息、查询串或片段。后端照常执行 HTTPS、allowlist、私网地址和 URL 格式的校验。查询地址留空时，`derouter` 使用 `https://cf-api.derouter.ai`，`opencode_go` 使用 `https://opencode.ai`，其他适配器复用转发地址。
 
 API Key 始终从提供商的 `credentials` 读取，不会出现在 `extra`、接口响应、审计请求体、浏览器缓存和日志里。用户也无法配置任意的路径、方法、Header 模板或脚本。
 
@@ -54,6 +54,10 @@ Zivv 的公开开发者文档说明余额在控制台的钱包页面，适配器
 
 响应中的 `balance`、`locked_balance`、`available` 接受十进制字符串或 JSON 数字，三个字段都必须存在且为有限数值，锁定金额要求非负，`available` 必须在金额比较容差内等于 `balance - locked_balance`。归一化结果为 `mode=balance`、`unit=USD`，`balance.remaining` 使用 `available`，供列表展示和余额提醒比较。零余额与负余额按实际值返回；缺失、null 或不一致的金额会导致查询失败。锁定金额不代表历史消费，因此结果省略 `used` 和 `total`。协议来源：[derouter.ai 管理 API](https://derouter.ai/docs/api)。
 
+### OpenCode Go
+
+OpenCode 的 `go` 模式自动选择 `opencode_go`，读取固定的 `/zen/go/v1/usage`，展示三个百分比窗口及重置时间。管理根地址可独立编辑，留空使用 `https://opencode.ai`。`payg` 模式没有查询协议，查询保持关闭，手动查询返回不支持，不发送请求。认证、窗口校验和配置规则见 [OpenCode 上游](opencode_upstream.md)。
+
 ### 国产供应商
 
 国产供应商的适配器由提供商身份自动选择，管理表单里无法改成其他协议：
@@ -65,20 +69,20 @@ Zivv 的公开开发者文档说明余额在控制台的钱包页面，适配器
 | Zhipu coding | `zhipu_coding` | `/api/monitor/usage/quota/limit` | `PERCENT` 周期限额 |
 | DeepSeek payg | `deepseek_balance` | `/user/balance` | 多币种的 `balances[]`、主 `balance` 和 `available` |
 
-Zhipu payg 没有公开的余额协议，DeepSeek coding 也不是合法的提供商组合，所以查询这两种时直接返回不支持，不发送请求。Kimi 和 Zhipu 的 coding 周期把使用百分比归一化为上限 `100`、已用百分比和剩余百分比。DeepSeek 保留所有合法币种的余额，只要还有一个币种高于监控阈值，就不会因为另一个币种余额低而停调。这四个适配器只解析供应商固定格式的 JSON 响应，不执行脚本，不接受自定义的方法或路径，也不直接写数据库。
+Zhipu payg 没有公开的余额协议，DeepSeek coding 也不是合法的提供商组合。这两种组合的有效配置保持关闭，保存的开关无法打开查询；手动查询直接返回不支持，不发送请求。Kimi 和 Zhipu 的 coding 周期把使用百分比归一化为上限 `100`、已用百分比和剩余百分比。DeepSeek 保留所有合法币种的余额，只要还有一个币种高于监控阈值，就不会因为另一个币种余额低而停调。这四个适配器只解析供应商固定格式的 JSON 响应，不执行脚本，不接受自定义的方法或路径，也不直接写数据库。
 
 适配器拒绝以下响应：HTTP 非成功、认证失败、限流、超时、重定向、响应体过大、缺字段或数值互相矛盾。选定的适配器失败时，不会自动换用另一个协议，也不会修改提供商配置。
 
 <a id="native_usage_adapters"></a>
 ## 原生查询与提供商编排
 
-Sub2API、New API、Zivv、derouter.ai 的固定查询和归一化在 `upstream/usageprovider`，Kimi、Zhipu、DeepSeek 分别在对应的 `upstream` 包里。`provider/provider.UpstreamUsageExecution` 持有唯一的适配器注册表，`NewUpstreamUsageHTTPExecution` 根据提供商记录构造凭据、代理、TLS 和 Header 的技术快照。app 只整理出站配置和共享的传输接口，直接绑定一个 `provider.UpstreamUsageService`。
+Sub2API、New API、Zivv、derouter.ai 的固定查询和归一化在 `upstream/usageprovider`，OpenCode、Kimi、Zhipu、DeepSeek 分别在对应的 `upstream` 包里。各平台的模式声明决定固定的用量适配器，`provider.PlatformUsageAdapter` 读取这份规则；`provider.EffectiveUpstreamUsageConfig` 用它解析有效配置，并为管理根地址独立的适配器填入默认根地址，执行和身份复核因此使用同一个目的地。`provider/provider.UpstreamUsageExecution` 持有唯一的适配器注册表，`NewUpstreamUsageHTTPExecution` 根据提供商记录构造凭据、代理、TLS 和 Header 的技术快照。app 只整理出站配置和共享的传输接口，直接绑定一个 `provider.UpstreamUsageService`。
 
 `upstream/usageview` 保存归一化后的值、错误和验证规则，provider 通过类型别名复用它们。`upstream/usagecontract.Request` 是一次查询的技术快照，其中的敏感字段不会出现在 JSON 或普通的字符串格式化结果里。共享的 `upstream/internal/usageclient` 负责固定的读取上限、请求头覆盖顺序、状态映射和关闭响应体。这些原生包不读取提供商仓储，也不写健康、调度或资金数据。
 
 Ollama 的固定设置页抓取、HTML 解析、Retry-After、Chat 思考字段补齐和输出上限处理，在 `upstream/ollama`。`provider/provider.OllamaUsageFetcher` 只把受控的 Cookie、代理和并发参数交给共享的 HTTP 池；app 直接构造一个 `provider.OllamaCloudUsageService`，由它负责浏览器会话、分组、加密、singleflight、身份 CAS 和周期维护，HTTP 直接绑定它的 Handler。
 
-用量查询是 OpenAI 兼容提供商的一项能力，没有对应的独立提供商平台。CN 的通用文本执行复用 Anthropic 和 OpenAI 的协议链；平台资格和全局重试与用量适配器无关。
+用量查询是 OpenAI 兼容提供商的一项能力，没有对应的独立提供商平台。Kimi、Zhipu、DeepSeek 的通用文本执行复用 Anthropic 和 OpenAI 的协议链；平台资格和全局重试与用量适配器无关。
 
 ## 管理员接口
 
@@ -102,11 +106,15 @@ API Key 提供商（包括 Kimi、Zhipu、DeepSeek）的用量栏，按以下顺
 
 展示、按钮、列表的单个和批量查询使用同一套资格判断。查询支持 API Key，Zhipu 非 coding 模式没有余额端点。`extra.upstream_usage_query.enabled=false` 时关闭查询。没有配置时 Jev 默认关闭，其他支持查询的提供商默认启用。不支持或已关闭时，上游查询区域隐藏，本地统计和配额照常显示。批量选择时跳过这些提供商。
 
+前端的资格、启用状态和有效适配器由同一解析入口提供，查询结果及缓存按这份有效配置验证。服务模式参与缓存身份；请求完成时再核对当前页面中的提供商及管理员身份，迟到结果不能覆盖修改后的配置。
+
 列表加载、滚动进入视口和自动刷新都不会请求上游，管理员只能通过行内的刷新按钮或批量操作手动查询。成功的结果按管理员身份、提供商 ID、`updated_at`、代理和 Base URL、适配器和规范化后的配置，写进 `sessionStorage`，保存五分钟；失败的结果不缓存。强制刷新会绕过缓存；保存提供商，或者凭据、代理、Base URL、配置变化时，缓存立即失效。缓存里只有归一化后的结果，没有任何凭据。提供商有有效的 `extra.cn_usage_monitor_snapshot` 时，列表可以直接展示最近一次监控的结果，不发起请求。
 
 ## 国产供应商周期监控
 
-`gateway.cn_providers.monitor_enabled` 默认是 `false`。开启后，`provider.CNUsageMonitor` 只扫描满足以下条件的 Kimi、Zhipu、DeepSeek 提供商：active、`type=apikey`、没有关闭用量查询、有固定的适配器。
+监控由 `provider.UsageMonitor` 实现，候选平台从各自声明的监控资格中枚举，官方域名也由对应平台声明。当前启用资格的平台为 Kimi、Zhipu 和 DeepSeek；每条记录仍需通过类型、状态及查询配置检查。启动配置对应 `GatewayUsageMonitorConfig`。部署键 `gateway.cn_providers`、快照键 `extra.cn_usage_monitor_snapshot`、共享锁键和停调原因前缀保留既有格式，已有配置、快照和多实例协调继续使用这些键。
+
+`gateway.cn_providers.monitor_enabled` 默认是 `false`。开启后，`provider.UsageMonitor` 只扫描满足以下条件的 Kimi、Zhipu、DeepSeek 提供商：active、`type=apikey`、没有关闭用量查询、有固定的适配器。
 
 - 第一次探测在一个完整周期之后执行。
 - 多实例通过共享的 leader lock 保证每一轮只有一个执行者。
@@ -117,9 +125,9 @@ API Key 提供商（包括 Kimi、Zhipu、DeepSeek）的用量栏，按以下顺
 
 余额模式下，余额低于 `balance_threshold` 时，监控写入一个带身份 hash 的临时不可调度原因；余额恢复到阈值以上时，只清除同一个身份创建的那个状态。健康状态的暂停和恢复，同样以读取时的 `updated_at` 做条件写入，恢复时还检查原因是否一致；管理员换了凭据或有其他健康写入之后，旧的观测结果无法覆盖新的状态。事务提交后尽力写 outbox，健康状态和 Redis 的更新不在同一个事务里。coding 模式的百分比窗口快照，用于已有的额度阈值和重置时间判断，它表示的是百分比，不是货币余额。
 
-官方域名可以直接监控；自定义中继只有在开启 URL allowlist、并且 host 命中 `security.url_allowlist.upstream_hosts` 时，后台才会自动访问。监控复用提供商的代理、TLS 指纹、受保护的 Header Override 和 `UpstreamUsageService`，没有 CN 专用的 HTTP 管理接口。
+官方域名可以直接监控；自定义中继只有在开启 URL allowlist、并且 host 命中 `security.url_allowlist.upstream_hosts` 时，后台才会自动访问。监控复用提供商的代理、TLS 指纹、受保护的 Header Override 和通用的 `UpstreamUsageService` 查询服务。
 
-旧的 `upstream_billing_probe` 是已经移除的自动倍率探测功能，本功能与它无关，不写它的旧快照，也不影响调度状态。
+旧的 `upstream_billing_probe` 自动倍率探测功能已经移除。用量监控使用自己的快照和余额停调规则。
 
 ## 钱包余额邮件提醒
 

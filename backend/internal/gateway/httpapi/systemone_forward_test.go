@@ -66,7 +66,7 @@ func TestSystemOneErrorRepresentation(t *testing.T) {
 						defer rules.Stop()
 						BindErrorPassthroughService(c, rules)
 					}
-					(&SystemOneExecutor{}).writeUpstreamError(c, &jev.HTTPError{Status: 422, Header: headers, Body: body})
+					(&SystemOneExecutor{}).writeUpstreamError(c, provider.PlatformJev, &jev.HTTPError{Status: 422, Header: headers, Body: body})
 					require.Equal(t, "upstream-id", recorder.Header().Get("X-Request-Id"))
 					require.Equal(t, "17", recorder.Header().Get("Retry-After"))
 					if matched {
@@ -194,65 +194,74 @@ func TestSystemOnePoolErrorPolicy(t *testing.T) {
 // outbound identity and raw vendor response version remain separately
 // observed.
 func TestSystemOneForwardResponseModel(t *testing.T) {
-	for _, tc := range []struct {
-		// requested supplies route-plan identity and groupMapped optionally replaces
-		// the transmitted model. composite restores the prefixed client label, while
-		// keyAlias supplies the earlier Key redirect identity used by response output.
-		// name: scenario subtest label; requested: client requested model;
-		// groupMapped: group mapping destination; composite: client composite label;
-		// keyAlias: client Key redirect alias; want: expected response model.
-		name, requested, groupMapped, composite, keyAlias, want string
-	}{
-		{name: "direct", requested: "jev-latest", want: "jev-1.13.0"},
-		{name: "provider mapping", requested: "provider-alias", want: "provider-alias"},
-		{name: "group mapping", requested: "group-alias", groupMapped: "jev-latest", want: "group-alias"},
-		{name: "key mapping", requested: "jev-latest", keyAlias: "key-alias", want: "key-alias"},
-		{name: "composite", requested: "jev-latest", composite: "TS/jev-latest", want: "TS/jev-latest"},
-		{name: "composite provider mapping", requested: "provider-alias", composite: "TS/provider-alias", want: "TS/provider-alias"},
-		{name: "composite group mapping", requested: "group-alias", groupMapped: "jev-latest", composite: "TS/group-alias", want: "TS/group-alias"},
-		{name: "composite key mapping", requested: "jev-latest", keyAlias: "key-alias", composite: "TS/key-alias", want: "TS/key-alias"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			transport := &auxiliaryHTTPRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"model":"jev-1.13.0","answers":{"available":{"type":"noul","noul":0.8}},"usage":{"input_tokens":12,"output_tokens":4}}`))}}
-			zero := 0.0
-			executor := &SystemOneExecutor{Transport: transport, Pricing: textPricingFixture(t, routing.ModelPricingEntry{Models: []string{"jev-latest"}, InputPrice: &zero, OutputPrice: &zero})}
-			target := gatewayprovider.NewExecutionProvider(&provider.Record{ID: 1, Platform: provider.PlatformJev, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test-key", "model_mapping": map[string]any{"provider-alias": "jev-latest"}}})
-			recorder := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(recorder)
-			c.Request = httptest.NewRequest(http.MethodPost, EndpointSystemOne, nil)
-			key := &apikey.APIKey{GroupID: testkit.GroupID()}
-			c.Set("gateway_effective_key", key)
-			if tc.composite != "" {
-				actual := tc.requested
-				if tc.keyAlias != "" {
-					actual = tc.keyAlias
+	for _, platform := range []string{provider.PlatformJev, provider.PlatformOpenCode} {
+		for _, tc := range []struct {
+			// requested supplies route-plan identity and groupMapped optionally replaces
+			// the transmitted model. composite restores the prefixed client label, while
+			// keyAlias supplies the earlier Key redirect identity used by response output.
+			// name: scenario subtest label; requested: client requested model;
+			// groupMapped: group mapping destination; composite: client composite label;
+			// keyAlias: client Key redirect alias; want: expected response model.
+			name, requested, groupMapped, composite, keyAlias, want string
+		}{
+			{name: "direct", requested: "jev-latest", want: "jev-1.13.0"},
+			{name: "provider mapping", requested: "provider-alias", want: "provider-alias"},
+			{name: "group mapping", requested: "group-alias", groupMapped: "jev-latest", want: "group-alias"},
+			{name: "key mapping", requested: "jev-latest", keyAlias: "key-alias", want: "key-alias"},
+			{name: "composite", requested: "jev-latest", composite: "TS/jev-latest", want: "TS/jev-latest"},
+			{name: "composite provider mapping", requested: "provider-alias", composite: "TS/provider-alias", want: "TS/provider-alias"},
+			{name: "composite group mapping", requested: "group-alias", groupMapped: "jev-latest", composite: "TS/group-alias", want: "TS/group-alias"},
+			{name: "composite key mapping", requested: "jev-latest", keyAlias: "key-alias", composite: "TS/key-alias", want: "TS/key-alias"},
+		} {
+			t.Run(platform+"/"+tc.name, func(t *testing.T) {
+				transport := &auxiliaryHTTPRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"model":"jev-1.13.0","answers":{"available":{"type":"noul","noul":0.8}},"usage":{"input_tokens":12,"output_tokens":4}}`))}}
+				zero := 0.0
+				executor := &SystemOneExecutor{Transport: transport, Pricing: textPricingFixture(t, routing.ModelPricingEntry{Models: []string{"jev-latest"}, InputPrice: &zero, OutputPrice: &zero})}
+				target := gatewayprovider.NewExecutionProvider(&provider.Record{ID: 1, Platform: platform, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test-key", "model_mapping": map[string]any{"provider-alias": "jev-latest"}}})
+				if platform == provider.PlatformOpenCode {
+					target.Record.Credentials[provider.OpenCodeModelProtocolsKey] = map[string]any{"payg": map[string]any{"jev-latest": "systemone"}}
 				}
-				SetCompositeModelContext(c, tc.composite, actual)
-			}
-			if tc.keyAlias != "" {
-				SetAPIKeyModelRedirectContext(c, tc.keyAlias, tc.requested)
-			}
-			mapped := tc.requested
-			if tc.groupMapped != "" {
-				mapped = tc.groupMapped
-			}
-			mapping := routing.GroupMappingResult{Mapped: mapped != tc.requested, MappedModel: mapped, BillingModelSource: routing.BillingModelSourceUpstream}
-			plan := routing.Plan(routing.PlanInput{GroupID: key.GroupID, ClientProtocol: protocol.ProtocolSystemOne, RequestedModel: tc.requested, GroupMapping: mapping})
-			ctx := requeststate.WithRoutePlan(c.Request.Context(), plan)
-			c.Request = c.Request.WithContext(ctx)
-			result, err := executor.Forward(ctx, c, target, systemone.ProbeBody(mapped, ""))
-			require.NoError(t, err)
-			require.True(t, result.HasUsage)
-			require.Equal(t, "jev-latest", result.UpstreamModel)
-			require.Equal(t, "jev-1.13.0", result.UpstreamResponseModel)
-			var sent, received struct {
-				Model string // decoded model identity
-			}
-			require.NoError(t, json.Unmarshal(transport.lastBody, &sent))
-			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &received))
-			require.Equal(t, "jev-latest", sent.Model)
-			require.Equal(t, tc.want, received.Model)
-		})
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, EndpointSystemOne, nil)
+				key := &apikey.APIKey{GroupID: testkit.GroupID()}
+				c.Set("gateway_effective_key", key)
+				if tc.composite != "" {
+					actual := tc.requested
+					if tc.keyAlias != "" {
+						actual = tc.keyAlias
+					}
+					SetCompositeModelContext(c, tc.composite, actual)
+				}
+				if tc.keyAlias != "" {
+					SetAPIKeyModelRedirectContext(c, tc.keyAlias, tc.requested)
+				}
+				mapped := tc.requested
+				if tc.groupMapped != "" {
+					mapped = tc.groupMapped
+				}
+				mapping := routing.GroupMappingResult{Mapped: mapped != tc.requested, MappedModel: mapped, BillingModelSource: routing.BillingModelSourceUpstream}
+				plan := routing.Plan(routing.PlanInput{GroupID: key.GroupID, ClientProtocol: protocol.ProtocolSystemOne, RequestedModel: tc.requested, GroupMapping: mapping})
+				ctx := requeststate.WithRoutePlan(c.Request.Context(), plan)
+				c.Request = c.Request.WithContext(ctx)
+				result, err := executor.Forward(ctx, c, target, systemone.ProbeBody(mapped, ""))
+				require.NoError(t, err)
+				if platform == provider.PlatformOpenCode {
+					require.Equal(t, "/inference/systemone/v1/systemone", transport.lastReq.URL.Path)
+					require.Equal(t, "Bearer test-key", transport.lastReq.Header.Get("Authorization"))
+				}
+				require.True(t, result.HasUsage)
+				require.Equal(t, "jev-latest", result.UpstreamModel)
+				require.Equal(t, "jev-1.13.0", result.UpstreamResponseModel)
+				var sent, received struct {
+					Model string // decoded model identity
+				}
+				require.NoError(t, json.Unmarshal(transport.lastBody, &sent))
+				require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &received))
+				require.Equal(t, "jev-latest", sent.Model)
+				require.Equal(t, tc.want, received.Model)
+			})
+		}
 	}
 }
 

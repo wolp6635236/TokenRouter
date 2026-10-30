@@ -14,6 +14,10 @@ const (
 	Label = "usage_log"
 	// FieldID holds the string denoting the id field in the database.
 	FieldID = "id"
+	// FieldRequestSource holds the string denoting the request_source field in the database.
+	FieldRequestSource = "request_source"
+	// FieldSystemUsage holds the string denoting the system_usage field in the database.
+	FieldSystemUsage = "system_usage"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldBillingUserID holds the string denoting the billing_user_id field in the database.
@@ -183,6 +187,8 @@ const (
 // Columns holds all SQL columns for usagelog fields.
 var Columns = []string{
 	FieldID,
+	FieldRequestSource,
+	FieldSystemUsage,
 	FieldUserID,
 	FieldBillingUserID,
 	FieldTeamID,
@@ -250,6 +256,10 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// DefaultRequestSource holds the default value on creation for the "request_source" field.
+	DefaultRequestSource string
+	// RequestSourceValidator is a validator for the "request_source" field. It is called by the builders before save.
+	RequestSourceValidator func(string) error
 	// DefaultPlatform holds the default value on creation for the "platform" field.
 	DefaultPlatform string
 	// PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
@@ -338,6 +348,11 @@ type OrderOption func(*sql.Selector)
 // ByID orders the results by the id field.
 func ByID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldID, opts...).ToFunc()
+}
+
+// ByRequestSource orders the results by the request_source field.
+func ByRequestSource(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRequestSource, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.

@@ -4,7 +4,7 @@
 
 TokenRouter is released under the [GNU Lesser General Public License v3.0 or later](LICENSE). You may use this project to build and operate commercial API gateway services, subject to compliance with the applicable open-source licenses. Operators are responsible for their own service operations, billing, customer support, and legal compliance.
 
-The official TokenFlux website is [tokenflux.dev](https://tokenflux.dev). Using TokenRouter does not mean that a third-party service is operated, authorized, approved, or endorsed by TokenFlux. The software license does not grant permission to impersonate TokenFlux or misleadingly use its name, logos, domain names, or other brand identifiers.
+The official TokenFlux website is [tokenflux.com](https://tokenflux.com). Using TokenRouter does not mean that a third-party service is operated, authorized, approved, or endorsed by TokenFlux. The software license does not grant permission to impersonate TokenFlux or misleadingly use its name, logos, domain names, or other brand identifiers.
 
 Third-party operators must not impersonate an official TokenFlux service or use site names, domain names, logos, page content, interface presentation, or promotional materials in ways that falsely suggest official operation, authorization, partnership, or endorsement by TokenFlux. This applies to deliberate misrepresentation and other presentations likely to cause such confusion.
 

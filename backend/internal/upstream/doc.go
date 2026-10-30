@@ -17,6 +17,9 @@
 //   - error_message.go, model_error.go, stream_error.go: error classification
 //     and client messages.
 //   - client_tools_stream.go: Responses client-tool stream conversion.
+//   - gemini_stream.go, gemini_collect.go: validated Gemini stream consumption
+//     and candidate-preserving buffered collection.
+//   - sse_heartbeat.go: bounded upstream heartbeat classification and line filtering.
 //   - http_profile.go, path_segment.go, session_identity.go, wait.go: transport,
 //     paths, sessions, and cancellable waits.
 package upstream

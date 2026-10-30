@@ -409,8 +409,8 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				semanticStatus := 403
 				var semanticDecision ErrorDecision
 				// An overload event before any new stream bytes uses synthetic 529
-				// health policy. Size compares progress, while Written below separately
-				// determines whether client output or provider recovery remains possible.
+				// health policy. Size excludes heartbeat traffic, while Written below
+				// determines whether a plain JSON error can still be presented.
 				if p.Size() == writerSizeBeforeStream && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
 					semanticStatus = 529
 					semanticDecision = p.Health(ctx, "failover_synthetic", semanticStatus, resp.Headers, body, reqModel)
@@ -448,21 +448,21 @@ func Messages(ctx context.Context, p MessagePorts, in MessageInput, parsed *requ
 				decision := semanticDecision
 				// Other stream events receive volatile 403 treatment even after bytes
 				// have progressed. Persist the observation only with unchanged size;
-				// header commitment can still prevent the later failover/output path.
+				// HTTP commitment still prevents the later plain JSON output path.
 				if semanticStatus != 529 {
 					decision = p.Health(ctx, "volatile", 403, resp.Headers, body, reqModel)
 					if p.Size() == writerSizeBeforeStream {
 						decision = p.Health(ctx, "persist", 403, resp.Headers, body, reqModel)
 					}
 				}
-				// Generic output precedes recovery and both require an uncommitted
-				// writer. Once committed, return the stream error so already emitted
-				// output is not followed by a replacement envelope or provider attempt.
+				// Plain JSON requires uncommitted HTTP headers. Provider recovery remains
+				// possible after heartbeat-only commitment because adjusted size excludes
+				// those bytes and no provider content has reached the client.
 				if decision.Generic && !p.Written() {
 					p.GenericError()
 					return nil, fmt.Errorf("upstream SSE error not in custom error codes")
 				}
-				if !p.Written() && decision.Failover {
+				if p.Size() <= 0 && decision.Failover {
 					return nil, p.FailoverError(semanticStatus, body, decision.RetrySameProvider)
 				}
 				return nil, err

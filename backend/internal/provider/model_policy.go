@@ -54,9 +54,15 @@ func (r *Record) IsModelSupported(requestedModel string, defaults ModelMappingDe
 }
 
 // modelPlatformAllows reports whether a final model passes supplied platform
-// callbacks for a nonnil record. Missing callbacks allow the model; Qoder site
-// checks and OpenAI OAuth account checks apply only to their corresponding records.
+// callbacks for a nonnil record. A record with per-model protocol declarations
+// requires the model to be declared; Qoder site and OpenAI OAuth checks use
+// their supplied callbacks. Missing callbacks leave those checks to callers.
 func (r *Record) modelPlatformAllows(model string, rules ModelPlatformRules) bool {
+	if protocols := r.ModelProtocols(); protocols != nil {
+		if _, declared := protocols[model]; !declared {
+			return false
+		}
+	}
 	if r.Platform == PlatformQoder && rules.QoderCompatible != nil && !rules.QoderCompatible(model) {
 		return false
 	}

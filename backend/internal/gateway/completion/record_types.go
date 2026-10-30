@@ -144,11 +144,17 @@ type ProviderSnapshot struct {
 	ID                         int64   // executing provider identifier
 	Type                       string  // captured provider category
 	RateMultiplier             float64 // provider cost multiplier
-	// OpenAI: OpenAI platform classification. CNProvider: compatible Chinese platform.
-	// OAuthLike: OpenAI credential classification. QuotaEligible: API-key/Bedrock classification.
-	// HasQuotaLimit: configured quota presence. These flags govern tier exceptions,
-	// health resets, candidate filtering, and provider quota updates at their consumers.
-	OpenAI, CNProvider, OAuthLike, QuotaEligible, HasQuotaLimit bool
+	// OpenAI, OAuthLike, QuotaEligible, and HasQuotaLimit retain independent
+	// classification and quota inputs for tier exceptions and provider usage updates.
+	// OpenAI identifies the platform; OAuthLike identifies its credential lifecycle.
+	// QuotaEligible identifies API-key/Bedrock usage; HasQuotaLimit records configured limits.
+	OpenAI, OAuthLike, QuotaEligible, HasQuotaLimit bool
+	// RequiresExplicitClaudePricing prevents compatible aliases from inheriting
+	// ordinary Claude catalogue prices unless the price configuration permits them.
+	RequiresExplicitClaudePricing bool
+	// ResetForbiddenCounterOnSuccess clears accumulated forbidden evidence after
+	// a result is accepted, independently of the model's pricing policy.
+	ResetForbiddenCounterOnSuccess bool
 	// CredentialProviderID names a shadow's credential parent. OpenAI tier and
 	// free-Fast eligibility use that parent; usage attribution keeps this provider ID.
 	CredentialProviderID *int64
@@ -309,9 +315,10 @@ type (
 	// HealthObserver clears recorded OpenAI forbidden-response evidence on observed
 	// usage from an eligible executing provider before later completion validation.
 	HealthObserver interface {
-		// ResetOpenAI403Counter clears the provider's accumulated forbidden counter.
-		// RecordOpenAI calls it when a result exists and the captured provider is
-		// OpenAI or CN-compatible, before it resolves pricing and funds.
+		// ResetOpenAI403Counter clears the provider's accumulated forbidden
+		// counter. RecordOpenAI calls it when a result exists and the captured
+		// provider is OpenAI or Kimi, Zhipu, and DeepSeek-compatible, before it
+		// resolves pricing and funds.
 		ResetOpenAI403Counter(context.Context, int64)
 	}
 	// ModelCandidates chooses the selected billing identity or an available
@@ -425,11 +432,13 @@ type Dependencies struct {
 	// Providers resolves a credential parent for OpenAI tier eligibility; nil uses
 	// the captured executing provider, while reader errors stop completion before settlement.
 	Providers ProviderReader // OpenAI credential owner reader
-	// Health resets forbidden evidence for OpenAI/CN usage when configured; nil
-	// skips the reset, and validation or later pricing errors can still follow it.
+	// Health resets forbidden evidence for OpenAI/Kimi, Zhipu, and DeepSeek
+	// usage when configured; nil skips the reset, and validation or later
+	// pricing errors can still follow it.
 	Health HealthObserver // eligible provider success observer
 	// Models supplies the candidate selection required by RecordOpenAI; bind it
-	// before using that path, which filters candidates for compatible CN providers afterward.
+	// before using that path, which filters candidates for compatible Kimi,
+	// Zhipu, and DeepSeek providers afterward.
 	Models ModelCandidates // OpenAI billing identity selector
 	// Logs persists analysis after attempted settlement; nil skips WriteUsage, including
 	// its request-summary supplement, while the earlier funds attempt can still succeed.

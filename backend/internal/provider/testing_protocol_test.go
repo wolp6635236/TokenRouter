@@ -42,7 +42,7 @@ func TestGroupProbeProtocolRoutes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := ProviderSnapshot{Platform: tc.platform, Type: tc.kind, EnabledProtocols: []capability.ProtocolID{tc.upstream}}
 			route := TestProtocolRoute{ClientProtocol: tc.client, UpstreamProtocol: tc.upstream}
-			require.Equal(t, tc.allowed, route.SupportsProvider(snapshot))
+			require.Equal(t, tc.allowed, route.SupportsProvider(snapshot, ""))
 			executed := false
 			loader := &testLoaderStub{target: testTargetStub{info: TestTargetInfo{ProviderSnapshot: snapshot}, run: func(ctx context.Context, request PreparedTestRequest, _ TestEventSink) error {
 				executed = true
@@ -54,7 +54,45 @@ func TestGroupProbeProtocolRoutes(t *testing.T) {
 			require.Equal(t, tc.allowed, err == nil)
 			require.Equal(t, tc.allowed, executed)
 			snapshot.EnabledProtocols = nil
-			require.False(t, route.SupportsProvider(snapshot))
+			require.False(t, route.SupportsProvider(snapshot, ""))
+		})
+	}
+}
+
+// TestGroupProbeOpenCodeRoutesFollowModelProtocol routes Chat and Gemini
+// entries to an OpenCode provider whose aliased model declares Gemini. Only the
+// declared protocol is testable, including through conversion, while unknown
+// models and other enabled protocols fail before target execution.
+func TestGroupProbeOpenCodeRoutesFollowModelProtocol(t *testing.T) {
+	record := &Record{Platform: PlatformOpenCode, Type: ProviderTypeAPIKey, Credentials: map[string]any{
+		"model_mapping":           map[string]any{"alias": "flash"},
+		OpenCodeModelProtocolsKey: map[string]any{"payg": map[string]any{"flash": "gemini_generate_content"}},
+	}}
+	snapshot := record.RoutingSnapshot()
+	for _, tc := range []struct {
+		name     string                // route scenario name
+		model    string                // model sent before provider mapping
+		client   capability.ProtocolID // selected client entry
+		upstream capability.ProtocolID // resolved upstream endpoint
+		allowed  bool                  // expected executor admission
+	}{
+		{"native gemini", "alias", capability.ProtocolGeminiGenerateContent, capability.ProtocolGeminiGenerateContent, true},
+		{"chat to gemini", "alias", capability.ProtocolOpenAIChatCompletions, capability.ProtocolGeminiGenerateContent, true},
+		{"chat endpoint", "alias", capability.ProtocolOpenAIChatCompletions, capability.ProtocolOpenAIChatCompletions, false},
+		{"unknown model", "missing", capability.ProtocolGeminiGenerateContent, capability.ProtocolGeminiGenerateContent, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := TestProtocolRoute{ClientProtocol: tc.client, UpstreamProtocol: tc.upstream}
+			require.Equal(t, tc.allowed, route.SupportsProvider(snapshot, tc.model))
+			executed := false
+			loader := &testLoaderStub{target: testTargetStub{info: TestTargetInfo{ProviderSnapshot: snapshot}, run: func(_ context.Context, request PreparedTestRequest, _ TestEventSink) error {
+				executed = true
+				require.Equal(t, TestRouteOpenCode, request.Route)
+				return nil
+			}}}
+			err := NewTestService(loader, TestOptions{}).Test(t.Context(), TestRequest{Model: tc.model, ProtocolRoute: route}, &testSinkStub{})
+			require.Equal(t, tc.allowed, err == nil)
+			require.Equal(t, tc.allowed, executed)
 		})
 	}
 }

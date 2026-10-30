@@ -132,7 +132,7 @@ type ollamaUsageContract struct {
 	// lockCache optionally supplies the lease backend read by the retained
 	// callback. Nil lets AcquireSingletonLease apply its no-backend execution
 	// rule.
-	lockCache providercore.CNMonitorLeader
+	lockCache providercore.LeaderLocker
 }
 
 // ollamaUsageLeader models owner-checked lease acquisition and release without

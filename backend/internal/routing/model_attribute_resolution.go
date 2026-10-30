@@ -249,8 +249,9 @@ func (s *ModelAttributeSession) Resolve(ctx context.Context, groupID int64, targ
 }
 
 // resolve detects the target's service identity and merges its matching active
-// profile into the supplied catalogue View. Inactive or absent profiles supply
-// no override.
+// profile into the supplied catalogue View. A reference resolves the target
+// against the same route and restores the actual outbound identity afterward.
+// Inactive or absent profiles supply no override.
 //
 // Production resolves platform and adapter rules through the pinned View. A
 // service configured with Lookup and no View replaces the resulting attributes
@@ -260,9 +261,25 @@ func (s *ModelAttributeSession) Resolve(ctx context.Context, groupID int64, targ
 // need additional cloning.
 func (s *ModelAttributeService) resolve(view modelcatalog.View, config *ModelAttributeConfig, target modelcatalog.Target, candidates func(string) []string) modelcatalog.Resolution {
 	target = target.WithServiceIdentity()
+	original := target
+	reference := ""
 	override := modelcatalog.Attributes{}
 	if config != nil && config.Status == StatusActive {
-		override = config.match(target.Model, candidates, target)
+		rule := config.matchRule(target.Model, candidates, target)
+		if rule != nil && rule.ReferenceModel != "" {
+			reference = rule.ReferenceModel
+			target.Model = reference
+			target.AttributeModel = ""
+			rule = config.matchRule(reference, candidates, target)
+			if rule != nil && rule.ReferenceModel != "" {
+				// Invalid persisted chains remain unknown; using either source or target
+				// defaults would hide a configuration that the save API rejects.
+				return modelcatalog.Resolution{Target: original, ReferenceModel: reference, Version: view.Version(), Sources: map[string]string{}}
+			}
+		}
+		if rule != nil {
+			override = rule.Attributes
+		}
 	}
 	result := view.Resolve(target, override)
 	// An injected single-model reader supplies attributes when no catalogue View
@@ -270,6 +287,13 @@ func (s *ModelAttributeService) resolve(view modelcatalog.View, config *ModelAtt
 	// values.
 	if s.Catalog.View == nil && s.Catalog.Lookup != nil {
 		result.Attributes = modelcatalog.Merge(s.Catalog.Lookup(target.Model), override)
+	}
+	if reference != "" {
+		// Keep the target's canonical attribute identity for request-time conditions;
+		// the outbound model and authentication still belong to the actual route.
+		original.AttributeModel = result.Target.AttributeModel
+		result.Target = original
+		result.ReferenceModel = reference
 	}
 	return result
 }
@@ -279,6 +303,11 @@ func (s *ModelAttributeService) resolve(view modelcatalog.View, config *ModelAtt
 // a missing capability and show the same values used by subsequent requests.
 func (s *ModelAttributeService) Preview(ctx context.Context, groupID int64, targets []modelcatalog.Target, draft *ModelAttributeConfig) ([]modelcatalog.Resolution, error) {
 	config := draft
+	if draft != nil {
+		if err := draft.ValidateReferences(); err != nil {
+			return nil, err
+		}
+	}
 	if config == nil && s.Repo != nil {
 		var err error
 		config, err = s.Repo.ForGroup(ctx, groupID)

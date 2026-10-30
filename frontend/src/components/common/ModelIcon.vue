@@ -209,8 +209,7 @@ const iconInfo = computed(() => (iconKey.value ? modelIconData[iconKey.value] : 
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-compact);
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: white;
+  @apply bg-gray-100 text-gray-600 dark:bg-dark-800 dark:text-dark-300;
   font-weight: 600;
   flex-shrink: 0;
 }

@@ -4,25 +4,26 @@ import (
 	"time"
 )
 
-// monitor_snapshot.go defines stored CN usage-monitor snapshots with separate
-// successful observations and attempt failures.
-// CN usage monitoring retains the last accepted balance and limit observations
-// when a later query fails. CNUsageMonitor separates its most recent attempt
-// status from successful data, and snapshot identity/version checks prevent
-// observations from another configured provider identity being reused.
+// monitor_snapshot.go defines stored upstream usage-monitor snapshots with
+// separate successful observations and attempt failures. upstream usage
+// monitoring retains the last accepted balance and limit observations when a
+// later query fails. UsageMonitor separates its most recent attempt status from
+// successful data, and snapshot identity/version checks prevent observations
+// from another configured provider identity being reused.
 
-// CNUsageMonitorError records the latest usage probe failure code and time.
-type CNUsageMonitorError struct {
+// UsageMonitorError records the latest usage probe failure code and time.
+type UsageMonitorError struct {
 	Code       string    `json:"code"`        // latest usage query failure code
 	ObservedAt time.Time `json:"observed_at"` // failure observation time in UTC
 }
 
-// CNUsageMonitorSnapshot holds the last successful data and the latest attempt status.
-// Failed probes update LastError while retaining the successful balance and windows.
-type CNUsageMonitorSnapshot struct {
-	// Version, Adapter, and IdentityHash tie retained data to the monitor format
-	// and query identity. CNUsageMonitor creates a fresh snapshot when version or
-	// identity changes before recording the next attempt.
+// UsageMonitorSnapshot holds the last successful data and the latest attempt
+// status. Failed probes update LastError while retaining the successful balance
+// and windows.
+type UsageMonitorSnapshot struct {
+	// Version, Adapter, and IdentityHash tie retained data to the monitor
+	// format and query identity. UsageMonitor creates a fresh snapshot when
+	// version or identity changes before recording the next attempt.
 	Version      int    `json:"version"`       // stored usage snapshot format version
 	Adapter      string `json:"adapter"`       // selected usage adapter identity
 	IdentityHash string `json:"identity_hash"` // observed query identity fingerprint
@@ -41,5 +42,5 @@ type CNUsageMonitorSnapshot struct {
 	ExpiresAt     *time.Time                  `json:"expires_at,omitempty"`   // reported account expiry time
 	ObservedAt    *time.Time                  `json:"observed_at,omitempty"`  // latest successful observation time
 	LastAttemptAt time.Time                   `json:"last_attempt_at"`        // latest query attempt time
-	LastError     *CNUsageMonitorError        `json:"last_error,omitempty"`   // latest usage query failure
+	LastError     *UsageMonitorError          `json:"last_error,omitempty"`   // latest usage query failure
 }

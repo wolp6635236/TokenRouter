@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini/codeassist"
 )
 
@@ -36,8 +37,10 @@ const (
 	ServiceAccountCredential CredentialMode = "service_account" // service-account bearer authentication
 )
 
-// CredentialMode selects the credential source and corresponding Gemini
-// upstream request family.
+// candidateCountContextKey binds the final wire request's completion expectation.
+type candidateCountContextKey struct{}
+
+// CredentialMode selects the credential source and corresponding Gemini upstream request family.
 type CredentialMode string
 
 type (
@@ -50,6 +53,9 @@ type (
 	// behavior for one request.
 	RequestPlan struct {
 		Mode CredentialMode // selected upstream credential family
+		// ApplyHeaders runs after protocol authentication. Compatible providers use
+		// it to install their required authentication and client conversation headers.
+		ApplyHeaders func(http.Header)
 		// Model identifies the upstream model; Action selects its API operation.
 		Model, Action string
 		// Native retains Action and UpstreamStream directly. Compatibility uses
@@ -167,6 +173,9 @@ func BuildRequest(ctx context.Context, body []byte, plan RequestPlan) (*http.Req
 	if !plan.Native && !wrapped {
 		wire = bridge.NativeNormalizeGeminiRequestForAIStudio(wire)
 	}
+	// Capture the final wire count after wrapping and normalization so completion
+	// never depends on an earlier attempt or the client's original protocol shape.
+	ctx = context.WithValue(ctx, candidateCountContextKey{}, upstream.GeminiCandidateCount(wire))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(wire))
 	if err != nil {
 		return nil, "", err
@@ -180,5 +189,19 @@ func BuildRequest(ctx context.Context, body []byte, plan RequestPlan) (*http.Req
 	if wrapped {
 		req.Header.Set("User-Agent", codeassist.GeminiCLIUserAgent)
 	}
+	if plan.ApplyHeaders != nil {
+		plan.ApplyHeaders(req.Header)
+	}
 	return req, "x-request-id", nil
+}
+
+// requestCandidateCount retrieves the completion expectation from a built request.
+// External builders without this metadata retain the single-candidate default.
+// Credential and endpoint wrapping cannot change this value after dispatch.
+func requestCandidateCount(req *http.Request) int {
+	count, _ := req.Context().Value(candidateCountContextKey{}).(int)
+	if count <= 0 {
+		return 1
+	}
+	return count
 }

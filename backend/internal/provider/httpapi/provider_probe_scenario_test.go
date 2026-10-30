@@ -43,38 +43,38 @@ import (
 
 // Provider probes select their upstream protocol, credential source and client
 // identity before emitting test events. Scenarios cover test_events.go and the
-// TestService invoked by test_handler.go, using provider/provider OpenAI, CN,
-// Grok and Qoder executors with controlled streams and health-write
-// observations. Explicit test kinds and protocols override compatibility
-// selection without replacing stored provider configuration.
+// TestService invoked by test_handler.go, using provider/provider OpenAI, Kimi,
+// Zhipu, and DeepSeek, Grok and Qoder executors with controlled streams and
+// health-write observations. Explicit test kinds and protocols override
+// compatibility selection without replacing stored provider configuration.
 //
 // Fixture records, requests and profile pointers have different copy rules:
-// store reads clone supported provider containers, some CN reads are shallow,
-// captured request bytes are copied and configured response bodies are consumed
-// once. Automatic TLS-route fixtures warm local caches from stable records
-// and register Stop callbacks; their nil cache backends create no subscription
-// for those callbacks to stop. Rate-limit and task-recovery assertions inspect
-// logical fixture dispatch and mutated observations. Actual persistence and
-// concurrent-store guarantees remain with the corresponding use cases and store
-// tests.
+// store reads clone supported provider containers, some Kimi, Zhipu, and
+// DeepSeek reads are shallow, captured request bytes are copied and configured
+// response bodies are consumed once. Automatic TLS-route fixtures warm local
+// caches from stable records and register Stop callbacks; their nil cache
+// backends create no subscription for those callbacks to stop. Rate-limit and
+// task-recovery assertions inspect logical fixture dispatch and mutated
+// observations. Actual persistence and concurrent-store guarantees remain with
+// the corresponding use cases and store tests.
 
 // compactionTestV2SSESuccessBody supplies native compaction output plus its
 // terminal event, allowing manual-probe scenarios to exercise complete stream validation.
 const compactionTestV2SSESuccessBody = "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction\",\"id\":\"cmp_probe\",\"encrypted_content\":\"blob\"}}\n\n" +
 	"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_probe\",\"output\":[]}}\n\n"
 
-// cnProviderTestRepo supplies one nonnil provider through shallow serial record
+// textAPIKeyTestRepo supplies one nonnil provider through shallow serial record
 // reads.
-type cnProviderTestRepo struct {
+type textAPIKeyTestRepo struct {
 	// provider is borrowed and required by GetByID's shallow copy. Configure this
 	// record before serial calls and keep its nested values stable while readers
 	// use them.
 	provider *providercore.Record // selected provider fixture record
 }
 
-// cnProviderTestHTTP captures one admitted protocol request and returns a
+// textAPIKeyTestHTTP captures one admitted protocol request and returns a
 // controlled stopping error.
-type cnProviderTestHTTP struct {
+type textAPIKeyTestHTTP struct {
 	// request is a metadata clone of the captured HTTP request. Request.Clone
 	// copies headers and URL, while its Body remains the consumed original reader.
 	request *http.Request // captured HTTP metadata clone
@@ -348,11 +348,11 @@ type qoderTargetFixture struct {
 // endpoint credentials and URLs match configuration, and one start plus one
 // completion encloses the two successful checks.
 func TestProviderTestService_AdaptiveChatOnlyProvidersTestChatAndAnthropicEndpoints(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(301, capability.PlatformZhipu)
-	svc, upstream := adaptiveCNProviderTestService(
+	provider := adaptiveNativeProtocolTestProvider(301, capability.PlatformZhipu)
+	svc, upstream := adaptiveNativeProtocolTestService(
 		provider,
-		adaptiveCNChatTestResponse(),
-		adaptiveCNAnthropicTestResponse(),
+		adaptiveTextAPIKeyChatTestResponse(),
+		adaptiveTextAPIKeyAnthropicTestResponse(),
 	)
 	c, recorder := newTestContext()
 
@@ -374,12 +374,12 @@ func TestProviderTestService_AdaptiveChatOnlyProvidersTestChatAndAnthropicEndpoi
 // Responses request uses the provider-specific path, OpenAI transport profile
 // and stream fields, with one final completion event.
 func TestProviderTestService_AdaptiveDeepSeekAlsoTestsResponsesEndpoint(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(302, capability.PlatformDeepseek)
-	svc, upstream := adaptiveCNProviderTestService(
+	provider := adaptiveNativeProtocolTestProvider(302, capability.PlatformDeepseek)
+	svc, upstream := adaptiveNativeProtocolTestService(
 		provider,
-		adaptiveCNChatTestResponse(),
-		adaptiveCNAnthropicTestResponse(),
-		adaptiveCNResponsesTestResponse(),
+		adaptiveTextAPIKeyChatTestResponse(),
+		adaptiveTextAPIKeyAnthropicTestResponse(),
+		adaptiveTextAPIKeyResponsesTestResponse(),
 	)
 	c, recorder := newTestContext()
 
@@ -402,12 +402,12 @@ func TestProviderTestService_AdaptiveDeepSeekAlsoTestsResponsesEndpoint(t *testi
 // the v1 path and expected stream fields, with one final successful completion
 // event.
 func TestProviderTestService_AdaptiveKimiAlsoTestsResponsesEndpoint(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(306, capability.PlatformKimi)
-	svc, upstream := adaptiveCNProviderTestService(
+	provider := adaptiveNativeProtocolTestProvider(306, capability.PlatformKimi)
+	svc, upstream := adaptiveNativeProtocolTestService(
 		provider,
-		adaptiveCNChatTestResponse(),
-		adaptiveCNAnthropicTestResponse(),
-		adaptiveCNResponsesTestResponse(),
+		adaptiveTextAPIKeyChatTestResponse(),
+		adaptiveTextAPIKeyAnthropicTestResponse(),
+		adaptiveTextAPIKeyResponsesTestResponse(),
 	)
 	c, recorder := newTestContext()
 
@@ -430,10 +430,10 @@ func TestProviderTestService_AdaptiveKimiAlsoTestsResponsesEndpoint(t *testing.T
 // two requests and emits an endpoint-specific error with no terminal success
 // event.
 func TestProviderTestService_AdaptiveStopsAndNamesFailingEndpoint(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(303, capability.PlatformDeepseek)
-	svc, upstream := adaptiveCNProviderTestService(
+	provider := adaptiveNativeProtocolTestProvider(303, capability.PlatformDeepseek)
+	svc, upstream := adaptiveNativeProtocolTestService(
 		provider,
-		adaptiveCNChatTestResponse(),
+		adaptiveTextAPIKeyChatTestResponse(),
 		newJSONResponse(http.StatusNotFound, `{"error":{"message":"missing messages route"}}`),
 	)
 	c, recorder := newTestContext()
@@ -452,10 +452,10 @@ func TestProviderTestService_AdaptiveStopsAndNamesFailingEndpoint(t *testing.T) 
 // makes the check fail after two requests, and SSE output reports failure
 // rather than completion.
 func TestProviderTestService_AdaptiveRejectsInvalidAnthropicSuccessBody(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(305, capability.PlatformKimi)
-	svc, upstream := adaptiveCNProviderTestService(
+	provider := adaptiveNativeProtocolTestProvider(305, capability.PlatformKimi)
+	svc, upstream := adaptiveNativeProtocolTestService(
 		provider,
-		adaptiveCNChatTestResponse(),
+		adaptiveTextAPIKeyChatTestResponse(),
 		newJSONResponse(http.StatusOK, `<html>not an Anthropic stream</html>`),
 	)
 	c, recorder := newTestContext()
@@ -469,14 +469,14 @@ func TestProviderTestService_AdaptiveRejectsInvalidAnthropicSuccessBody(t *testi
 	require.NotContains(t, recorder.Body.String(), `"type":"test_complete"`)
 }
 
-// TestProviderTestService_FixedCNChatProtocolStillTestsOnlyChatEndpoint selects
-// a fixed Chat protocol on a Zhipu record. The test sends one request to its
-// configured Chat path and emits one successful completion.
-func TestProviderTestService_FixedCNChatProtocolStillTestsOnlyChatEndpoint(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(304, capability.PlatformZhipu)
+// TestProviderTestService_FixedTextAPIKeyChatProtocolStillTestsOnlyChatEndpoint
+// selects a fixed Chat protocol on a Zhipu record. The test sends one request
+// to its configured Chat path and emits one successful completion.
+func TestProviderTestService_FixedTextAPIKeyChatProtocolStillTestsOnlyChatEndpoint(t *testing.T) {
+	provider := adaptiveNativeProtocolTestProvider(304, capability.PlatformZhipu)
 	provider.Credentials["api_protocol"] = providercore.APIProtocolChatCompletions
 	provider.Credentials["base_url"] = "http://fixed-chat.example/v1"
-	svc, upstream := adaptiveCNProviderTestService(provider, adaptiveCNChatTestResponse())
+	svc, upstream := adaptiveNativeProtocolTestService(provider, adaptiveTextAPIKeyChatTestResponse())
 	c, recorder := newTestContext()
 
 	err := executeOpenAIProbeRequest(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestModeDefault)
@@ -487,15 +487,15 @@ func TestProviderTestService_FixedCNChatProtocolStillTestsOnlyChatEndpoint(t *te
 	require.Equal(t, 1, strings.Count(recorder.Body.String(), `"type":"test_complete"`))
 }
 
-// TestProviderTestService_FixedCNAnthropicUsesNativeEndpointWithoutBetaQuery
+// TestProviderTestService_FixedTextAPIKeyAnthropicUsesNativeEndpointWithoutBetaQuery
 // selects fixed Anthropic protocol and its configured Zhipu base URL. The
 // request uses the native Messages path and API-key header with no beta query
 // string.
-func TestProviderTestService_FixedCNAnthropicUsesNativeEndpointWithoutBetaQuery(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(306, capability.PlatformZhipu)
+func TestProviderTestService_FixedTextAPIKeyAnthropicUsesNativeEndpointWithoutBetaQuery(t *testing.T) {
+	provider := adaptiveNativeProtocolTestProvider(306, capability.PlatformZhipu)
 	provider.Credentials["api_protocol"] = providercore.APIProtocolAnthropic
 	provider.Credentials["base_url"] = "https://open.bigmodel.cn/api/anthropic"
-	svc, upstream := adaptiveCNProviderTestService(provider, adaptiveCNAnthropicTestResponse())
+	svc, upstream := adaptiveNativeProtocolTestService(provider, adaptiveTextAPIKeyAnthropicTestResponse())
 	c, recorder := newTestContext()
 
 	err := executeOpenAIProbeRequest(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestModeDefault)
@@ -508,14 +508,15 @@ func TestProviderTestService_FixedCNAnthropicUsesNativeEndpointWithoutBetaQuery(
 	require.Contains(t, recorder.Body.String(), `"type":"test_complete"`)
 }
 
-// TestProviderTestService_FixedCNAnthropicUsesProviderDefault selects Anthropic
-// protocol while removing protocol-specific base URLs from a Zhipu record. One
-// request uses the platform's fixed Messages default and the test succeeds.
-func TestProviderTestService_FixedCNAnthropicUsesProviderDefault(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(307, capability.PlatformZhipu)
+// TestProviderTestService_FixedTextAPIKeyAnthropicUsesProviderDefault selects
+// Anthropic protocol while removing protocol-specific base URLs from a Zhipu
+// record. One request uses the platform's fixed Messages default and the test
+// succeeds.
+func TestProviderTestService_FixedTextAPIKeyAnthropicUsesProviderDefault(t *testing.T) {
+	provider := adaptiveNativeProtocolTestProvider(307, capability.PlatformZhipu)
 	provider.Credentials["api_protocol"] = providercore.APIProtocolAnthropic
 	delete(provider.Credentials, "api_base_urls")
-	svc, upstream := adaptiveCNProviderTestService(provider, adaptiveCNAnthropicTestResponse())
+	svc, upstream := adaptiveNativeProtocolTestService(provider, adaptiveTextAPIKeyAnthropicTestResponse())
 	c, _ := newTestContext()
 
 	err := executeOpenAIProbeRequest(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestModeDefault)
@@ -525,16 +526,16 @@ func TestProviderTestService_FixedCNAnthropicUsesProviderDefault(t *testing.T) {
 	require.Equal(t, "https://open.bigmodel.cn/api/anthropic/v1/messages", upstream.requests[0].URL.String())
 }
 
-// TestProviderTestService_FixedCNAnthropicRejectsOpenAIBaseURLAndMarksAuthErrors
+// TestProviderTestService_FixedTextAPIKeyAnthropicRejectsOpenAIBaseURLAndMarksAuthErrors
 // checks a misconfigured Zhipu URL and a separate forbidden response. URL
 // mismatch sends no request, while an admitted 403 records provider error state
 // through the fixture store.
-func TestProviderTestService_FixedCNAnthropicRejectsOpenAIBaseURLAndMarksAuthErrors(t *testing.T) {
+func TestProviderTestService_FixedTextAPIKeyAnthropicRejectsOpenAIBaseURLAndMarksAuthErrors(t *testing.T) {
 	t.Run("misconfigured base URL", func(t *testing.T) {
-		provider := adaptiveCNProviderTestProvider(308, capability.PlatformZhipu)
+		provider := adaptiveNativeProtocolTestProvider(308, capability.PlatformZhipu)
 		provider.Credentials["api_protocol"] = providercore.APIProtocolAnthropic
 		provider.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
-		svc, upstream := adaptiveCNProviderTestService(provider)
+		svc, upstream := adaptiveNativeProtocolTestService(provider)
 		c, recorder := newTestContext()
 
 		err := executeOpenAIProbeRequest(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestModeDefault)
@@ -545,10 +546,10 @@ func TestProviderTestService_FixedCNAnthropicRejectsOpenAIBaseURLAndMarksAuthErr
 	})
 
 	t.Run("forbidden marks provider error", func(t *testing.T) {
-		provider := adaptiveCNProviderTestProvider(309, capability.PlatformZhipu)
+		provider := adaptiveNativeProtocolTestProvider(309, capability.PlatformZhipu)
 		provider.Credentials["api_protocol"] = providercore.APIProtocolAnthropic
 		provider.Credentials["base_url"] = "https://open.bigmodel.cn/api/anthropic"
-		svc, _ := adaptiveCNProviderTestService(provider, newJSONResponse(http.StatusForbidden, `{"error":{"message":"invalid key"}}`))
+		svc, _ := adaptiveNativeProtocolTestService(provider, newJSONResponse(http.StatusForbidden, `{"error":{"message":"invalid key"}}`))
 		c, _ := newTestContext()
 
 		err := executeOpenAIProbeRequest(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestModeDefault)
@@ -564,8 +565,8 @@ func TestProviderTestService_FixedCNAnthropicRejectsOpenAIBaseURLAndMarksAuthErr
 // request runs inside one start/completion pair, protecting per-test protocol
 // selection from full adaptive enumeration.
 func TestProviderTestService_AdaptiveSelectedProtocolTestsOnlyThatEndpoint(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(310, capability.PlatformDeepseek)
-	svc, upstream := adaptiveCNProviderTestService(provider, adaptiveCNAnthropicTestResponse())
+	provider := adaptiveNativeProtocolTestProvider(310, capability.PlatformDeepseek)
+	svc, upstream := adaptiveNativeProtocolTestService(provider, adaptiveTextAPIKeyAnthropicTestResponse())
 	c, recorder := newTestContext()
 
 	err := executeOpenAIProbeRequestType(t, svc, c, provider.ID, "deepseek-chat", "", providercore.ProviderTestTypeText, providercore.ProviderTestModeDefault, providercore.APIProtocolAnthropic)
@@ -581,9 +582,9 @@ func TestProviderTestService_AdaptiveSelectedProtocolTestsOnlyThatEndpoint(t *te
 // Zhipu provider whose enabled set contains only Chat. Preparation rejects the
 // selection locally and captures no upstream request.
 func TestProviderTestService_SelectedProtocolMustBeEnabled(t *testing.T) {
-	provider := adaptiveCNProviderTestProvider(311, capability.PlatformZhipu)
+	provider := adaptiveNativeProtocolTestProvider(311, capability.PlatformZhipu)
 	provider.Credentials[providercore.UpstreamProtocolsKey] = []any{string(protocol.ProtocolOpenAIChatCompletions)}
-	svc, upstream := adaptiveCNProviderTestService(provider)
+	svc, upstream := adaptiveNativeProtocolTestService(provider)
 	c, recorder := newTestContext()
 
 	err := executeOpenAIProbeRequestType(t, svc, c, provider.ID, "glm-4.7", "", providercore.ProviderTestTypeText, providercore.ProviderTestModeDefault, providercore.APIProtocolAnthropic)
@@ -593,11 +594,11 @@ func TestProviderTestService_SelectedProtocolMustBeEnabled(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "Test protocol anthropic is not supported for this provider")
 }
 
-// TestProviderTestServiceCNProviderUsesConfiguredProtocol varies Kimi Chat,
-// Zhipu Messages and DeepSeek Responses provider configuration. The injected
-// 400 response stops execution after capture, whose URL, auth header and model
-// match the selected protocol.
-func TestProviderTestServiceCNProviderUsesConfiguredProtocol(t *testing.T) {
+// TestProviderTestServiceKimiZhipuDeepSeekUsesConfiguredProtocol varies Kimi
+// Chat, Zhipu Messages and DeepSeek Responses provider configuration. The
+// injected 400 response stops execution after capture, whose URL, auth header
+// and model match the selected protocol.
+func TestProviderTestServiceKimiZhipuDeepSeekUsesConfiguredProtocol(t *testing.T) {
 	tests := []struct {
 		name       string               // scenario description text
 		provider   *providercore.Record // selected provider fixture record
@@ -640,9 +641,9 @@ func TestProviderTestServiceCNProviderUsesConfiguredProtocol(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			repo := &cnProviderTestRepo{provider: test.provider}
-			upstream := &cnProviderTestHTTP{}
-			service := newCNProtocolTestCore(repo.GetByID, upstream)
+			repo := &textAPIKeyTestRepo{provider: test.provider}
+			upstream := &textAPIKeyTestHTTP{}
+			service := newTextAPIKeyProtocolTestCore(repo.GetByID, upstream)
 			recorder := httptest.NewRecorder()
 			require.Error(t, service.Test(t.Context(), providercore.TestRequest{ProviderID: test.provider.ID, Prompt: "hi", Mode: providercore.ProviderTestModeDefault, Type: func() *string { kind := providercore.ProviderTestTypeText; return &kind }()}, NewTestEventSink(recorder)))
 
@@ -1414,6 +1415,7 @@ func TestProviderTestService_OpenAIImageOAuthHandlesOutputItemDoneFallback(t *te
 	provider := &providercore.Record{
 		ID:       53,
 		Name:     "openai-oauth",
+		Extra:    map[string]any{providercore.CodexImageResponsesModelKey: "gpt-6.1-sol"},
 		Platform: capability.PlatformOpenAI,
 		Type:     capability.ProviderTypeOAuth,
 		Credentials: map[string]any{
@@ -1424,6 +1426,8 @@ func TestProviderTestService_OpenAIImageOAuthHandlesOutputItemDoneFallback(t *te
 	err := executeOpenAIImageOAuthProbe(t, svc, c, context.Background(), provider, "gpt-image-2", "draw a cat")
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "gpt-6.1-sol", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "tools.0.model").String())
 	require.Equal(t, upstreamcore.HTTPUpstreamProfileOpenAI, upstreamcore.HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Contains(t, rec.Body.String(), "Calling Codex /responses image tool")
 	require.Contains(t, rec.Body.String(), "data:image/png;base64,aGVsbG8=")
@@ -3102,11 +3106,11 @@ func TestProviderTestService_QoderUserInfoProbeRedactsSensitiveErrorBody(t *test
 	require.Contains(t, body, "***")
 }
 
-// adaptiveCNProviderTestProvider constructs an active API-key fixture with
+// adaptiveNativeProtocolTestProvider constructs an active API-key fixture with
 // independent protocol root selections. Its returned credential maps remain
 // mutable for each scenario to choose fixed or adaptive endpoint behavior
 // before execution.
-func adaptiveCNProviderTestProvider(id int64, platform string) *providercore.Record {
+func adaptiveNativeProtocolTestProvider(id int64, platform string) *providercore.Record {
 	return &providercore.Record{
 		ID:          id,
 		Name:        "adaptive-cn-test",
@@ -3126,11 +3130,11 @@ func adaptiveCNProviderTestProvider(id int64, platform string) *providercore.Rec
 	}
 }
 
-// adaptiveCNProviderTestService binds one provider to the controlled queued
+// adaptiveNativeProtocolTestService binds one provider to the controlled queued
 // transport and permits its HTTP fixture roots. Supplied response pointers are
 // consumed in order, and the returned executor delegates preparation through
 // the shared probe helpers.
-func adaptiveCNProviderTestService(provider *providercore.Record, responses ...*http.Response) (*provideradapter.OpenAIProviderTest, *openAIProbeTransport) {
+func adaptiveNativeProtocolTestService(provider *providercore.Record, responses ...*http.Response) (*provideradapter.OpenAIProviderTest, *openAIProbeTransport) {
 	repo := &openAIProbeStore{
 		openAIProbeRecords: openAIProbeRecords{
 			providersByID: map[int64]*providercore.Record{provider.ID: provider},
@@ -3145,10 +3149,10 @@ func adaptiveCNProviderTestService(provider *providercore.Record, responses ...*
 	}, upstream
 }
 
-// adaptiveCNChatTestResponse constructs a fresh successful Chat stream with
-// visible text and termination. The executor consumes and closes this body, so
-// each expected request needs its own response instance.
-func adaptiveCNChatTestResponse() *http.Response {
+// adaptiveTextAPIKeyChatTestResponse constructs a fresh successful Chat stream
+// with visible text and termination. The executor consumes and closes this
+// body, so each expected request needs its own response instance.
+func adaptiveTextAPIKeyChatTestResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -3160,10 +3164,11 @@ data: [DONE]
 	}
 }
 
-// adaptiveCNAnthropicTestResponse constructs a fresh successful Messages stream
-// ending with message_stop. Its executor consumes and closes the body, so
-// queued scenarios supply one response instance per expected request.
-func adaptiveCNAnthropicTestResponse() *http.Response {
+// adaptiveTextAPIKeyAnthropicTestResponse constructs a fresh successful
+// Messages stream ending with message_stop. Its executor consumes and closes
+// the body, so queued scenarios supply one response instance per expected
+// request.
+func adaptiveTextAPIKeyAnthropicTestResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -3175,10 +3180,11 @@ data: {"type":"message_stop"}
 	}
 }
 
-// adaptiveCNResponsesTestResponse constructs a fresh successful Responses
-// stream ending with response.completed. The executor consumes and closes its
-// body, so callers allocate another response for any later probe request.
-func adaptiveCNResponsesTestResponse() *http.Response {
+// adaptiveTextAPIKeyResponsesTestResponse constructs a fresh successful
+// Responses stream ending with response.completed. The executor consumes and
+// closes its body, so callers allocate another response for any later probe
+// request.
+func adaptiveTextAPIKeyResponsesTestResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -3193,7 +3199,7 @@ data: {"type":"response.completed"}
 // GetByID returns a shallow copy of the configured nonnil provider regardless
 // of requested ID. Credential and Extra maps remain borrowed, and this serial
 // fixture captures protocol dispatch rather than storage lookup semantics.
-func (r *cnProviderTestRepo) GetByID(context.Context, int64) (*providercore.Record, error) {
+func (r *textAPIKeyTestRepo) GetByID(context.Context, int64) (*providercore.Record, error) {
 	copy := *r.provider
 	return &copy, nil
 }
@@ -3201,14 +3207,14 @@ func (r *cnProviderTestRepo) GetByID(context.Context, int64) (*providercore.Reco
 // Do delegates protocol-request capture to the TLS-capable fixture path with no
 // profile. The request needs a readable body, and returned response body
 // ownership follows that controlled capture operation.
-func (h *cnProviderTestHTTP) Do(req *http.Request, proxyURL string, providerID int64, concurrency int) (*http.Response, error) {
+func (h *textAPIKeyTestHTTP) Do(req *http.Request, proxyURL string, providerID int64, concurrency int) (*http.Response, error) {
 	return h.DoWithTLS(req, proxyURL, providerID, concurrency, nil)
 }
 
 // DoWithTLS consumes and captures the request body and a cloned request before
 // returning a fixed 400. Body-read failure is ignored, and the nonnil request
 // body is required by this serial capture fixture.
-func (h *cnProviderTestHTTP) DoWithTLS(
+func (h *textAPIKeyTestHTTP) DoWithTLS(
 	req *http.Request,
 	_ string,
 	_ int64,
@@ -3592,12 +3598,13 @@ func executeOpenAIImageOAuthProbe(t *testing.T, executor *provideradapter.OpenAI
 	return run.Result(executor.ExecuteImageOAuth(run, ctx, value, model, prompt))
 }
 
-// openAIProbeCore connects provider reads and OpenAI/CN execution to one shared
-// test service. A usable Store is required for request dispatch, and supplied
-// policy callbacks are retained through configureOpenAIProbe.
+// openAIProbeCore connects provider reads and OpenAI/Kimi, Zhipu, and DeepSeek
+// execution to one shared test service. A usable Store is required for request
+// dispatch, and supplied policy callbacks are retained through
+// configureOpenAIProbe.
 func openAIProbeCore(executor *provideradapter.OpenAIProviderTest) *providercore.TestService {
 	configureOpenAIProbe(executor)
-	targets := &provideradapter.TestTargets{Read: executor.Store.GetByID, OpenAI: executor, CN: &provideradapter.CNProviderTest{Transport: executor.Transport, Store: executor.Store, ValidateURL: executor.ValidateURL, Responses: executor}}
+	targets := &provideradapter.TestTargets{Read: executor.Store.GetByID, OpenAI: executor, Native: &provideradapter.NativeProtocolTest{Transport: executor.Transport, Store: executor.Store, ValidateURL: executor.ValidateURL, Responses: executor}}
 	return providercore.NewTestService(targets, providercore.TestOptions{Now: time.Now, Error: func(string) {}, WriteError: func(error) {}})
 }
 
@@ -3652,15 +3659,15 @@ func (f *openAIProbeTransport) DoWithTLS(req *http.Request, _ string, _ int64, _
 	return f.resp, nil
 }
 
-// newCNProtocolTestCore binds supplied record lookup to CN dispatch with the
-// production URL policy and OpenAI Responses executor. Empty observation
-// callbacks keep tests focused on protocol requests and event results from the
-// controlled transport.
-func newCNProtocolTestCore(read func(context.Context, int64) (*providercore.Record, error), transport provideradapter.QoderTransport) *providercore.TestService {
+// newTextAPIKeyProtocolTestCore binds supplied record lookup to Kimi, Zhipu,
+// and DeepSeek dispatch with the production URL policy and OpenAI Responses
+// executor. Empty observation callbacks keep tests focused on protocol requests
+// and event results from the controlled transport.
+func newTextAPIKeyProtocolTestCore(read func(context.Context, int64) (*providercore.Record, error), transport provideradapter.QoderTransport) *providercore.TestService {
 	policy := egress.OperatorURLPolicy{}
 	openaiExecutor := &provideradapter.OpenAIProviderTest{Attributes: probeModelAttributes, Transport: transport, ValidateURL: policy.Validate}
 	configureOpenAIProbe(openaiExecutor)
-	targets := &provideradapter.TestTargets{Read: read, CN: &provideradapter.CNProviderTest{Transport: transport, ValidateURL: policy.Validate, Responses: openaiExecutor}}
+	targets := &provideradapter.TestTargets{Read: read, Native: &provideradapter.NativeProtocolTest{Transport: transport, ValidateURL: policy.Validate, Responses: openaiExecutor}}
 	return providercore.NewTestService(targets, providercore.TestOptions{Now: time.Now, Error: func(string) {}, WriteError: func(error) {}})
 }
 

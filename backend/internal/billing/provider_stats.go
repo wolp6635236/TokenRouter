@@ -41,6 +41,10 @@ type ProviderStatsSource interface {
 // ProviderStatsCostInput supplies model identity, usage, and forwarded
 // modifiers for provider cost.
 type ProviderStatsCostInput struct {
+	// DisableCatalogFallback preserves unknown expense for cross-vendor aliases.
+	// Configured provider cards still apply, but another vendor's catalog cannot.
+	DisableCatalogFallback bool
+
 	// PreferRequestedModel enables public request-name preference for
 	// configured rules. completion.Recorder.applyProviderStatsCost supplies true
 	// for Qoder platform rows, while catalog calculation continues
@@ -79,30 +83,44 @@ type ProviderStatsCostInput struct {
 // calculator tries catalog token pricing with the final service tier
 // and effort; its unavailable or nonpositive result also becomes nil.
 func (r *PriceResolver) ResolveProviderStats(ctx context.Context, input ProviderStatsCostInput) *float64 {
+	cost, _ := r.ResolveProviderStatsWithMode(ctx, input)
+	return cost
+}
+
+// ResolveProviderStatsWithMode resolves provider expense and its pricing unit.
+// A missing source or unavailable amount returns nil; token catalog fallbacks
+// return token mode, and explicit free custom cards preserve their selected mode.
+//
+// The amount and unit come from the same configured rule snapshot and ordered
+// model candidates. System accounting needs both to distinguish partial token
+// costs from an operation charge that requires a completed request. Existing
+// customer callers can continue using ResolveProviderStats without changing the
+// cost precedence, multiplier ownership, or missing-configuration behavior.
+func (r *PriceResolver) ResolveProviderStatsWithMode(ctx context.Context, input ProviderStatsCostInput) (*float64, purepricing.BillingMode) {
 	if r == nil || r.providerStats == nil || input.UpstreamModel == "" {
-		return nil
+		return nil, ""
 	}
 	configPricing, err := r.providerStats.ProviderStatsGroup(ctx, input.GroupID)
 	// A failed statistics read supplies no trusted rule configuration.
 	// Return nil to the usage consumer instead of continuing into
 	// catalog calculation as though the configuration had been loaded.
 	if err != nil || configPricing == nil {
-		return nil
+		return nil, ""
 	}
-	if cost, handled := purepricing.ResolveProviderStatsOverride(purepricing.ProviderStatsInput{
+	if cost, mode := purepricing.ResolveProviderStatsOverrideWithMode(purepricing.ProviderStatsInput{
 		Rules: configPricing.Rules, ProviderID: input.ProviderID, GroupID: input.GroupID,
 		Models: ProviderStatsRuleModels(input.PreferRequestedModel, input.UpstreamModel, input.RequestedModel, input.MappedModel),
 		Tokens: input.Tokens, RequestCount: input.RequestCount,
-	}); handled {
-		return cost
+	}); cost != nil {
+		return cost, mode
 	}
-	if r.calculator == nil {
-		return nil
+	if r.calculator == nil || input.DisableCatalogFallback {
+		return nil, ""
 	}
 	// Loaded configuration supplied no custom cost. Catalog calculation
 	// uses the upstream identity and forwarded modifiers as the
 	// remaining source for this provider base.
-	return r.calculator.ModelFileStatsCost(input.UpstreamModel, input.Tokens, input.ServiceTier, input.ReasoningEffort)
+	return r.calculator.ModelFileStatsCost(input.UpstreamModel, input.Tokens, input.ServiceTier, input.ReasoningEffort), purepricing.BillingModeToken
 }
 
 // ModelFileStatsCost calculates catalog token cost at unit user rate using

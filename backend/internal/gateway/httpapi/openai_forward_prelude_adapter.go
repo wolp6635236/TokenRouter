@@ -42,9 +42,31 @@ type openAIForwardPreludeAdapter struct {
 // openAIForwardProfile describes the selected provider's credential, platform
 // and resolved protocol flags for forwarding. Callers supply a nonnil
 // execution provider whose route is resolved; the result captures the policy
-// values used by prelude dispatch.
+// values used by prelude dispatch and the provider-specific image text driver.
 func openAIForwardProfile(provider *gatewayprovider.ExecutionProvider) forward.Profile {
-	return forward.Profile{Platform: provider.Record.Platform, Name: provider.Record.Name, Type: provider.Record.Type, UsesCodex: provider.View().UsesOpenAICodexProtocol(), OpenAI: provider.View().IsOpenAI(), OAuth: provider.View().IsOAuth(), OAuthLike: provider.View().IsOpenAIOAuthLike(), APIKey: provider.Record.Type == capability.ProviderTypeAPIKey, Grok: provider.Record.Platform == capability.PlatformGrok, DeepSeek: provider.Record.Platform == capability.PlatformDeepseek, NativeCN: gatewayprovider.ExecutionProtocolTarget(provider).UsesNativeCNResponses(), Anthropic: gatewayprovider.ExecutionProtocolTarget(provider).IsAnthropicProtocol(), RawChat: gatewayprovider.ExecutionModelPolicy(provider).RawChat(), ResolvedChat: provider.Route.Protocol() == protocol.ProtocolOpenAIChatCompletions, Passthrough: provider.View().IsOpenAIPassthroughEnabled()}
+	imageModel := openai.ImagesResponsesMainModel
+	if provider.View().IsOpenAIOAuthLike() {
+		imageModel = gatewayprovider.ExecutionProtocolRecord(provider).CodexImageResponsesModel()
+	}
+	return forward.Profile{
+		ImageResponsesModel:        imageModel,
+		Platform:                   provider.Record.Platform,
+		Name:                       provider.Record.Name,
+		Type:                       provider.Record.Type,
+		HTTPContinuation:           gatewayprovider.ExecutionProtocolTarget(provider).SupportsHTTPResponsesContinuation(),
+		UsesCodex:                  provider.View().UsesOpenAICodexProtocol(),
+		OpenAI:                     provider.View().IsOpenAI(),
+		OAuth:                      provider.View().IsOAuth(),
+		OAuthLike:                  provider.View().IsOpenAIOAuthLike(),
+		APIKey:                     provider.Record.Type == capability.ProviderTypeAPIKey,
+		Grok:                       provider.Record.Platform == capability.PlatformGrok,
+		EncodeResponsesClientTools: gatewayprovider.ExecutionProtocolTarget(provider).RequiresResponsesClientToolEncoding(),
+		StatelessResponses:         gatewayprovider.ExecutionProtocolTarget(provider).UsesStatelessResponses(),
+		Anthropic:                  gatewayprovider.ExecutionProtocolTarget(provider).IsAnthropicProtocol(),
+		RawChat:                    gatewayprovider.ExecutionModelPolicy(provider).RawChat(),
+		ResolvedChat:               provider.Route.Protocol() == protocol.ProtocolOpenAIChatCompletions,
+		Passthrough:                provider.View().IsOpenAIPassthroughEnabled(),
+	}
 }
 
 // BlockGroupImages reports whether the admitted Responses group selects image

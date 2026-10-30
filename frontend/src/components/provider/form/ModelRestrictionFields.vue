@@ -19,6 +19,7 @@
         :models="models"
         :sync-credentials="syncCredentials"
         @update:model-value="allowedModels = $event"
+        @synced="emit('synced', $event)"
       />
       <p class="input-hint">
         {{ t('admin.providers.selectedModels', { count: allowedModels.length }) }}
@@ -44,13 +45,15 @@ import SettingsSection from '@/components/common/settings/SettingsSection.vue'
 import SettingsSegmented from '@/components/common/settings/SettingsSegmented.vue'
 import { vContentReveal } from '@/directives/contentReveal'
 import type { ModelMappingRow } from '@/utils/modelMappingRules'
+import type { SyncUpstreamModelsResult, SyncUpstreamPreviewParams } from '@/api/admin/providers'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 import ProviderModelMappingEditor from '../ProviderModelMappingEditor.vue'
 
 // ModelRestrictionFields.vue switches between model whitelist and mapping editors while
 // keeping both parent-owned drafts available. Whitelist suggestions may come from
 // explicit candidates or the catalog, and provider identity or preview credentials are
-// forwarded to the selector for upstream synchronization.
+// forwarded to the selector for upstream synchronization, whose accepted results are
+// re-emitted so the parent can keep response data beyond the model IDs.
 
 // ModelRestrictionMode selects the whitelist editor or request-to-upstream mapping
 // editor.
@@ -67,12 +70,7 @@ defineProps<{
   models?: string[]
   // Unsaved credentials used for preview synchronization when a saved provider identifier
   // is unavailable.
-  syncCredentials?: {
-    platform: string // Provider platform identifier.
-    type: string // Provider authentication type.
-    base_url?: string // Optional preview upstream address.
-    api_key: string // Preview API credential value.
-  }
+  syncCredentials?: SyncUpstreamPreviewParams
   sourcePlaceholder?: string // Request model input placeholder.
   targetPlaceholder?: string // Upstream model input placeholder.
   hint?: string // Supplemental field help text.
@@ -92,6 +90,7 @@ const mappings = defineModel<ModelMappingRow[]>('mappings', { required: true })
 const emit = defineEmits<{
   add: [] // Mapping row addition notification.
   remove: [] // Mapping row removal notification.
+  synced: [result: SyncUpstreamModelsResult] // Accepted upstream synchronization response.
 }>()
 
 // t resolves interface labels from the active component locale while reactive consumers

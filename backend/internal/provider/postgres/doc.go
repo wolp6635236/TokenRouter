@@ -16,7 +16,7 @@
 //     refresh identities before writing credentials or health.
 //   - provider_states.go, managed_recovery.go, and usage_*.go maintain activity,
 //     windows, and conditional recovery.
-//   - ollama_usage.go and cn_monitor_decision.go persist platform observations
+//   - ollama_usage.go and usage_monitor_decision.go persist platform observations
 //     and monitor decisions.
 //   - events.go and ops_projection.go connect storage changes to scheduling
 //     and Ops reads.

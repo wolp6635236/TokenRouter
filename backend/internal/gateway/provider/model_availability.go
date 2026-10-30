@@ -60,7 +60,7 @@ func NewModelAvailability(source AvailabilityProviders, groupPolicies *routing.P
 				Platform: record.Platform,
 				Supports: func(ctx context.Context, model string) bool {
 					policy := ModelPolicy{Record: record}
-					if !policy.AllowsProtocol(ctx) {
+					if !policy.AllowsProtocol(ctx, model) {
 						return false
 					}
 					if compatible {

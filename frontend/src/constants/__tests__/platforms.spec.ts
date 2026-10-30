@@ -19,6 +19,7 @@ const concretePlatforms = [
   'zhipu',
   'deepseek',
   'jev',
+  'opencode',
 ]
 
 describe('platform option catalogs', () => {

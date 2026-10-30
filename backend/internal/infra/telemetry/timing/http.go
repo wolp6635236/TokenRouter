@@ -7,11 +7,17 @@ import (
 	"time"
 )
 
-// http.go records external HTTP durations under normalized dependency labels.
-// External HTTP timing ends when Do or RoundTrip returns a response or error,
-// leaving body reads to the caller. A context override selects a sanitized
-// dependency label; otherwise ordered hostname substring checks choose a
-// fixed label, so the raw URL never becomes a metric name.
+// http.go records external HTTP durations and tracks pending response headers.
+// External dependency timing ends when Do or RoundTrip returns a response or
+// error, leaving body reads to the caller. A context override selects a sanitized
+// dependency label; ordered hostname checks otherwise choose a fixed label so
+// the raw URL never becomes a metric name.
+//
+// Request liveness remains active even when dependency metrics are disabled.
+// Each Do call publishes its header wait before notifying downstream output,
+// then releases that wait on every return. Header arrival renews activity before
+// release, giving body consumption its own idle allowance after a long transport
+// wait. Downstream heartbeat commitment cannot end this upstream wait by itself.
 
 // dependencyModuleKey identifies the optional package-private HTTP dependency label override.
 type dependencyModuleKey struct{}
@@ -68,17 +74,43 @@ func InstrumentClient(client *http.Client) *http.Client {
 // Do records one active dependency interval around client.Do, including
 // failure and redirects, using http.DefaultClient for nil. Body consumption
 // remains caller-owned; using an already instrumented transport can record
-// additional counts inside the same observed call.
-func Do(client *http.Client, req *http.Request) (*http.Response, error) {
+// additional counts inside the same observed call. Request stages retain the
+// actual header-wait lifetime independently of downstream HTTP commitment.
+//
+// Each dispatch publishes its wait before notifying the downstream observer.
+// Every return releases that wait, including transport failure; received headers
+// renew activity before release so a long header wait cannot immediately consume
+// the subsequent body's inactivity budget. Dependency timing may be disabled
+// without disabling either of these request-liveness observations.
+func Do(client *http.Client, req *http.Request) (response *http.Response, err error) {
 	if client == nil {
 		client = http.DefaultClient
+	}
+	if req != nil {
+		if s := StagesFromContext(req.Context()); s != nil {
+			// Header waiting follows every upstream exchange even when dependency
+			// timing is disabled, so metrics settings cannot disable downstream liveness.
+			s.upstreamHeaderWaits.Add(1)
+			// Publish header arrival before ending the wait. A downstream timer
+			// observing no pending dispatch then sees the body's fresh idle baseline.
+			defer func() {
+				if response != nil {
+					s.ObserveUpstreamActivity(time.Now())
+				}
+				s.upstreamHeaderWaits.Add(-1)
+			}()
+			s.ObserveUpstreamActivity(time.Now())
+			if fn := s.listener(); fn != nil {
+				fn(req.Context())
+			}
+		}
 	}
 	if req == nil || !Active(req.Context()) {
 		return client.Do(req)
 	}
 	startedAt := time.Now()
 
-	response, err := client.Do(req)
+	response, err = client.Do(req)
 	RecordDependency(req.Context(), dependencyModule(req), startedAt, time.Now())
 	return response, err
 }

@@ -151,7 +151,7 @@ SELECT
   percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms) AS p99,
   AVG(duration_ms) AS avg_ms,
   MAX(duration_ms) AS max_ms
-FROM usage_logs
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') usage_logs
 WHERE created_at >= $1 AND created_at < $2
   AND duration_ms IS NOT NULL`
 
@@ -186,7 +186,7 @@ SELECT
   percentile_cont(0.99) WITHIN GROUP (ORDER BY ` + usageTTFTSQL("") + `) AS p99,
   AVG(` + usageTTFTSQL("") + `) AS avg_ms,
   MAX(` + usageTTFTSQL("") + `) AS max_ms
-FROM usage_logs
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') usage_logs
 WHERE created_at >= $1 AND created_at < $2
   AND ` + usageTTFTSQL("") + ` IS NOT NULL`
 
@@ -224,7 +224,7 @@ func (c *MetricsQueries) QueryUsageCounts(ctx context.Context, start, end time.T
 SELECT
   COALESCE(COUNT(*), 0) AS success_count,
   COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_consumed
-FROM usage_logs
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') usage_logs
 WHERE created_at >= $1 AND created_at < $2`
 
 	var tokens sql.NullInt64

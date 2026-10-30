@@ -8,7 +8,7 @@ import {
   buildPersistedModelRestriction,
 } from '@/composables/useModelWhitelist'
 import { clearLegacyResponsesWSSettings } from '@/utils/responsesWsConnection'
-import { applyCodexImageToolMode } from '@/utils/codexImageToolMode'
+import { applyCodexImageToolMode, applyCodexImageResponsesModel } from '@/utils/codexImageToolMode'
 import { normalizeLegacyOpenAIExtra } from '@/utils/openaiLegacyConfiguration'
 import {
   buildUpstreamBalanceAlert,
@@ -148,6 +148,7 @@ export function applyProviderExtraPatch(
     openAIOAuthClientPolicy,
     codexFingerprintMode,
     codexImageToolMode,
+    codexImageResponsesModel,
     anthropicPassthroughEnabled,
     anthropicAPIKeyAuthScheme,
     webSearchEmulationMode,
@@ -412,8 +413,8 @@ export function applyProviderExtraPatch(
     }
 
     applyCodexImageToolMode(newExtra, codexImageToolMode.value)
-
     if (provider.type === 'oauth') {
+      applyCodexImageResponsesModel(newExtra, codexImageResponsesModel.value)
       newExtra.openai_oauth_client_policy = openAIOAuthClientPolicy.value
       if (openAIOAuthClientPolicy.value === 'codex_only') {
         newExtra.codex_cli_only = true

@@ -192,7 +192,8 @@ func WriteImageError(c *gin.Context, value *ImageErrorResponse, adjustedWritten 
 	}
 	// Stop the shared SSE controller before inspecting bytes or writing errors;
 	// a pending beat must not race the decision between HTTP JSON and SSE framing.
-	streamCommitted := StopOpenAICompactSSEKeepaliveCommitted(c) || StreamHasOnlyHeartbeats(c)
+	StopOpenAICompactSSEKeepaliveCommitted(c)
+	streamCommitted := c.Writer.Written() && strings.Contains(strings.ToLower(c.Writer.Header().Get("Content-Type")), "text/event-stream")
 	// Heartbeat-only commitment still permits one final error. The adjusted count
 	// prevents appending another terminal response after actual media output.
 	if c.Writer.Written() && adjustedWritten() >= 0 {

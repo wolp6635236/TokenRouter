@@ -153,7 +153,7 @@ func WriteGenerationFailure(f media.GenerationFailure, state MediaFailureContext
 		fallback := false
 		// Cyber handling can already write a response. Request a generic error only
 		// when neither communication evidence nor that branch's changed writer rules it out.
-		if !communicated && (!recorded || state.Context.Writer.Size() == state.WriterBefore) {
+		if !communicated && (!recorded || HeartbeatAdjustedWrittenSize(state.Context) == state.WriterBefore) {
 			fallback = p.MediaEnsureFallback(f.Err)
 		}
 		fields := []zap.Field{zap.Int64("provider_id", state.ProviderID), zap.Bool("fallback_error_response_written", fallback), zap.Bool("upstream_error_response_already_written", communicated), zap.Error(f.Err)}

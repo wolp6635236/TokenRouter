@@ -25,6 +25,9 @@ export interface IconData {
  * @lobehub/icons Mono.js files and TypeSafe uses its bundled favicon mask.
  */
 export const modelIconData: Record<string, IconData> = {
+  // OpenCode's official MIT-licensed mark, centered in the shared 24-unit viewport.
+  // Source: anomalyco/opencode packages/ui/src/components/logo.tsx, Mark component.
+  opencode: { color: 'currentColor', paths: ['M16 6H8V18H16V6ZM20 22H4V2H20V22Z'] },
   /**
    * TypeSafe's bundled favicon supplies the alpha mask, allowing consumers to apply the
    * surrounding foreground color in either theme.

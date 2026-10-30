@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyCodexImageToolMode,
+  applyCodexImageResponsesModel,
+  readCodexImageResponsesModel,
   readCodexImageToolMode,
   type CodexImageToolMode,
 } from '@/utils/codexImageToolMode'
@@ -109,4 +111,16 @@ describe('Codex 图片工具策略', () => {
   ])('JSONB 合并以 null 方式保存 %s', (mode, expected) => {
     expect(applyCodexImageToolMode({}, mode, 'null')).toEqual(expected)
   })
+})
+
+// An override is saved independently from image injection policy and then cleared.
+// The explicit blank survives JSON merging so an older stored driver cannot reappear.
+it('round-trips and clears the image Responses driver independently of tool policy', () => {
+  const extra: Record<string, unknown> = { codex_image_generation_bridge: false }
+  applyCodexImageResponsesModel(extra, ' gpt-6.1-sol ')
+  expect(readCodexImageResponsesModel(extra)).toBe('gpt-6.1-sol')
+  expect(readCodexImageToolMode(extra)).toBe('disabled')
+  applyCodexImageResponsesModel(extra, ' ')
+  expect(extra.codex_image_responses_model).toBe('')
+  expect(readCodexImageResponsesModel(extra)).toBe('')
 })

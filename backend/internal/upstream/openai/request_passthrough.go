@@ -25,7 +25,7 @@ import (
 // Those values are isolated separately before credential scoping and optional
 // attempt fingerprints apply. Codex removes the legacy Responses experiment but
 // retains independent beta declarations. Allowed overrides run before final
-// OpenCode session, beta, routing-hint, and diagnostic callbacks, keeping
+// provider authentication/session, beta, routing-hint, and diagnostic callbacks, keeping
 // passthrough policy aligned with the same identity resources used by ordinary
 // Responses requests.
 
@@ -151,7 +151,7 @@ func BuildPassthroughRequest(ctx context.Context, body []byte, options Passthrou
 	}
 
 	options.OverrideHeaders(req.Header)
-	options.OpenCodeSession(req.Header)
+	options.FinalizeProviderHeaders(req.Header)
 	// Apply beta negotiation after allowed overrides so the final request retains
 	// required protocol feature tokens before its routing hint is generated.
 	options.BetaFeatures(req.Header)

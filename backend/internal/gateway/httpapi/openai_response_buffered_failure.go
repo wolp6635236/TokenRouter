@@ -21,8 +21,8 @@ import (
 // observed usage with its moderation mark and ends processing before provider
 // health or administrator presentation rules run.
 //
-// Health can select a generic rejection or provider failover. Failover publishes
-// applied effects for the error builder to consume, preventing another health
+// Health can select a generic rejection or provider failover. Failover passes
+// applied effects directly to the error builder, preventing another health
 // update for the same failure. Remaining failures record Ops before matching
 // presentation rules. The supplied protocol writer controls its usual response
 // commitment, while a matching rule marks commitment before either writer runs.
@@ -77,11 +77,11 @@ func (p *OpenAIResponseOutput) bufferedResponseFailure(
 		return fmt.Errorf("upstream response failed: status=%d (not in custom error codes)", policyStatus)
 	}
 	// Health policy can request another provider before buffered JSON is written;
-	// publishing failure effects lets the builder reuse that health decision once.
+	// passing the applied effects lets the builder reuse that health decision directly.
 	if decision.ShouldFailover(gatewayprovider.ExecutionErrorPolicy(provider), policyStatus, openai.OpenAIStreamFailedEventShouldFailover(payload, message)) {
-		MarkOpenAIResponseFailureEffects(c, policyStatus, decision.StopScheduling)
 		return p.NewStreamPolicyFailureWithModel(
-			c, provider, false, requestID, resp.Header, payload, message, upstreamModel,
+			c, provider, false, requestID, resp.Header, payload, message,
+			&AppliedOpenAIResponseEffects{StatusCode: policyStatus, StopScheduling: decision.StopScheduling}, upstreamModel,
 		)
 	}
 	message = p.RecordStreamError(c, provider, false, requestID, "http_error", payload, message)

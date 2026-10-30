@@ -83,7 +83,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		input = &copy
 	}
 	var computeResetAt, normalizeWindowAt *time.Time
-	previousCNUsageIdentity := CNUsageMonitorIdentityFingerprint(provider)
+	previousUsageMonitorIdentity := UsageMonitorIdentityFingerprint(provider)
 	originalQoderSite, originalQoderSiteErr := s.options.Credentials.Site(provider)
 	originalQoderPAT := strings.TrimSpace(provider.GetCredential("pat"))
 	normalizedExtra, shouldReplaceExtra := NormalizeDeprecatedProviderExtraUpdate(input.Extra)
@@ -204,7 +204,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSnapshotExtraKey)
-		delete(normalizedExtra, CNUsageMonitorSnapshotExtraKey)
+		delete(normalizedExtra, UsageMonitorSnapshotExtraKey)
 		// Retain the initial managed observations for prospective validation.
 		// The configuration writer later substitutes the latest billing and
 		// maintenance values under lock.
@@ -220,7 +220,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
 			OllamaCloudUsageSnapshotExtraKey,
-			CNUsageMonitorSnapshotExtraKey,
+			UsageMonitorSnapshotExtraKey,
 		} {
 			if v, ok := provider.Extra[key]; ok {
 				normalizedExtra[key] = v
@@ -290,7 +290,7 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 	// unified set, so saved modern fields cannot override an older client's
 	// requested protocol change.
 	ApplyLegacyProtocolPatch(provider, input.Credentials, input.Extra)
-	if err := NormalizeCNProviderCredentials(provider, false); err != nil {
+	if err := NormalizeTextEndpointCredentials(provider, false); err != nil {
 		return nil, err
 	}
 	if err := NormalizeOpenAIAPIKeyConfiguration(provider); err != nil {
@@ -377,11 +377,11 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 		}
 	}
 	s.attachProxyForValidation(ctx, provider)
-	// CN monitor observations belong to one usage identity. A credential or
+	// usage monitor observations belong to one usage identity. A credential or
 	// configuration identity change invalidates that snapshot before
 	// prospective validation.
-	if previousCNUsageIdentity != CNUsageMonitorIdentityFingerprint(provider) && provider.Extra != nil {
-		delete(provider.Extra, CNUsageMonitorSnapshotExtraKey)
+	if previousUsageMonitorIdentity != UsageMonitorIdentityFingerprint(provider) && provider.Extra != nil {
+		delete(provider.Extra, UsageMonitorSnapshotExtraKey)
 	}
 	if err := s.options.Credentials.ValidateEdit(ctx, provider, deferQoderPATValidation); err != nil {
 		return nil, err
@@ -452,23 +452,13 @@ func (s *Admin) UpdateProvider(ctx context.Context, id int64, input *UpdateProvi
 // UpdateProviderExtra validates and merges a configuration key patch through
 // storage. It filters managed snapshots and caller fingerprint seeds; an empty
 // effective patch succeeds without reading the provider, while OpenAI
-// protocol-related patches require an OpenAI API Key target.
+// protocol-related patches require an OpenAI API Key target. Normalization
+// leaves the caller's top-level map unchanged and retains shared nested values.
 func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[string]any) error {
-	if err := validateResponsesWSConnectionModePatch(updates); err != nil {
+	updates, err := normalizeProviderExtraPatch(updates)
+	if err != nil {
 		return err
 	}
-	updates = SanitizedCodexFingerprintExtraUpdates(updates)
-	DiscardDeprecatedProviderExtra(updates)
-	if err := NormalizeUpstreamUsageExtra(updates); err != nil {
-		return err
-	}
-	// Dedicated maintenance APIs own these observations. Discard submitted
-	// snapshot keys so a configuration patch cannot install usage or session
-	// state from a client.
-	delete(updates, OllamaCloudUsageSessionExtraKey)
-	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
-	delete(updates, OllamaCloudUsageSnapshotExtraKey)
-	delete(updates, CNUsageMonitorSnapshotExtraKey)
 	if HasOpenAIConfigurationPatch(nil, updates) {
 		provider, err := s.providerRepo.GetByID(ctx, id)
 		if err != nil {
@@ -510,6 +500,7 @@ func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[s
 // precedence over Filters, and the resolved ID sequence determines the returned
 // membership outcomes. Normalization can replace or modify input maps, and
 // filter resolution installs ProviderIDs before later validation completes.
+// Extra retains completed normalization even when a later validation fails.
 //
 // The shared configuration write precedes shadow proxy propagation and
 // per-provider group binding. A propagation error returns after configuration
@@ -523,21 +514,13 @@ func (s *Admin) UpdateProviderExtra(ctx context.Context, id int64, updates map[s
 // binding is requested. Results therefore counts requested outcomes, not rows
 // changed by the shared update.
 func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvidersInput) (*BulkUpdateProvidersResult, error) {
-	if err := validateResponsesWSConnectionModePatch(input.Extra); err != nil {
+	// Publish the returned map before checking errors so callers retain the
+	// sanitized patch and any normalization completed before validation failed.
+	var err error
+	input.Extra, err = normalizeProviderExtraPatch(input.Extra)
+	if err != nil {
 		return nil, err
 	}
-	// Dedicated maintenance owns session and monitor snapshots. Filter those
-	// keys and obsolete configuration before resolving targets or preparing a
-	// shared JSON patch.
-	input.Extra = SanitizedCodexFingerprintExtraUpdates(input.Extra)
-	DiscardDeprecatedProviderExtra(input.Extra)
-	if err := NormalizeUpstreamUsageExtra(input.Extra); err != nil {
-		return nil, err
-	}
-	delete(input.Extra, OllamaCloudUsageSessionExtraKey)
-	delete(input.Extra, OllamaCloudUsageAutoRefreshExtraKey)
-	delete(input.Extra, OllamaCloudUsageSnapshotExtraKey)
-	delete(input.Extra, CNUsageMonitorSnapshotExtraKey)
 
 	if len(input.ProviderIDs) == 0 && input.Filters != nil {
 		providerIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
@@ -680,7 +663,7 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 				prospective.Credentials = make(map[string]any, len(input.Credentials))
 			}
 			maps.Copy(prospective.Credentials, input.Credentials)
-			if err := NormalizeCNProviderCredentials(&prospective, false); err != nil {
+			if err := NormalizeTextEndpointCredentials(&prospective, false); err != nil {
 				return nil, err
 			}
 			prospective.Extra = maps.Clone(provider.Extra)
@@ -786,6 +769,37 @@ func (s *Admin) BulkUpdateProviders(ctx context.Context, input *BulkUpdateProvid
 	}
 
 	return result, nil
+}
+
+// normalizeProviderExtraPatch validates and sanitizes shared configuration keys.
+// It preserves nil and explicit empty maps. WebSocket validation returns the
+// original map on failure; later errors return the shallow copy with completed
+// normalization still applied, so callers must retain that result even on error.
+// Unchanged nested values remain shared, while usage normalization replaces its
+// own object only after validation. Target-specific configuration and balance
+// alert checks belong to the calling administrative operation.
+func normalizeProviderExtraPatch(updates map[string]any) (map[string]any, error) {
+	if err := validateResponsesWSConnectionModePatch(updates); err != nil {
+		return updates, err
+	}
+	updates = SanitizedCodexFingerprintExtraUpdates(updates)
+	// Image validation precedes compatibility cleanup; invalid image input retains
+	// retired keys in the returned patch observed by bulk callers after failure.
+	if err := NormalizeCodexImageResponsesModel(updates); err != nil {
+		return updates, err
+	}
+	DiscardDeprecatedProviderExtra(updates)
+	if err := NormalizeUpstreamUsageExtra(updates); err != nil {
+		return updates, err
+	}
+	// Dedicated maintenance APIs own these observations. Discard submitted
+	// snapshot keys so a configuration patch cannot install usage or session
+	// state from a client.
+	delete(updates, OllamaCloudUsageSessionExtraKey)
+	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
+	delete(updates, OllamaCloudUsageSnapshotExtraKey)
+	delete(updates, UsageMonitorSnapshotExtraKey)
+	return updates, nil
 }
 
 // resolveBulkUpdateTargetIDs reads matching provider IDs in pages for

@@ -106,7 +106,7 @@ func (r *Redactor) RedactBody(raw []byte, contentType string) string {
 
 	var value any
 	// Request identifiers can exceed float64 precision. Preserve their decimal
-	// spelling so audit records and administrator confirmation previews name the actual requested objects.
+	// spelling so audit records identify the actual requested objects and amounts without floating-point rounding.
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {

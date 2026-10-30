@@ -67,9 +67,9 @@ func TestPricingConcurrentReadAndReload(t *testing.T) {
 	require.NotNil(t, service.GetModelPricing("model"))
 }
 
-// TestModelAttributesCanonicalFallbackKeepsPricing supplies relays sharing a
+// TestModelAttributesCanonicalFallbackKeepsPricing supplies services sharing a
 // public author identity with different prices. Bare attributes must resolve
-// publicly while token prices remain unpriced until qualified, and exact relay
+// publicly while token prices remain unpriced until qualified, and exact service
 // attributes retain their omissions.
 func TestModelAttributesCanonicalFallbackKeepsPricing(t *testing.T) {
 	remote := &catalogRemoteFixture{body: []byte(`{
@@ -77,10 +77,10 @@ func TestModelAttributesCanonicalFallbackKeepsPricing(t *testing.T) {
 			"modalities":{"input":["text","image"],"output":["image"]}
 		}},
 		"providers":{
-			"azure":{"models":{"gpt-image-2.5-flare":{
+			"google-vertex":{"models":{"gpt-image-2.5-flare":{
 				"canonical_model_id":"openai/gpt-image-2.5-flare","cost":{"input":1,"output":2}
 			}}},
-			"relay":{"models":{"gpt-image-2.5-flare":{
+			"ollama-cloud":{"models":{"gpt-image-2.5-flare":{
 				"canonical_model_id":"openai/gpt-image-2.5-flare","cost":{"input":3,"output":4}
 			}}}
 		}
@@ -94,8 +94,8 @@ func TestModelAttributesCanonicalFallbackKeepsPricing(t *testing.T) {
 	require.Equal(t, "unpriced", price.Source)
 	require.True(t, price.TokenPricingAbsent)
 	require.False(t, price.InputPricePresent)
-	require.Nil(t, s.ModelAttributes("azure/gpt-image-2.5-flare").InputModalities)
-	require.InDelta(t, 1e-6, s.GetModelPricing("azure/gpt-image-2.5-flare").InputCostPerToken, 1e-12)
+	require.Nil(t, s.ModelAttributes("google-vertex/gpt-image-2.5-flare").InputModalities)
+	require.InDelta(t, 1e-6, s.GetModelPricing("google-vertex/gpt-image-2.5-flare").InputCostPerToken, 1e-12)
 }
 
 // TestDirectoryReaderTracksPublishedVersion publishes another model identity

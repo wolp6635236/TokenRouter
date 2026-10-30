@@ -29,6 +29,7 @@ export interface TrendParams {
   group_id?: number // Group record identifier.
   team_id?: number // Team record identifier.
   request_type?: UsageRequestType // Recorded request mode.
+  request_source?: string // Customer or system request source.
   stream?: boolean // Streaming request flag.
   billing_type?: number | null // Recorded billing classification.
   native_compaction_v2?: boolean | null // Native compaction v2.
@@ -49,6 +50,7 @@ export interface ModelStatsParams {
   group_id?: number // Group record identifier.
   team_id?: number // Team record identifier.
   request_type?: UsageRequestType // Recorded request mode.
+  request_source?: string // Customer or system request source.
   stream?: boolean // Streaming request flag.
   billing_type?: number | null // Recorded billing classification.
   native_compaction_v2?: boolean | null // Native compaction v2.
@@ -139,6 +141,7 @@ export interface UserBreakdownParams {
   api_key_id?: number // API-key record identifier.
   provider_id?: number // Provider record identifier.
   request_type?: UsageRequestType // Recorded request mode.
+  request_source?: string // Customer or system request source.
   stream?: boolean // Streaming request flag.
   billing_type?: number | null // Recorded billing classification.
   native_compaction_v2?: boolean | null // Native compaction v2.

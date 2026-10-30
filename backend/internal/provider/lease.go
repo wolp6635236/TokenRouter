@@ -17,6 +17,22 @@ import (
 // admission result. Without either backend, the returned release function is a
 // no-op and maintenance proceeds.
 
+// LeaderLocker acquires and releases named leases for singleton maintenance
+// tasks.
+type LeaderLocker interface {
+	// TryAcquireLeaderLock leases key to owner for the supplied duration.
+	// False
+	// with nil error identifies contention, while errors allow
+	// AcquireSingletonLease to try the configured advisory backend for this
+	// round.
+	TryAcquireLeaderLock(context.Context, string, string, time.Duration) (bool, error)
+	// ReleaseLeaderLock releases key for the same owner used at
+	// acquisition.
+	// AcquireSingletonLease calls it with a separate cleanup budget after
+	// admitted work finishes, and discards release errors.
+	ReleaseLeaderLock(context.Context, string, string) error
+}
+
 // AcquireSingletonLease returns an admission flag and a release callback for
 // singleton maintenance. Nil ctx uses Background; leader contention returns
 // false immediately, while a leader error or absent leader selects advisory when
@@ -27,7 +43,7 @@ import (
 // release follow the supplied callback. With no advisory callback, a nil leader
 // or a leader acquisition error permits work with a no-op release. The lease is
 // acquired once, so its owner supplies a TTL appropriate for the work.
-func AcquireSingletonLease(ctx context.Context, leader CNMonitorLeader, advisory func(context.Context, string) (func(), bool), key, owner string, ttl time.Duration) (func(), bool) {
+func AcquireSingletonLease(ctx context.Context, leader LeaderLocker, advisory func(context.Context, string) (func(), bool), key, owner string, ttl time.Duration) (func(), bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

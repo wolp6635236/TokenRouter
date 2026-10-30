@@ -9,6 +9,8 @@
 //     conditional persistence.
 //
 // Files by responsibility:
+//   - platform_rules.go, kimi_rules.go, zhipu_rules.go, and deepseek_rules.go:
+//     platform-owned endpoint, usage, health, and billing policies.
 //   - admin*.go, create*.go, management*.go: provider creation, editing,
 //     queries, and administration.
 //   - archive*.go, codex_import*.go, crs_*.go: import/export, credential
@@ -37,7 +39,7 @@
 //     scheduling capacity data.
 //   - testing.go, scheduled*.go, probe_runtime.go, import_probes.go:
 //     connection tests, schedules, and probes.
-//   - cn*.go, upstream_queries.go: CN provider usage monitoring and upstream
-//     queries.
+//   - usage_monitor.go and upstream_queries.go: provider usage polling and
+//     manual upstream queries.
 //   - balance_alert*.go: wallet reminder configuration, polling, and delivery.
 package provider

@@ -90,6 +90,7 @@ var (
 			"public.usage_user_activity",
 			"public.usage_logs_*",
 			"public.billing_usage_entries",
+			"public.billing_system_usage_entries",
 			"public.usage_billing_dedup",
 			"public.usage_billing_dedup_archive",
 			"public.usage_dashboard_hourly",

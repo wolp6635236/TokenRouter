@@ -15,11 +15,43 @@ import (
 
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
+
+// TestFailedResponseTerminalFailureEffects supplies an authentication failure
+// before buffered output. It checks one provider health update, retained status,
+// and failover without committing the client response.
+func TestFailedResponseTerminalFailureEffects(t *testing.T) {
+	store := &testkit.ErrorPolicyStore{}
+	svc := newResponsesFixture(responsesFixtureInputs{health: newHTTPHealthFixture(store, nil, nil, providercore.HealthOptions{}, nil)})
+	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+		LoadLocation: time.LoadLocation,
+		ID:           929,
+		Platform:     capability.PlatformOpenAI,
+		Type:         capability.ProviderTypeAPIKey,
+		Credentials: map[string]any{
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusUnauthorized)},
+		},
+	}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": {"req-terminal-effects"}}}
+	payload := []byte(`{"type":"response.failed","response":{"error":{"type":"authentication_error","code":"invalid_api_key","message":"credential rejected"}}}`)
+
+	err := svc.Output.failedResponseTerminal(context.Background(), c, provider, resp, "gpt-5.4", payload, "credential rejected")
+
+	var failure *forwardcore.UpstreamFailoverError
+	require.ErrorAs(t, err, &failure)
+	require.Equal(t, http.StatusUnauthorized, failure.StatusCode)
+	require.Equal(t, 1, store.SetErrCalls)
+	require.Zero(t, store.TempCalls)
+	require.False(t, c.Writer.Written())
+}
 
 // TestHandleSSEToJSON_CompletedEventReturnsJSON supplies in-progress and
 // completed SSE events with terminal usage. It checks final JSON content,

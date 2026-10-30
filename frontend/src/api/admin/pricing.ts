@@ -77,6 +77,9 @@ export interface TimePricingConfig {
  * while intervals and time_pricing retain separate tier and time-window rules.
  */
 export interface ModelPricingEntry {
+  // reference_model selects another model in this profile. Supplied targets require
+  // empty price overrides; omission retains custom pricing and its ordinary defaults.
+  reference_model?: string // Same-profile price reference.
   id?: number // Record identifier value.
   models: string[] // Model identifier list.
   billing_mode: BillingMode // Selected billing calculation.

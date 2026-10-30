@@ -170,4 +170,20 @@ describe('provider edit patch representations', () => {
     expect(source.extra?.quota_monthly_limit).toBe(25)
     expect(writeNotifications).toHaveBeenCalledWith(patch.extra, 'update')
   })
+  // A saved OAuth driver is hydrated, edited, and cleared through the same draft.
+  // Both writes preserve unrelated metadata and clearing submits an explicit blank.
+  it('hydrates and clears an OAuth image driver override', () => {
+    const source = provider({
+      type: 'oauth',
+      extra: { codex_image_responses_model: 'gpt-6.1-sol', retained: true },
+    })
+    const draft = createProviderEditDraft()
+    hydrateProviderEditDraft(draft, source, { loadFromExtra: vi.fn(), reset: vi.fn() })
+    expect(draft.codexImageResponsesModel.value).toBe('gpt-6.1-sol')
+    draft.codexImageResponsesModel.value = ''
+    const patch = buildProviderBasePatch(draft)
+    applyProviderExtraPatch(draft, source, patch, vi.fn())
+    expect(patch.extra?.codex_image_responses_model).toBe('')
+    expect(patch.extra?.retained).toBe(true)
+  })
 })

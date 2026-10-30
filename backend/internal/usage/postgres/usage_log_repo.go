@@ -599,7 +599,7 @@ func (r *Store) fillDashboardPublicTokenStatsAggregated(ctx context.Context, sta
 }
 
 // fillDashboardPublicTokenStatsFromUsageLogs fills range and today token totals
-// from raw records. start/end determine TotalTokens, while todayStart determines
+// from raw customer records. start/end determine TotalTokens, while todayStart determines
 // a separate fixed twenty-four-hour TodayTokens window.
 //
 // The query scans the union of both time spans and applies distinct FILTER
@@ -625,6 +625,7 @@ func (r *Store) fillDashboardPublicTokenStatsFromUsageLogs(ctx context.Context, 
 			FROM usage_logs
 			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
 				AND created_at < GREATEST($2::timestamptz, $4::timestamptz)
+				AND request_source = 'user'
 		)
 		SELECT
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_tokens,
@@ -691,4 +692,23 @@ func (r *Store) StopUsageBatchers() {
 	// closed queues and complete accepted callers' acknowledgement channels.
 	r.batchLifecycleMu.Unlock()
 	r.batchWG.Wait()
+}
+
+// appendRequestSourceCondition adds a parameterized source restriction to SQL.
+// Empty source retains all records; system selects every internal source without
+// mixing that classification with the transport-oriented request_type column.
+// Specific internal sources include the partial-index predicate explicitly so
+// PostgreSQL generic prepared plans can use the system source/time index.
+func appendRequestSourceCondition(conditions []string, args []any, source, prefix string) ([]string, []any) {
+	if source == "" || source == "all" {
+		return conditions, args
+	}
+	if source == "system" {
+		return append(conditions, prefix+"request_source <> 'user'"), args
+	}
+	if source != usage.SourceUser {
+		conditions = append(conditions, prefix+"request_source <> 'user'")
+	}
+	conditions = append(conditions, fmt.Sprintf("%srequest_source = $%d", prefix, len(args)+1))
+	return conditions, append(args, source)
 }

@@ -25,6 +25,11 @@ import (
 // Target contains route inputs that determine metadata for a complete outbound
 // model.
 type Target struct {
+	// AttributeModel is the canonical author identity for platforms whose
+	// offerings rename another author's model. Resolve derives it from the
+	// catalog publication it reads when the caller leaves it empty.
+	AttributeModel string `json:"attribute_model,omitempty"`
+
 	Model        string `json:"model"`                   // complete outbound model identity
 	Platform     string `json:"platform,omitempty"`      // configured provider platform name
 	ProviderType string `json:"provider_type,omitempty"` // configured provider authentication type
@@ -88,6 +93,10 @@ type ExecutionRules struct {
 // Resolution contains a route's model attributes, field sources, and
 // message-encoding rules.
 type Resolution struct {
+	// ReferenceModel identifies the profile target supplying effective attributes.
+	// Target continues to describe the actual outbound model and execution route.
+	ReferenceModel string `json:"reference_model,omitempty"`
+
 	Target     Target            `json:"target"`     // route inputs with detected service
 	Attributes Attributes        `json:"attributes"` // resolved model capability values
 	Sources    map[string]string `json:"sources"`    // effective attribute source labels
@@ -129,8 +138,9 @@ func (v View) Version() string {
 
 // Resolve returns model attributes and encoding rules for one target using
 // the retained catalog version. Service recognition fixes lookup identity;
-// Qoder public identities and the registered Antigravity thinking alias affect
-// metadata lookup while the returned Target retains its outbound model.
+// OpenCode canonical references, Qoder public identities, and the registered
+// Antigravity thinking alias affect metadata lookup while Target.Model retains
+// its outbound identity.
 //
 // Catalog attributes are copied, platform patches precede administrator
 // overrides, and adapter restrictions apply last. Explicitly disabled reasoning
@@ -141,6 +151,22 @@ func (v View) Resolve(target Target, override Attributes) Resolution {
 	target = target.WithServiceIdentity()
 	result := Resolution{Target: target, Sources: map[string]string{}, Version: v.Version()}
 	model := target.Model
+	if target.usesCanonicalIdentity() {
+		// The offering's outbound name can differ from its author's model. Read
+		// the canonical reference from this publication, so a refreshed catalog
+		// supplies the alias's attributes and encoding rules.
+		if target.AttributeModel == "" && v.catalog != nil {
+			mode := target.ProviderMode
+			if mode == "" {
+				mode = "payg"
+			}
+			target.AttributeModel = v.catalog.OpenCodeOfferings[mode][model].CanonicalModelID
+		}
+		if target.AttributeModel != "" {
+			model = target.AttributeModel
+		}
+		result.Target = target
+	}
 	if target.Platform == "qoder" {
 		model = QoderModelIdentity(target.Site, model)
 	}
@@ -268,18 +294,28 @@ func (r *Resolution) patch(attrs Attributes, source string) {
 // state and returns a copy of the attributes. Source labels, rules, and target
 // references remain shared with the receiver and are treated as read-only.
 //
-// Missing thinking state uses adaptive-mode defaults for Anthropic and enabled
-// thinking for DeepSeek. Missing effort defaults to none for the registered
+// Missing thinking state uses adaptive-mode defaults for Claude Messages and enabled
+// thinking for DeepSeek. The retained canonical identity supplies these defaults
+// for OpenCode aliases. Profile references use their target model for these
+// conditions while retaining the outbound Target. Missing effort defaults to none for the registered
 // GPT-5.2 and GPT-5.4 identities. Every supplied condition must match its
 // request state; a mismatch disables that parameter without changing the
 // display attributes retained by the receiver.
 func (r Resolution) ForRequest(state RequestState) Resolution {
+	target := r.Target
+	if r.ReferenceModel != "" {
+		target.Model = r.ReferenceModel
+	}
+	author, model := target.modelEncodingIdentity()
 	r.Attributes = r.Attributes.Clone()
 	if state.Thinking == nil {
 		// Conditional parameters need the adapter's default thinking state when
 		// the client omits a choice, so their eligibility agrees with that
 		// request's encoding.
-		switch r.Target.servicePlatform() {
+		if r.Target.UpstreamProtocol == "anthropic_messages" && r.Rules.SignatureMode == "anthropic" {
+			state.Thinking = valuePointer(r.Rules.ThinkingMode == "adaptive" || r.Rules.ThinkingMode == "adaptive_between_tools")
+		}
+		switch author {
 		case "anthropic":
 			state.Thinking = valuePointer(r.Rules.ThinkingMode == "adaptive" || r.Rules.ThinkingMode == "adaptive_between_tools")
 		case "deepseek":
@@ -298,7 +334,7 @@ func (r Resolution) ForRequest(state RequestState) Resolution {
 			effort := ""
 			if state.Effort != nil {
 				effort = *state.Effort
-			} else if slices.Contains([]string{"gpt-5.2", "gpt-5.4"}, strings.TrimPrefix(normalize(r.Target.Model), "openai/")) {
+			} else if slices.Contains([]string{"gpt-5.2", "gpt-5.4"}, strings.TrimPrefix(model, "openai/")) {
 				// These registered models use none when effort is omitted.
 				// Evaluate their sampling conditions using that default,
 				// allowing the same fields as an explicit none request.
@@ -502,6 +538,14 @@ func compatibleService(host, path, mode string) string {
 	}
 }
 
+// usesCanonicalIdentity reports whether the target's model rules come only from
+// a canonical author reference. OpenCode offerings rename models from many
+// authors, so an unknown reference leaves their author-specific rules unapplied
+// instead of guessing an author from the outbound name.
+func (t Target) usesCanonicalIdentity() bool {
+	return t.Platform == "opencode"
+}
+
 // servicePlatform selects the encoding platform for recognized compatible
 // services. OpenAI OAuth and Setup Token routes retain OpenAI, while unknown
 // API-compatible services retain the target's configured platform.
@@ -509,8 +553,18 @@ func (t Target) servicePlatform() string {
 	if t.Platform != "openai" || t.ProviderType == "oauth" || t.ProviderType == "setup-token" {
 		return t.Platform
 	}
-	switch service := t.ServiceID(); service {
-	case "anthropic", "deepseek":
+	if family := serviceRuleFamily(t.ServiceID()); family != "" {
+		return family
+	}
+	return t.Platform
+}
+
+// serviceRuleFamily maps a catalog service or author lab to the platform name
+// whose model rules apply to it. Unregistered identities return empty, so
+// callers keep their own platform or leave author rules unapplied.
+func serviceRuleFamily(service string) string {
+	switch service {
+	case "openai", "anthropic", "deepseek", "minimax", "alibaba":
 		return service
 	case "xai":
 		return "grok"
@@ -523,7 +577,7 @@ func (t Target) servicePlatform() string {
 	case "typesafe":
 		return "jev"
 	default:
-		return t.Platform
+		return ""
 	}
 }
 

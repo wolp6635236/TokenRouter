@@ -105,7 +105,7 @@ func TestReportFiltersRawQueryArguments(t *testing.T) {
 				prefix := tc.alias
 				conditions := "WHERE " + prefix + "created_at >= $1 AND " + prefix + "created_at < $2" +
 					" AND (" + prefix + "request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($5))) OR (" +
-					prefix + "upstream_request_id = $5 AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$5)))" +
+					prefix + "upstream_request_id = $5 AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$5)) OR (" + prefix + "system_usage IS NOT NULL AND " + prefix + "system_usage->>'parent_request_id' = $5))" +
 					" AND " + prefix + "api_key_id = $6 AND " + prefix + "provider_id = $7 AND " + prefix + "group_id = $8" +
 					" AND " + prefix + "team_id = $9 AND " + prefix + "team_id IS NULL AND " + tc.modelExpr + " = $10" +
 					" AND " + transportSQL + " AND " + prefix + "native_compaction_v2 = $12 AND " + prefix + "billing_type = $13" +

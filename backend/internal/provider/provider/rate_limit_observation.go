@@ -16,19 +16,18 @@ import (
 )
 
 // rate_limit_observation.go translates upstream quota signals into provider
-// cooldown and session-window observations.
-// Provider cooldowns use different quota signals across platforms, and Spark
-// shadows have their own scope. The observer skips shadows before plan or
-// header writes and can defer an OpenAI OAuth observation to the same-provider
-// recovery window.
+// cooldown and session-window observations. Provider cooldowns use different
+// quota signals across platforms, and Spark shadows have their own scope. The
+// observer skips shadows before plan or header writes and can defer an OpenAI
+// OAuth observation to the same-provider recovery window.
 //
-// CN balance and coding-window handling precede generic reset selection. OpenAI
-// persists plan and quota observations before choosing a Codex reset, followed
-// by Anthropic-shaped per-window or aggregate headers and platform body resets.
-// Anthropic session-window updates retain a precise five-hour reset when the
-// selected provider cooldown comes from a longer window. Missing or malformed
-// reset signals use configured fallback handling, so durable cooldown and local
-// session timing remain separate observations.
+// Kimi, Zhipu, and DeepSeek balance and coding-window handling precede generic
+// reset selection. OpenAI persists plan and quota observations before choosing
+// a Codex reset, followed by Anthropic-shaped per-window or aggregate headers
+// and platform body resets. Anthropic session-window updates retain a precise
+// five-hour reset when the selected provider cooldown comes from a longer
+// window. Missing or malformed reset signals use configured fallback handling,
+// so durable cooldown and local session timing remain separate observations.
 
 // RateLimitObserver translates upstream quota and retry signals into provider
 // health observations.
@@ -50,12 +49,12 @@ type RateLimitObserver struct {
 // paths; optional OpenAI retry policy can return before any plan, snapshot, or
 // cooldown write.
 //
-// CN-specific quota handling wins first, then OpenAI plan/snapshot writes and
-// Codex header reset selection. Anthropic per-window headers precede the
-// aggregate header, with platform body parsing used only when that aggregate
-// value is absent. The chosen cooldown is written before its session window,
-// which can use a distinct five-hour reset. Missing or invalid reset text
-// delegates to configured fallback cooldown rules.
+// Kimi, Zhipu, and DeepSeek-specific quota handling wins first, then OpenAI
+// plan/snapshot writes and Codex header reset selection. Anthropic per-window
+// headers precede the aggregate header, with platform body parsing used only
+// when that aggregate value is absent. The chosen cooldown is written before
+// its session window, which can use a distinct five-hour reset. Missing or
+// invalid reset text delegates to configured fallback cooldown rules.
 func (s *RateLimitObserver) Observe429(ctx context.Context, provider *providercore.Record, headers http.Header, responseBody []byte) {
 	// Spark shadow quotas come from codex_bengalfox in /wham/usage.
 	// x-codex-* and usage_limit_reached in /responses describe global windows and cannot pause a funded shadow.
@@ -70,8 +69,8 @@ func (s *RateLimitObserver) Observe429(ctx context.Context, provider *providerco
 	}
 	// Kimi, Zhipu, and DeepSeek balance failures trigger temporary suspension; exhausted
 	// Coding Plan windows cool down until the snapshot reset. Other failures continue below.
-	if provider.IsCNProvider() {
-		if s.observeCNQuota(ctx, provider, responseBody) {
+	if provider.UsesTemporaryBalanceCooldown() {
+		if s.observeAPIKeyQuota(ctx, provider, responseBody) {
 			return
 		}
 	}
@@ -198,17 +197,17 @@ func (s *RateLimitObserver) PersistCodexSnapshot(ctx context.Context, value *pro
 	s.Health.PersistCodexObservation(ctx, value, openaiupstream.ParseCodexRateLimitHeaders(headers))
 }
 
-// observeCNQuota consumes a CN insufficient-balance body or an exhausted stored
-// quota window and reports whether handling won. Other records return false;
-// insufficient-balance classification returns true after requesting its health
-// update.
-func (s *RateLimitObserver) observeCNQuota(ctx context.Context, value *providercore.Record, body []byte) bool {
-	if !value.IsCNProvider() {
+// observeAPIKeyQuota consumes a Kimi, Zhipu, or DeepSeek insufficient-balance
+// body or an exhausted stored quota window and reports whether handling won.
+// Other records return false; insufficient-balance classification returns true
+// after requesting its health update.
+func (s *RateLimitObserver) observeAPIKeyQuota(ctx context.Context, value *providercore.Record, body []byte) bool {
+	if !value.UsesTemporaryBalanceCooldown() {
 		return false
 	}
-	if upstream.CNResponseIndicatesInsufficientBalance(body) {
-		s.Health.ApplyCNInsufficientBalance(ctx, value, upstream.ExtractErrorMessage(body))
+	if upstream.ResponseIndicatesInsufficientBalance(body) {
+		s.Health.ApplyInsufficientBalance(ctx, value, upstream.ExtractErrorMessage(body))
 		return true
 	}
-	return s.Health.ApplyCNQuotaSnapshotCooldown(ctx, value)
+	return s.Health.ApplyCodingPlanQuotaCooldown(ctx, value)
 }

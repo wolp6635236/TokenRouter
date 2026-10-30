@@ -29,6 +29,7 @@ const (
 // values before storing them; the PostgreSQL deletion predicate includes both
 // time endpoints.
 type UsageCleanupFilters struct {
+	RequestSource string `json:"request_source,omitempty"` // optional customer or system source selector
 	// StartTime and EndTime are required instants stored as timestamp JSON.
 	// Deletion includes both endpoints. For positive-width ranges, aggregate
 	// repair includes the bucket beginning exactly at EndTime; equal endpoints

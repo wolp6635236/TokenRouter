@@ -25,7 +25,7 @@ import (
 var configPricingTimeColumns = []string{
 	"id", "pricing_config_id", "models", "billing_mode", "price_multiplier", "fast_mode_multiplier", "fast_multiplier", "flex_multiplier", "max_reasoning_effort_multiplier",
 	"input_price", "output_price", "cache_write_price", "cache_write_1h_price", "cache_read_price", "image_input_price", "image_output_price",
-	"per_request_price", "time_pricing", "created_at", "updated_at",
+	"per_request_price", "time_pricing", "reference_model", "created_at", "updated_at",
 }
 
 // TestEscapeLike supplies literal backslashes, SQL wildcard characters, and
@@ -138,12 +138,12 @@ func TestIsUniqueViolation(t *testing.T) {
 func TestConfigPricingTimeRoundTrip(t *testing.T) {
 	repo, mock := newConfigPricingTimeRepo(t)
 	created := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(`(?s)SELECT .*per_request_price, time_pricing, created_at, updated_at.*FROM pricing_config_model_pricing.*pricing_config_id = \$1`).
+	mock.ExpectQuery(`(?s)SELECT .*per_request_price, time_pricing, reference_model, created_at, updated_at.*FROM pricing_config_model_pricing.*pricing_config_id = \$1`).
 		WithArgs(int64(7)).
 		WillReturnRows(sqlmock.NewRows(configPricingTimeColumns).AddRow(
 			int64(11), int64(7), `["gpt-5"]`, routing.BillingModeToken, nil, nil, nil, nil, nil,
 			nil, nil, nil, nil, nil, nil, nil, nil, `{"timezone":"Asia/Shanghai","periods":[{"start_time":"09:00","end_time":"12:00","multiplier":2}]}`,
-			created, created,
+			"", created, created,
 		))
 	mock.ExpectQuery(`SELECT id, pricing_id, min_tokens, max_tokens, tier_label`).
 		WithArgs(sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -171,8 +171,8 @@ func TestConfigPricingTimeCreateWritesJSON(t *testing.T) {
 			Periods:  []routing.TimePricingPeriod{{StartTime: "09:00", EndTime: "12:00", Multiplier: 2}},
 		},
 	}
-	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO pricing_config_model_pricing (pricing_config_id, models, billing_mode, price_multiplier, fast_mode_multiplier, fast_multiplier, flex_multiplier, max_reasoning_effort_multiplier, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, image_input_price, image_output_price, per_request_price, time_pricing)")).
-		WithArgs(int64(7), []byte(`["gpt-5"]`), routing.BillingModeToken, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, `{"timezone":"Asia/Shanghai","periods":[{"start_time":"09:00","end_time":"12:00","multiplier":2}]}`).
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO pricing_config_model_pricing (pricing_config_id, models, billing_mode, price_multiplier, fast_mode_multiplier, fast_multiplier, flex_multiplier, max_reasoning_effort_multiplier, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, image_input_price, image_output_price, per_request_price, time_pricing, reference_model)")).
+		WithArgs(int64(7), []byte(`["gpt-5"]`), routing.BillingModeToken, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, `{"timezone":"Asia/Shanghai","periods":[{"start_time":"09:00","end_time":"12:00","multiplier":2}]}`, "").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).AddRow(int64(11), time.Time{}, time.Time{}))
 
 	require.NoError(t, repo.CreateModelPricing(context.Background(), pricing))

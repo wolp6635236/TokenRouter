@@ -44,6 +44,10 @@ type BatchImageProvider interface {
 	// submission separately checks the provider's configured batch protocol before
 	// creating resources.
 	SupportsProvider(*Provider) bool
+	// SupportsSubmission reports credential and deployment readiness for creating
+	// a job. Candidate preparation separately checks protocol admission; existing
+	// job processing and downloads use SupportsProvider to retain their stored bindings.
+	SupportsSubmission(*Provider) bool
 	// Submit uploads job input and creates the provider's asynchronous batch.
 	// Callers persist the returned references for later polling and cleanup;
 	// a failed creation can follow an already uploaded input resource.

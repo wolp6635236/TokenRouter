@@ -133,7 +133,7 @@ func (s *HealthService) ApplyForbidden(ctx context.Context, provider *Record, ms
 	// separate from the counter's first-increment counting window.
 	until := s.options.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
 	platformLabel := "OpenAI"
-	if provider.IsCNProvider() {
+	if provider.Platform != PlatformOpenAI {
 		platformLabel = provider.Platform
 	}
 	reason := fmt.Sprintf("%s 403 temporary cooldown: %s", platformLabel, msg)

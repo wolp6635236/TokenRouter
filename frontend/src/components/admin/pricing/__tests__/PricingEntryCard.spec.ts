@@ -161,3 +161,22 @@ describe('PricingEntryCard', () => {
     },
   )
 })
+
+// A reference card hides amounts while retaining the same draft through mode changes.
+// Provider-cost cards omit the mode selector because their parent does not enable it.
+it('switches between reference and custom fields without clearing prices', async () => {
+  const entry = makeEntry({ reference_mode: true, reference_model: 'target' })
+  const wrapper = mount(PricingEntryCard, {
+    props: { entry, allowReference: true },
+    global: { stubs: { Icon: true, ModelTagInput: true, ModelReferenceInput: true, Select: true } },
+  })
+  expect(wrapper.findComponent({ name: 'ModelReferenceInput' }).exists()).toBe(true)
+  expect(wrapper.find('input[type="number"]').exists()).toBe(false)
+  await wrapper.findComponent({ name: 'Select' }).vm.$emit('update:modelValue', 'custom')
+  const updated = wrapper.emitted('update')!.at(-1)![0] as PricingFormEntry
+  expect(updated.input_price).toBe(entry.input_price)
+  expect(updated.reference_model).toBe('target')
+  await wrapper.setProps({ entry: updated })
+  expect(wrapper.findComponent({ name: 'ModelReferenceInput' }).exists()).toBe(false)
+  expect(wrapper.find('input[type="number"]').exists()).toBe(true)
+})

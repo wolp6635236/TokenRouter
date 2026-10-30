@@ -40,14 +40,6 @@ export const PRIVATE_MODULES = [
     ],
     entries: [],
   },
-  {
-    directory: 'src/views/user/batch-image/',
-    owners: [
-      'src/views/user/BatchImageGuideView.vue',
-      'src/views/user/__tests__/BatchImageGuideView.cache.spec.ts',
-    ],
-    entries: [],
-  },
 ]
 
 // IMPORT_EXCEPTIONS records exact importer/target pairs when a documented shared

@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 
 	"github.com/TokenFlux/TokenRouter/internal/apikey"
@@ -235,6 +236,9 @@ type gatewayHTTPFixtureInput struct {
 // gatewayHTTPEndpointsFixture exposes bound HTTP entry points and retained
 // inputs for assembly tests.
 type gatewayHTTPEndpointsFixture struct {
+	// textHandler rebuilds the production receiver from retained fixture inputs.
+	// Route tests register this receiver directly to exercise the full middleware chain.
+	textHandler func() *gatewayhttp.OpenAITextHandler
 	// Input points to the constructor's retained input copy; serial tests
 	// change its options before invoking callbacks that rebuild handler
 	// bindings.
@@ -845,6 +849,31 @@ type settingHandlerRepoStub struct {
 	lastUpdates map[string]string
 }
 
+// openCodeHTTPKeys supplies one credential to real gateway authentication.
+type openCodeHTTPKeys struct {
+	apikey.APIKeyRepository                // unused key management operations
+	key                     *apikey.APIKey // configured authenticated key view
+}
+
+// openCodeHTTPExchange captures one local upstream request for synchronous assertions.
+type openCodeHTTPExchange struct {
+	path    string      // observed upstream request path
+	headers http.Header // copied upstream request headers
+	body    []byte      // consumed upstream request bytes
+}
+
+// mixedHTTPTransport records selected provider IDs before forwarding requests
+// with the default HTTP client.
+type mixedHTTPTransport struct {
+	// failure optionally injects a transport error before network access. Set it
+	// before serving requests; the callback keeps its captured state immutable.
+	failure func(*http.Request, int64) error
+	// mu protects providers appends and cloned observations; requests release
+	// mu before network forwarding so call recording does not serialize HTTP exchanges.
+	mu        sync.Mutex // Provider observation access lock.
+	providers []int64    // Observed provider request order.
+}
+
 // GetValue reads one fixture setting and distinguishes absence from storage failure.
 // Missing keys return the production absence sentinel, allowing the assembled
 // browser-origin reader to skip unconfigured URLs while keeping saved addresses.
@@ -1119,6 +1148,7 @@ func newGatewayHTTPEndpoints(input gatewayHTTPFixtureInput) *gatewayHTTPEndpoint
 		bindings.EligibilityProber = nil
 		return mediaentry.New(bindings)
 	}
+	f.textHandler = text
 	f.Responses = func(c *gin.Context) { text().Responses(c) }
 	f.Messages = func(c *gin.Context) { text().Messages(c) }
 	f.ChatCompletions = func(c *gin.Context) { text().ChatCompletions(c) }
@@ -3059,13 +3089,14 @@ func testEndpoints() map[protocolcore.ProtocolID]string {
 
 // newAppHealthObserverFixture binds provider health observation to the supplied
 // store. A nil config uses zero option values; otherwise OAuth unauthorized,
-// overload, and CN-provider intervals come from that configuration.
+// overload, and Kimi, Zhipu, and DeepSeek-provider intervals come from that
+// configuration.
 func newAppHealthObserverFixture(store gatewayprovider.ExecutionProviderStore, cfg *config.Config) *provideradapter.UpstreamHealth {
 	options := providercore.HealthOptions{}
 	if cfg != nil {
 		options.UnauthorizedCooldownMinutes = cfg.RateLimit.OAuth401CooldownMinutes
 		options.OverloadMinutes = cfg.RateLimit.OverloadCooldownMinutes
-		options.CNIntervalMinutes = cfg.Gateway.CNProviders.IntervalMinutes
+		options.UsageMonitorIntervalMinutes = cfg.Gateway.UsageMonitor.IntervalMinutes
 	}
 	return gatewaytestkit.NewHealthObserver(gatewaytestkit.HealthInput{Store: store, Options: options})
 }
@@ -3904,4 +3935,116 @@ func doUpdateSettings(t *testing.T, h *routesettings.Handler, body map[string]an
 
 	h.UpdateSettings(c)
 	return rec
+}
+
+// GetByKeyForAuth returns a detached key only for the configured credential.
+// Unknown credentials retain the production repository's missing-key result, so
+// HTTP authentication still owns rejection and identity publication.
+func (r *openCodeHTTPKeys) GetByKeyForAuth(_ context.Context, credential string) (*apikey.APIKey, error) {
+	if credential != r.key.Key {
+		return nil, apikey.ErrAPIKeyNotFound
+	}
+	return apikey.CopyAPIKey(r.key), nil
+}
+
+// UpdateLastUsed accepts diagnostic touches after successful fixture authentication.
+func (*openCodeHTTPKeys) UpdateLastUsed(context.Context, int64, time.Time) error { return nil }
+
+// Do records the provider ID under its mutex, then forwards the request with
+// http.DefaultClient. Proxy and concurrency arguments are ignored; successful
+// responses retain the default client's body-cleanup obligation.
+func (s *mixedHTTPTransport) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
+	// Record selection before forwarding, then unlock so independent HTTP
+	// exchanges can progress while assertions read a consistent provider call sequence.
+	s.mu.Lock()
+	s.providers = append(s.providers, id)
+	s.mu.Unlock()
+	if s.failure != nil {
+		if err := s.failure(req, id); err != nil {
+			return nil, err
+		}
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// DoWithTLS delegates to Do while ignoring the fingerprint profile supplied by
+// execution. Provider observations and default-client forwarding remain the
+// same, and callers close successful response bodies.
+func (s *mixedHTTPTransport) DoWithTLS(req *http.Request, p string, id int64, n int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, p, id, n)
+}
+
+// calls returns a cloned provider-ID sequence while holding its mutex. The
+// result keeps nil for an uninitialized sequence and gives callers separate
+// slice storage for observation.
+func (s *mixedHTTPTransport) calls() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.providers)
+}
+
+// mixedUpstreamResponse returns fixed successful bodies selected by the
+// upstream URL and stream request. failAnthropic makes Messages URLs return
+// HTTP 502 first; response-write errors are left to the outer HTTP-result
+// assertions.
+func mixedUpstreamResponse(w http.ResponseWriter, r *http.Request, failAnthropic bool) {
+	// Use any bytes read from the fixture request to choose its stream
+	// shape; the outer endpoint assertions detect an unusable exchange after read failure.
+	body, _ := io.ReadAll(r.Body)
+	if failAnthropic && strings.Contains(r.URL.Path, "/messages") {
+		w.WriteHeader(http.StatusBadGateway)
+		// Send the scripted protocol body; the outer HTTP result and
+		// completion assertions expose unsuccessful delivery, so
+		// fixture writes discard their errors.
+		_, _ = io.WriteString(w, `{"error":{"type":"overloaded_error","message":"retry another provider"}}`)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if strings.Contains(r.URL.Path, "/messages") {
+		if gjson.GetBytes(body, "stream").Bool() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-mixed\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok-mixed\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		} else {
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = io.WriteString(w, `{"id":"msg-mixed","type":"message","role":"assistant","model":"claude-sonnet-4-5-20250929","content":[{"type":"text","text":"ok-mixed"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":3}}`)
+		}
+	} else if strings.Contains(r.URL.Path, "models/") {
+		response := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok-mixed"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}`
+		if strings.Contains(r.URL.Path, "streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", response)
+		} else {
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = io.WriteString(w, response)
+		}
+	} else if strings.Contains(r.URL.Path, "chat/completions") {
+		// Send the scripted protocol body; the outer HTTP result and
+		// completion assertions expose unsuccessful delivery, so
+		// fixture writes discard their errors.
+		_, _ = io.WriteString(w, `{"id":"chat-mixed","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"ok-mixed"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`)
+	} else {
+		response := `{"id":"resp-mixed","object":"response","status":"completed","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok-mixed"}]}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}`
+		if gjson.GetBytes(body, "stream").Bool() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-mixed\",\"model\":\"gpt-5.4\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok-mixed\"}\n\ndata: {\"type\":\"response.completed\",\"response\":%s}\n\n", response)
+		} else {
+			// Send the scripted protocol body; the outer HTTP
+			// result and completion assertions expose unsuccessful
+			// delivery, so fixture writes discard their errors.
+			_, _ = io.WriteString(w, response)
+		}
+	}
 }

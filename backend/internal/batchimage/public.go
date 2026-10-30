@@ -136,14 +136,20 @@ type Candidate struct {
 	ID              int64                            // database record identity
 	Priority        int                              // provider selection priority
 	CandidateRules                                   // prepared provider selection rules
-	// ProtocolEnabled, SupportsProvider, ResolveUpstream and Bind are supplied
-	// together by candidate preparation. Selection invokes them in that order
-	// after scheduling and model checks before using the returned provider
-	// operations.
-	ProtocolEnabled  func() bool                          // batch protocol permission check
-	SupportsProvider func(string) bool                    // backend credential compatibility check
-	ResolveUpstream  func(context.Context, string) string // final execution model resolver
-	Bind             func(string) ExecutionProvider       // provider snapshot operation binder
+	// CanSubmit, ResolveUpstream and Bind are supplied together by candidate
+	// preparation. Catalogue and submission share protocol, credential and storage
+	// admission before resolving models or binding the selected backend.
+	CanSubmit       func(string) bool                    // new job backend eligibility
+	ResolveUpstream func(context.Context, string) string // final execution model resolver
+	Bind            func(string) ExecutionProvider       // provider snapshot operation binder
+}
+
+// submissionCandidate pairs a provider snapshot with its eligible batch backend.
+// The same provider may appear under multiple adapters when an adapter supports
+// its credentials; each entry retains the backend used for binding operations.
+type submissionCandidate struct {
+	Candidate        // prepared provider selection snapshot
+	backend   string // eligible batch backend name
 }
 
 // ProviderReader supplies batch candidates by bound provider identity or
@@ -211,7 +217,6 @@ type ImagePricer interface {
 // PublicOptions configures request admission, byte limits and omitted output
 // preferences.
 type PublicOptions struct {
-	Enabled bool // global batch admission flag
 	// StaleActiveAfterSeconds: silent submission window seconds;
 	// MaxItemsPerJobDefault: submitted prompt entry cap; MaxOutputImagesPerJob:
 	// expanded output request cap; MaxOutputImagesPerItem: per prompt repetition
@@ -309,7 +314,7 @@ func mappedCandidateModel(c *Candidate, m string) string {
 // a later retry.
 // @project-doc docs/domains/batch_image_jobs.md#job_lifecycle
 func (s *Public) Submit(ctx context.Context, owner BatchImageOwner, req BatchImageSubmitRequest, idempotencyKey string) (*BatchImagePublicBatch, error) {
-	if !s.Enabled() {
+	if s == nil || s.Repo == nil || s.ProviderRepo == nil {
 		return nil, ErrBatchImageDisabled
 	}
 	if routing.ModelAttributesFromContext(ctx) == nil {
@@ -893,10 +898,10 @@ func (s *Public) DeleteRecord(ctx context.Context, owner BatchImageOwner, batchI
 // Final output modalities must explicitly include image. Unknown modalities
 // exclude the route even when configuration and image prices are present;
 // attribute-read errors stop listing. Results are deduplicated within
-// each backend and sorted by request name. Provider protocol enablement is
-// checked separately during submission selection.
+// each backend and sorted by request name. Catalogue and submission share
+// protocol, credential, scheduling and storage eligibility before model checks.
 func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchImagePublicModelsResponse, error) {
-	if !s.Enabled() {
+	if s == nil || s.Repo == nil || s.ProviderRepo == nil {
 		return nil, ErrBatchImageDisabled
 	}
 	if s.Pricing == nil {
@@ -934,68 +939,60 @@ func (s *Public) ListModels(ctx context.Context, owner BatchImageOwner) (*BatchI
 	outputs := make(map[string]*[]string)
 	attributeSession := s.Attributes.NewSession()
 	modelsByProvider := make(map[string]map[string]struct{})
-	for _, providerName := range BatchImageProviderSelectionOrder("") {
-		if !s.ProviderExists(providerName) {
-			continue
-		}
-		providers, err := s.ListCandidateProviders(ctx, owner.GroupID, BatchImageProviderPlatform(providerName))
-		if err != nil {
-			return nil, err
-		}
-		for i := range providers {
-			provider := providers[i]
-			if !provider.IsSchedulable() || !provider.SupportsProvider(providerName) {
+	providers, err := s.submissionCandidates(ctx, owner.GroupID, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, provider := range providers {
+		providerName := provider.backend
+		for _, model := range BatchImageModelsFromProviderMapping(&provider.Candidate, candidates...) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			routingModel := strings.TrimSpace(policy.ResolveModel(model))
+			if routingModel == "" {
+				routingModel = model
+			}
+			upstreamModel := mappedCandidateModel(&provider.Candidate, routingModel)
+			restrictionModel := routing.ModelForRestriction(policy.RestrictionSource(), model, routingModel)
+			if policy.RestrictionSource() == routing.BillingModelSourceUpstream {
+				restrictionModel = upstreamModel
+			}
+			if policy.IsModelRestricted(restrictionModel) || !provider.IsModelSupported(routingModel) {
 				continue
 			}
-			for _, model := range BatchImageModelsFromProviderMapping(&provider, candidates...) {
-				if err := ctx.Err(); err != nil {
+			modalities, found := outputs[upstreamModel]
+			if s.Attributes != nil {
+				target := provider.modelAttributeTarget(upstreamModel)
+				var groupID int64
+				if owner.GroupID != nil {
+					groupID = *owner.GroupID
+				}
+				resolved, err := attributeSession.Resolve(ctx, groupID, target)
+				if err == nil {
+					modalities = resolved.Attributes.OutputModalities
+				} else {
 					return nil, err
 				}
-				routingModel := strings.TrimSpace(policy.ResolveModel(model))
-				if routingModel == "" {
-					routingModel = model
-				}
-				upstreamModel := mappedCandidateModel(&provider, routingModel)
-				restrictionModel := routing.ModelForRestriction(policy.RestrictionSource(), model, routingModel)
-				if policy.RestrictionSource() == routing.BillingModelSourceUpstream {
-					restrictionModel = upstreamModel
-				}
-				if policy.IsModelRestricted(restrictionModel) || !provider.IsModelSupported(routingModel) {
-					continue
-				}
-				modalities, found := outputs[upstreamModel]
-				if s.Attributes != nil {
-					target := provider.modelAttributeTarget(upstreamModel)
-					var groupID int64
-					if owner.GroupID != nil {
-						groupID = *owner.GroupID
-					}
-					resolved, err := attributeSession.Resolve(ctx, groupID, target)
-					if err == nil {
-						modalities = resolved.Attributes.OutputModalities
-					} else {
-						return nil, err
-					}
-				} else if !found && s.ModelOutputModalities != nil {
-					modalities = s.ModelOutputModalities(upstreamModel)
-					outputs[upstreamModel] = modalities
-				}
-				if modalities == nil || !slices.Contains(*modalities, "image") {
-					continue
-				}
-				mapping := billingMapping
-				mapping.MappedModel = routingModel
-				pricingModel := BatchImagePricingModel(mapping, model, routingModel, upstreamModel)
-				// An image-capable mapping can still lack an applicable image price; omit
-				// that catalogue entry before clients choose an unpriceable batch model.
-				if _, err := s.Pricing.BatchImageUnitPrice(ctx, BatchImagePriceInput{Model: pricingModel, GroupID: owner.GroupID, ImageSize: "1K"}); err != nil {
-					continue
-				}
-				if modelsByProvider[providerName] == nil {
-					modelsByProvider[providerName] = make(map[string]struct{})
-				}
-				modelsByProvider[providerName][model] = struct{}{}
+			} else if !found && s.ModelOutputModalities != nil {
+				modalities = s.ModelOutputModalities(upstreamModel)
+				outputs[upstreamModel] = modalities
 			}
+			if modalities == nil || !slices.Contains(*modalities, "image") {
+				continue
+			}
+			mapping := billingMapping
+			mapping.MappedModel = routingModel
+			pricingModel := BatchImagePricingModel(mapping, model, routingModel, upstreamModel)
+			// An image-capable mapping can still lack an applicable image price; omit
+			// that catalogue entry before clients choose an unpriceable batch model.
+			if _, err := s.Pricing.BatchImageUnitPrice(ctx, BatchImagePriceInput{Model: pricingModel, GroupID: owner.GroupID, ImageSize: "1K"}); err != nil {
+				continue
+			}
+			if modelsByProvider[providerName] == nil {
+				modelsByProvider[providerName] = make(map[string]struct{})
+			}
+			modelsByProvider[providerName][model] = struct{}{}
 		}
 	}
 
@@ -1327,18 +1324,16 @@ func BatchImagePricingModel(mapping GroupMappingResult, requestedModel, groupMap
 }
 
 // SelectProviderAndProvider returns a bound execution backend, candidate and
-// final upstream model for the requested route. An explicit backend is tried
-// alone; automatic selection tries Gemini API before Vertex. Within a
-// backend, greater priority wins and equal priorities use the smaller
-// provider ID.
+// final upstream model for the requested route. An explicit backend narrows
+// selection; otherwise both backends participate in one ascending priority
+// and provider-ID order.
 //
-// Candidates need group membership, current scheduling eligibility,
-// routing-model support, protocol permission and backend credential
-// compatibility. ResolveUpstream supplies the final execution model, which is
-// checked again when group restriction uses the upstream stage. The selected
-// model is registered for tracing before the returned backend binds the
-// provider snapshot; no acceptable candidate returns the unavailable-provider
-// category.
+// Catalogue and submission share candidate admission before checking each
+// routed model. ResolveUpstream supplies the final execution model, which is
+// checked against upstream-stage restrictions and image-output attributes.
+// The selected model is registered for tracing before binding the provider
+// snapshot. Rejected models allow the next candidate to participate; absence
+// of any acceptable route returns the capability or provider error.
 func (s *Public) SelectProviderAndProvider(
 	ctx context.Context,
 	owner BatchImageOwner,
@@ -1349,67 +1344,78 @@ func (s *Public) SelectProviderAndProvider(
 	if session == nil {
 		session = s.Attributes.NewSession()
 	}
+	providers, err := s.submissionCandidates(ctx, owner.GroupID, requestedProvider)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	var capabilityErr error
-	providers := BatchImageProviderSelectionOrder(requestedProvider)
-	// Automatic selection tries backends in its fixed order; only the requested
-	// backend participates when the caller supplied an explicit platform.
-	for _, providerName := range providers {
-		if !s.ProviderExists(providerName) {
+	for _, provider := range providers {
+		if !provider.IsModelSupported(routingModel) {
 			continue
 		}
-		providers, err := s.ListCandidateProviders(ctx, owner.GroupID, BatchImageProviderPlatform(providerName))
+		upstreamModel := strings.TrimSpace(provider.ResolveUpstream(ctx, routingModel))
+		if upstreamModel == "" {
+			continue
+		}
+		if owner.GroupID != nil && *owner.GroupID > 0 && s.PricingConfigService != nil &&
+			mapping.RestrictionModelSource == BillingModelSourceUpstream &&
+			s.PricingConfigService.IsModelRestricted(ctx, *owner.GroupID, upstreamModel) {
+			continue
+		}
+		var groupID int64
+		if owner.GroupID != nil {
+			groupID = *owner.GroupID
+		}
+		attributes, err := session.Resolve(ctx, groupID, provider.modelAttributeTarget(upstreamModel))
 		if err != nil {
 			return nil, nil, "", err
 		}
-		sort.SliceStable(providers, func(i, j int) bool {
-			if providers[i].Priority != providers[j].Priority {
-				return providers[i].Priority > providers[j].Priority
-			}
-			return providers[i].ID < providers[j].ID
-		})
-		for i := range providers {
-			provider := providers[i]
-			if !provider.IsSchedulable() || !provider.IsModelSupported(routingModel) {
-				continue
-			}
-			if !provider.ProtocolEnabled() {
-				continue
-			}
-			if !provider.SupportsProvider(providerName) {
-				continue
-			}
-			upstreamModel := strings.TrimSpace(provider.ResolveUpstream(ctx, routingModel))
-			if upstreamModel == "" {
-				continue
-			}
-			if owner.GroupID != nil && *owner.GroupID > 0 && s.PricingConfigService != nil &&
-				mapping.RestrictionModelSource == BillingModelSourceUpstream &&
-				s.PricingConfigService.IsModelRestricted(ctx, *owner.GroupID, upstreamModel) {
-				continue
-			}
-			var groupID int64
-			if owner.GroupID != nil {
-				groupID = *owner.GroupID
-			}
-			attributes, err := session.Resolve(ctx, groupID, provider.modelAttributeTarget(upstreamModel))
-			if err != nil {
-				return nil, nil, "", err
-			}
-			if err := routing.RequireImageOutput(attributes.Attributes); err != nil {
-				capabilityErr = err
-				continue
-			}
-			s.RegisterModel(ctx, upstreamModel)
-			return provider.Bind(providerName), &provider, upstreamModel, nil
+		if err := routing.RequireImageOutput(attributes.Attributes); err != nil {
+			capabilityErr = err
+			continue
 		}
+		s.RegisterModel(ctx, upstreamModel)
+		return provider.Bind(provider.backend), &provider.Candidate, upstreamModel, nil
 	}
 	if capabilityErr != nil {
 		return nil, nil, "", capabilityErr
 	}
-	if requestedProvider != "" {
-		return nil, nil, "", ErrBatchImageNoProviderAvailable
-	}
 	return nil, nil, "", ErrBatchImageNoProviderAvailable
+}
+
+// submissionCandidates lists group-bound providers that can create batch jobs.
+// Both adapters share the Gemini provider pool; requestedBackend narrows adapter
+// admission, and an empty value considers every registered batch backend.
+//
+// Protocol, credential, scheduling and storage checks precede model discovery
+// and submission side effects. Eligible adapters remain attached to each provider
+// while sorting by ascending numeric priority and provider ID, so authentication
+// type cannot outrank an administrator's configured priority. Model checks remain
+// with the caller because a catalogue evaluates several model names per provider.
+func (s *Public) submissionCandidates(ctx context.Context, groupID *int64, requestedBackend string) ([]submissionCandidate, error) {
+	providers, err := s.ListCandidateProviders(ctx, groupID, PlatformGemini)
+	if err != nil {
+		return nil, err
+	}
+	backends := BatchImageProviderSelectionOrder(requestedBackend)
+	candidates := make([]submissionCandidate, 0, len(providers))
+	for _, provider := range providers {
+		if !provider.IsSchedulable() {
+			continue
+		}
+		for _, backend := range backends {
+			if s.ProviderExists(backend) && provider.CanSubmit(backend) {
+				candidates = append(candidates, submissionCandidate{Candidate: provider, backend: backend})
+			}
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority < candidates[j].Priority
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	return candidates, nil
 }
 
 // ListCandidateProviders requests provider candidates for a positive bound
@@ -1589,14 +1595,6 @@ func (s *Public) ResolvePricingSnapshot(ctx context.Context, owner BatchImageOwn
 	}, nil
 }
 
-// Enabled reports whether public operations have both required repositories
-// and the global enable flag. Nil services return false; funding, pricing and
-// selection callback availability is checked or required by the invoked
-// operation.
-func (s *Public) Enabled() bool {
-	return s != nil && s.Repo != nil && s.ProviderRepo != nil && s.Options.Enabled
-}
-
 // InvalidateAuthCache invokes the optional payer invalidation callback for a
 // positive user identity. Absent callbacks and nonpositive identities return
 // immediately, allowing funding paths to share this cache refresh step.
@@ -1742,8 +1740,9 @@ func BatchImageProviderPlatform(platform string) string {
 }
 
 // BatchImageProviderSelectionOrder returns a trimmed explicit backend as the
-// only candidate when supplied. Blank input selects Gemini API followed by
-// Vertex, defining automatic selection order and public catalogue ordering.
+// only backend when supplied. Blank input enumerates Gemini API and Vertex
+// for candidate construction and stable public catalogue ordering; provider
+// priority determines submission selection across those backends.
 func BatchImageProviderSelectionOrder(requestedProvider string) []string {
 	if strings.TrimSpace(requestedProvider) != "" {
 		return []string{strings.TrimSpace(requestedProvider)}

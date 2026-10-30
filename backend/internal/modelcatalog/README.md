@@ -2,6 +2,12 @@
 
 默认价格与展示属性来自 models.dev 的 `https://models.dev/catalog.json?type=all`。`catalog.json.gz` 保存经过校验的离线快照，`model_supplements.json` 按型号保存价格、展示属性及其官方来源；两者通过 `go:embed` 编入二进制。启动时加载磁盘缓存或离线目录，后台使用 ETag 同步，完整验证成功后才一起发布价格、操作价格和属性。更新失败保留最近有效版本。
 
+目录解析保留公共模型资料、识别出的原厂记录和运行时需要的服务记录。`origins.go` 将区域、套餐和独立品牌入口映射到模型作者，识别范围独立于当前网关支持的平台。原厂归属优先读取 `canonical_model_id`，缺失时查公共资料，再按原厂专用入口或混合目录中的自研家族、命名空间识别。未接入的视频、语音、图片等型号也会保留；厂商归属和依据见[原厂归属](../../../docs/interfaces/model_catalog_and_marketplace.md#model_catalog_origins)。
+
+运行时保留服务包括 Bedrock、Gemini Vertex、Anthropic Vertex、Ollama Cloud，以及 Kimi、GLM 的国内和国际 Coding 服务。它们的属性和价格继续进入默认目录。裸名优先选择原厂普通 API，再在同类来源中优先选择作者主入口；供应商限定名查询对应服务。套餐身份与原厂身份分开判断，明确零价保持有效。其他中转记录从默认属性、价格、模型搜索和自动补全中排除。完整服务 ID 和筛选规则见[目录元数据查询](../../../docs/interfaces/model_catalog_and_marketplace.md#model_catalog_metadata_lookup)。
+
+远程更新、磁盘重载和内嵌快照共用筛选规则，缓存保存原始响应。完整供应商限定名和公共 canonical ID 的别名保持来源隔离。被排除的供应商限定名返回缺失；原先依赖该渠道默认报价的型号，需要明确配置价格。本地补充、价卡和属性覆盖继续生效，显式零价与缺价分别处理。
+
 官方补充随二进制更新和回退，无需安装外部资源，不依赖工作目录。仓库中的 JSON 仍是唯一维护源，修改后需要重新编译。每个模型条目记录 `source_url` 和 `verified_at`，填写目录缺失、已核实的字段。价格字段放在模型条目内，展示属性放在同一条目的 `attributes` 对象中。目录已有的价格、明确零价、属性值及空模态集合优先。型号按完整 ID 匹配。
 
 ## 自定义补充与价格配置
@@ -19,7 +25,7 @@
 
 `attributes` 使用模型属性接口的字段名，例如 `display_name`、`context`、`input_modalities`、`output_modalities` 和 `structured_output`。自定义补充和内嵌补充共用此格式。补充优先级按字段计算，目录已有值优先，其次为自定义文件，最后为内嵌文件。旧价格条目中的 `supported_modalities` 等顶层字段继续按价格兼容规则读取，展示层读取 `attributes`。
 
-Jev 的三个官方请求型号在同一条目里声明价格和属性。models.dev 公共条目提供模型资料，各渠道报价按供应商记录隔离。TypeSafe 直连缺少目录报价时，使用官方补充；目录补上直连报价后，该报价优先。`jev-preview` 和 `jev-1.13.0` 的属性按官方资料登记，未来型号需要另行核验。
+Jev 的三个官方请求型号在同一条目里声明价格和属性。models.dev 公共条目提供模型资料，第三方渠道报价由目录筛选排除。TypeSafe 直连缺少目录报价时，使用官方补充；目录补上直连报价后，该报价优先。`jev-preview` 和 `jev-1.13.0` 的属性按官方资料登记，未来型号需要另行核验。
 
 ## 计价维度
 

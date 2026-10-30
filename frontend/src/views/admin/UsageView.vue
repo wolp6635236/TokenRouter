@@ -428,6 +428,7 @@ const balanceHistoryUser = ref<AdminUser | null>(null)
 // separately to the ranking component.
 const breakdownFilters = computed(() => {
   const f: Record<string, any> = {}
+  f.request_source = filters.value.request_source || 'all'
   if (filters.value.user_id) f.user_id = filters.value.user_id
   if (filters.value.api_key_id) f.api_key_id = filters.value.api_key_id
   if (filters.value.provider_id) f.provider_id = filters.value.provider_id
@@ -839,6 +840,7 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
       group_id: filters.value.group_id,
       team_id: filters.value.team_id,
       request_type: requestType,
+      request_source: filters.value.request_source || 'all',
       stream: legacyStream === null ? undefined : legacyStream,
       billing_type: filters.value.billing_type,
       native_compaction_v2: filters.value.native_compaction_v2,
@@ -903,6 +905,7 @@ const loadChartData = async () => {
       group_id: filters.value.group_id,
       team_id: filters.value.team_id,
       request_type: requestType,
+      request_source: filters.value.request_source || 'all',
       stream: legacyStream === null ? undefined : legacyStream,
       billing_type: filters.value.billing_type,
       native_compaction_v2: filters.value.native_compaction_v2,
@@ -1073,6 +1076,8 @@ const exportToExcel = async () => {
       t('usage.detailedTiming'),
       t('admin.usage.requestId'),
       t('admin.usage.upstreamRequestId'),
+      t('admin.usage.requestSource'),
+      t('admin.usage.costStatus'),
       t('usage.userAgent'),
       t('admin.usage.ipAddress'),
     ]
@@ -1114,9 +1119,11 @@ const exportToExcel = async () => {
         (log.provider_rate_multiplier ?? 1).toPrecision(4),
         log.total_cost?.toFixed(6) || '0.000000',
         log.actual_cost?.toFixed(6) || '0.000000',
-        ((log.provider_stats_cost ?? log.total_cost) * (log.provider_rate_multiplier ?? 1)).toFixed(
-          6,
-        ),
+        log.system_usage?.cost_state === 'unknown'
+          ? ''
+          : (
+              (log.provider_stats_cost ?? log.total_cost) * (log.provider_rate_multiplier ?? 1)
+            ).toFixed(6),
         log.ttft_ms ?? '',
         log.ttft_mode === 'first_event'
           ? t('usage.latencyFirstEvent')
@@ -1128,6 +1135,8 @@ const exportToExcel = async () => {
         formatRequestTimingForExport(log.detailed_timing),
         log.request_id || '',
         log.upstream_request_id || '',
+        t(`admin.usage.requestSources.${log.request_source || 'user'}`),
+        log.system_usage?.cost_state || '',
         log.user_agent || '',
         log.ip_address || '',
       ])

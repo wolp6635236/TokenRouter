@@ -17,7 +17,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	anthropicupstream "github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/antigravity"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/jev"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/kimi"
 )
 
@@ -118,13 +117,13 @@ func ForbiddenObservation(value *providercore.Record, message string, body []byt
 	if kind == providercore.ForbiddenTypeValidation {
 		url = antigravity.ExtractValidationURL(string(body))
 	}
-	return providercore.ForbiddenObservation{Message: message, Body: body, HTML: upstream.IsHTMLResponse(body), Kind: kind, ValidationURL: url, ConcurrentRequestLimited: CNConcurrencyLimit403(value, message), ConcurrencyReason: "cn_concurrency_limit: " + kimi.ConcurrentRequestLimitMessage}
+	return providercore.ForbiddenObservation{Message: message, Body: body, HTML: upstream.IsHTMLResponse(body), Kind: kind, ValidationURL: url, ConcurrentRequestLimited: KimiConcurrencyLimit403(value, message), ConcurrencyReason: "cn_concurrency_limit: " + kimi.ConcurrentRequestLimitMessage}
 }
 
-// CNConcurrencyLimit403 reports the platform's recognized Kimi concurrency
+// KimiConcurrencyLimit403 reports the platform's recognized Kimi concurrency
 // message for a matching record. Nil records and other platforms return false,
 // and the platform helper determines which trimmed message spelling qualifies.
-func CNConcurrencyLimit403(value *providercore.Record, message string) bool {
+func KimiConcurrencyLimit403(value *providercore.Record, message string) bool {
 	return value != nil && value.Platform == providercore.PlatformKimi && kimi.IsConcurrencyLimitMessage(message)
 }
 
@@ -233,15 +232,15 @@ func (s *UpstreamHealth) HandleDefault(ctx context.Context, provider *providerco
 	if provider == nil {
 		return false
 	}
-	// A Jev retry deadline provides the concrete cooldown for its decision
-	// endpoint. Prefer it before general overload or temporary rules can choose
-	// another window.
-	if provider.Platform == capability.PlatformJev && (statusCode == http.StatusTooManyRequests || statusCode == 529) {
-		if reset := jev.RetryAfterResetTime(headers, time.Now()); reset != nil {
+	// Jev and OpenCode provide concrete cooldown deadlines through Retry-After.
+	// Prefer those deadlines before general overload or temporary rules choose
+	// another window for the same provider response.
+	if (provider.Platform == capability.PlatformJev || provider.IsOpenCode()) && (statusCode == http.StatusTooManyRequests || statusCode == 529) {
+		if reset := upstream.RetryAfterResetTime(headers, time.Now()); reset != nil {
 			s.Core.ApplyObservedRateLimit(ctx, provider, *reset)
 			return false
 		}
-		// Without a Jev retry deadline, an explicit maintenance rule can still define
+		// Without a retry deadline, an explicit maintenance rule can still define
 		// its suspension. Try that rule before the general overload branch returns.
 		if statusCode == 529 && s.Core.TryTempUnschedulable(ctx, provider, statusCode, responseBody, true, observation.EffectiveModel) {
 			return true

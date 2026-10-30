@@ -128,7 +128,7 @@ func (b *openAIChatAttemptBridge) SelectionFailure(err error, excludedCount int,
 // Response latency subtracts the positive upstream phase only when measured
 // total forward time exceeds it. Result presence, images, native partial usage,
 // HTTP commitment, and classified failures remain separate observations. The
-// raw writer size before execution becomes RetryReady's baseline for
+// heartbeat-adjusted writer size before execution becomes RetryReady's baseline for
 // determining whether an error can be replayed through another provider.
 func (b *openAIChatAttemptBridge) Forward() textflow.ResponseOutcome {
 	var err error
@@ -142,7 +142,7 @@ func (b *openAIChatAttemptBridge) Forward() textflow.ResponseOutcome {
 	if b.groupMapping.Mapped {
 		b.forwardBody = b.binding().replaceModelInBody(b.body, b.groupMapping.MappedModel)
 	}
-	b.writerSizeBeforeForward = b.c.Writer.Size()
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	// Release provider capacity on policy rejection and exchange return
 	// before Cyber and completion handling consume the retained
 	// provider/result observations for this attempt.
@@ -252,7 +252,7 @@ func (b *openAIChatAttemptBridge) RetryReady(failure *textflow.AttemptFailure) b
 	// Warning handling can already have written protocol output. Recheck
 	// its byte count before accepting replay so the client cannot receive
 	// content from another provider.
-	if b.c.Writer.Size() != b.writerSizeBeforeForward {
+	if gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != b.writerSizeBeforeForward {
 		b.binding().observeOpenAIProviderHealthFailure(b.c.Request.Context(), b.provider, err)
 		b.binding().handleFailoverExhausted(b.c, failoverErr, true)
 		return false
@@ -297,7 +297,7 @@ func (b *openAIChatAttemptBridge) Switching(failure *textflow.AttemptFailure, sw
 // missing output. It prefers warning evidence carried by the error chain, then
 // passes error text to the recorder when that evidence is absent.
 //
-// Communicated-error state and the raw writer size are checked after warning
+// Communicated-error state and the heartbeat-adjusted writer size are checked after warning
 // handling. A recorded warning allows fallback while size remains unchanged;
 // communicated errors suppress that path. Once eligible, classified stream-read
 // output takes precedence over the general OpenAI fallback, and the chosen
@@ -317,7 +317,7 @@ func (b *openAIChatAttemptBridge) OtherFailure(err error) {
 	// Warning recording may already have supplied terminal output. Combine
 	// its evidence with communicated-error and byte-count checks before
 	// choosing another missing error response.
-	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || b.c.Writer.Size() == b.writerSizeBeforeForward) {
+	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) == b.writerSizeBeforeForward) {
 		// Prefer classified stream-read output before the generic
 		// upstream fallback, preserving that failure's code and message
 		// while emitting at most this selected missing error path.

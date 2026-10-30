@@ -343,6 +343,13 @@ export default {
   },
   // Pricing management
   pricing: {
+    ruleMode: '规则模式',
+    customMode: '自定义',
+    referenceMode: '映射到模型',
+    referencePlaceholder: '输入目标模型 ID',
+    referenceTarget: '目标模型',
+    referenceHint: '使用目标模型的生效配置。目标缺少数据时保持不可用。',
+    referenceInvalid: '请填写具体目标模型，且目标不能命中任何映射来源规则。',
     billingSettings: {
       title: '计费设置',
       defaultPrice: '留空使用默认价，0 表示免费',

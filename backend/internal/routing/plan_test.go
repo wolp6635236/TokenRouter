@@ -61,20 +61,45 @@ func TestRoutePlanModelChainAndAttemptSnapshots(t *testing.T) {
 	require.Equal(t, mapping, plan.Mapping())
 	require.Equal(t, "prefix/client-model", plan.Models().ClientModel)
 	require.Equal(t, "key-model", plan.Models().RequestedModel)
-	candidate, ok := plan.ResolveCandidate(provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, EnabledProtocols: []capability.ProtocolID{capability.ProtocolOpenAIResponses}})
-	require.True(t, ok)
 	rules := map[string]string{"group-model": "upstream-one", "upstream-one": "must-not-recurse"}
-	snapshot := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(rules)}
+	snapshot := provider.ProviderSnapshot{ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey, EnabledProtocols: []capability.ProtocolID{capability.ProtocolOpenAIResponses}, ModelPolicy: provider.NewModelRoutingSnapshot(rules)}
 	rules["group-model"] = "upstream-two"
-	first, matched := candidate.ResolveModel(snapshot, "group-model")
-	require.True(t, matched)
+	first, ok := plan.ResolveCandidate(snapshot)
+	require.True(t, ok)
+	require.True(t, first.ModelMappingMatched)
 	require.Equal(t, "upstream-one", first.Models.ProviderMappedModel)
 	require.True(t, first.Models.RestrictModels)
 	require.Equal(t, BillingModelSourceUpstream, first.Models.RestrictionModelSource)
-	require.Empty(t, candidate.Models.ProviderMappedModel)
 	require.Empty(t, plan.Models().ProviderMappedModel)
-	fresh := provider.ProviderSnapshot{ID: 1, ModelPolicy: provider.NewModelRoutingSnapshot(rules)}
-	second, matched := candidate.ResolveModel(fresh, "group-model")
-	require.True(t, matched)
+	snapshot.ModelPolicy = provider.NewModelRoutingSnapshot(rules)
+	second, ok := plan.ResolveCandidate(snapshot)
+	require.True(t, ok)
+	require.True(t, second.ModelMappingMatched)
 	require.Equal(t, "upstream-two", second.Models.ProviderMappedModel)
+}
+
+// TestOpenCodeCandidateResolvesMappedModelProtocol supplies aliases and distinct
+// native encodings for one model across service modes. Unknown models, disabled
+// targets, and prohibited conversions cannot enter the candidate pool.
+func TestOpenCodeCandidateResolvesMappedModelProtocol(t *testing.T) {
+	record := &provider.Record{ID: 7, Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test", "model_mapping": map[string]any{"alias": "minimax-m3", "minimax-m3": "unknown-second-hop"}}}
+	plan := Plan(PlanInput{RequestedModel: "alias", ClientProtocol: capability.ProtocolOpenAIChatCompletions})
+	candidate, ok := plan.ResolveCandidate(record.RoutingSnapshot())
+	require.True(t, ok)
+	require.Equal(t, capability.ProtocolOpenAIChatCompletions, candidate.UpstreamProtocol)
+	require.Equal(t, "minimax-m3", candidate.Models.ProviderMappedModel)
+	record.Credentials["provider_mode"] = provider.ProviderModeGo
+	candidate, ok = plan.ResolveCandidate(record.RoutingSnapshot())
+	require.True(t, ok)
+	require.Equal(t, capability.ProtocolAnthropicMessages, candidate.UpstreamProtocol)
+	blocked := Plan(PlanInput{RequestedModel: "alias", ClientProtocol: capability.ProtocolOpenAIChatCompletions, Group: &Group{ProtocolFallbacks: map[capability.ProtocolID][]capability.ProtocolID{capability.ProtocolOpenAIChatCompletions: {}}}})
+	_, ok = blocked.ResolveCandidate(record.RoutingSnapshot())
+	require.False(t, ok)
+	record.Credentials[provider.UpstreamProtocolsKey] = []string{}
+	_, ok = plan.ResolveCandidate(record.RoutingSnapshot())
+	require.False(t, ok)
+	record.Credentials[provider.UpstreamProtocolsKey] = []string{string(capability.ProtocolAnthropicMessages)}
+	unknown := Plan(PlanInput{RequestedModel: "unknown", ClientProtocol: capability.ProtocolAnthropicMessages})
+	_, ok = unknown.ResolveCandidate(record.RoutingSnapshot())
+	require.False(t, ok)
 }

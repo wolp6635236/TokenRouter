@@ -2,6 +2,7 @@ package googleforward
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -377,5 +378,28 @@ func (a *geminiExecutionAdapter) Execute(ctx context.Context, in forwardcore.Gem
 		Target:        target,
 	}, a.c.Sink())
 	result.ObservedImages = max(result.ObservedImages, a.c.Images)
+	var streamError *upstream.GeminiStreamError
+	if errors.As(err, &streamError) && ctx.Err() == nil && !result.ClientDisconnect {
+		body := streamError.Body
+		if len(body) == 0 {
+			body, _ = json.Marshal(map[string]any{"error": map[string]any{"code": streamError.Status, "message": streamError.Message}})
+		}
+		a.Health(ctx, streamError.Status, result.UpstreamHeaders, body, in)
+		committed := true
+		if state, ok := a.c.Sink().(interface{ OutputState() upstream.OutputHead }); ok {
+			committed = state.OutputState().ContentCommitted
+		}
+		a.c.SetError(streamError.Status, streamError.Message, a.Detail(body))
+		a.Observe(forwardcore.Notice{
+			Platform: a.provider.Record.Platform, ProviderID: a.provider.Record.ID, ProviderName: a.provider.Record.Name,
+			UpstreamStatusCode: streamError.Status, UpstreamRequestID: result.RequestID, Kind: "stream_error", Message: streamError.Message,
+		})
+		// Existing provider policy can retry only before real output. Once bytes
+		// have reached the client, preserve the failed attempt and end its native stream.
+		if !committed && a.ShouldFailover(streamError.Status) {
+			return result, a.Failover(streamError.Status, body, false, false)
+		}
+		err = errors.Join(err, a.c.GoogleError(streamError.Status, streamError.Message))
+	}
 	return result, err
 }

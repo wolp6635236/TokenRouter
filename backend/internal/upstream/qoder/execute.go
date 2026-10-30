@@ -309,7 +309,7 @@ func (e *Executor) Execute(ctx context.Context, input upstream.AttemptInput, sin
 			return result, err
 		}
 	} else {
-		events, readErr := ReadQoderSSEEventsContext(executionCtx, response, nil)
+		events, readErr := ReadQoderSSEEventsContext(executionCtx, response)
 		if readErr != nil {
 			// SSE reading failed before a complete protocol response was built. Revert
 			// this accepted attempt before returning the read failure to the request owner.

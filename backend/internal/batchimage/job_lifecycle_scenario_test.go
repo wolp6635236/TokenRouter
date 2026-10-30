@@ -19,11 +19,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// A batch with one image result and one provider failure crosses submission,
-// polling, indexing, capture, public listing and download before output
-// deletion. The smoke scenario shares in-memory state across those services
-// and inspects recorded funding actions and public resource filtering at each
-// stage.
+// job_lifecycle_scenario_test.go follows one successful image and one failed
+// item through public.go, processor.go, settlement.go, download.go and cleanup.go.
+// Group and provider admission close after submission; persisted jobs retain
+// their execution binding while shared in-memory records expose funding actions,
+// public resource filtering, download bytes and repeated output deletion.
 
 // The compile-time assertion keeps the smoke backend compatible with the
 // provider operations used by this lifecycle scenario.
@@ -40,9 +40,9 @@ type batchImageSmokeProvider struct {
 }
 
 // TestBatchImageMVPFlow submits a two-item batch, observes running and
-// successful provider states, then settles its indexed outcomes. It checks
-// downloads and archive contents before repeated output deletion prevents
-// both download paths.
+// successful provider states, then settles its indexed outcomes after both
+// group and provider admission close. It checks downloads and archive contents
+// before repeated output deletion prevents both download paths.
 func TestBatchImageMVPFlow(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeBatchImageRepository()
@@ -58,7 +58,6 @@ func TestBatchImageMVPFlow(t *testing.T) {
 	providerID := int64(101)
 	providerRepo := &publicBatchImageProviderRepo{providers: []providercore.Record{testBatchImageProvider(providerID, capability.ProviderTypeAPIKey)}}
 	cfg := &config.Config{BatchImage: config.BatchImageConfig{
-		Enabled:                           true,
 		MaxItemsPerJobDefault:             10,
 		MaxPromptCharsPerItem:             8000,
 		DefaultResponseMimeType:           "image/png",
@@ -101,6 +100,18 @@ func TestBatchImageMVPFlow(t *testing.T) {
 	require.Equal(t, batchimage.BatchImageHoldRequestID(submitted.ID), billing.reserves[0].RequestID)
 	require.InDelta(t, 0.3, billing.reserves[0].HoldAmount, 1e-12)
 	requireBatchImagePublicJSONHasNoInternals(t, mustMarshalBatchImageSmokeJSON(t, submitted))
+
+	// Close both creation permissions after storing the upstream identity.
+	// The remaining lifecycle must use that binding for processing, settlement,
+	// downloads and cleanup while another submission is refused before reserving funds.
+	group, err := publicSvc.GroupRepo.GetByIDLite(ctx, *owner.GroupID)
+	require.NoError(t, err)
+	group.AllowBatchImageGeneration = false
+	providerRepo.providers[0].Credentials["upstream_protocols"] = []string{}
+	_, err = publicSvc.Submit(ctx, owner, validBatchImageSubmitRequest(), "")
+	require.ErrorIs(t, err, batchimage.ErrBatchImageGroupDisabled)
+	require.Len(t, billing.reserves, 1)
+	require.Len(t, platform.submits, 1)
 
 	firstProcess, err := processor.Process(ctx, submitted.ID)
 	require.NoError(t, err)
@@ -225,6 +236,13 @@ func batchImageSmokeZipNames(reader *zip.Reader) []string {
 
 // Name returns the registered backend label used by the smoke scenario.
 func (p *batchImageSmokeProvider) Name() string { return p.name }
+
+// SupportsSubmission reuses the fixture credential rules for new jobs.
+// Tests inject provider protocol selections through candidate preparation, while
+// this adapter supplies deterministic local execution without deployment storage.
+func (p *batchImageSmokeProvider) SupportsSubmission(provider *providercore.Record) bool {
+	return p.SupportsProvider(provider)
+}
 
 // SupportsProvider accepts a present schedulable provider for the smoke
 // backend.

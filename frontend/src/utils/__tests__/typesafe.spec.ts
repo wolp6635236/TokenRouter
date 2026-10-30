@@ -59,7 +59,7 @@ describe('TypeSafe 品牌与 Jev 平台', () => {
   /**
    * A Jev API-key provider starts without usage-query configuration, then enables a
    * compatible adapter. Query availability follows that setting and protocol testing
-   * exposes the SystemOne native endpoint.
+   * exposes the fixed SystemOne endpoint.
    */
   it('默认关闭余额查询，允许管理员选用兼容适配器', () => {
     const provider = { platform: 'jev', type: 'apikey', credentials: {}, extra: {} } as Provider
@@ -67,7 +67,7 @@ describe('TypeSafe 品牌与 Jev 平台', () => {
     provider.extra = { upstream_usage_query: { enabled: true, adapter: 'sub2api' } }
     expect(isUpstreamUsageQueryEnabled(provider)).toBe(true)
     expect(providerTestProtocolPlan(provider).options).toEqual([
-      { value: 'native', label: 'SystemOne', path: '/v1/systemone' },
+      { value: 'systemone', label: 'SystemOne', path: '/v1/systemone' },
     ])
   })
 })

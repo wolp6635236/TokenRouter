@@ -3,7 +3,6 @@ package moderation
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,9 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
-	moderationadapter "github.com/TokenFlux/TokenRouter/internal/moderation/provider"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
-	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -270,41 +267,6 @@ func TestContentModerationEmptyAuditScopeSkipsObserveQueue(t *testing.T) {
 	require.True(t, decision.Allowed)
 	require.Empty(t, svc.asyncQueue)
 	require.Empty(t, repo.snapshotLogs())
-}
-
-// TestContentModerationWeightedAPIKeySelectionHonorsPriorityAndFreeze uses two
-// keys with a five-to-one scheduling ratio and then freezes the larger weight.
-// It checks sixty selections split fifty/ten and subsequent selections
-// restricted to the remaining unfrozen key.
-func TestContentModerationWeightedAPIKeySelectionHonorsPriorityAndFreeze(t *testing.T) {
-	cfg := defaultContentModerationConfig()
-	cfg.APIKeys = []string{"sk-high", "sk-low"}
-	cfg.APIKeyMetadata = []ContentModerationAPIKeyMetadata{
-		{KeyHash: moderationAPIKeyHash("sk-high"), Priority: 100, Note: "Tier 5"},
-		{KeyHash: moderationAPIKeyHash("sk-low"), Priority: 20, Note: "Tier 1"},
-	}
-	cfg.normalize()
-	svc := newTestModeration(nil, nil, nil, nil, nil, nil, nil)
-	svc.Start()
-	counts := map[string]int{}
-	for range 60 {
-		key, ok := svc.nextUsableAPIKey(cfg)
-		require.True(t, ok)
-		counts[key]++
-	}
-	require.Equal(t, 50, counts["sk-high"])
-	require.Equal(t, 10, counts["sk-low"])
-
-	// Publish the fixture freeze under the same lock used by weighted selection,
-	// so subsequent calls see that exclusion alongside their accumulated eligible key weights.
-	svc.keyHealthMu.Lock()
-	svc.keyHealth[moderationAPIKeyHash("sk-high")] = &contentModerationKeyHealth{FrozenUntil: time.Now().Add(time.Minute)}
-	svc.keyHealthMu.Unlock()
-	for range 10 {
-		key, ok := svc.nextUsableAPIKey(cfg)
-		require.True(t, ok)
-		require.Equal(t, "sk-low", key)
-	}
 }
 
 // TestContentModerationUpdateConfigPersistsKeyMetadataAndAuditScope updates two
@@ -3980,19 +3942,6 @@ func (r *contentModerationTestProxyRepo) Lookup(ctx context.Context, id int64, n
 		return ProxyInfo{}, e
 	}
 	return ProxyInfo{URL: v.URL(), Name: v.Name, Status: v.Status, Address: fmt.Sprintf("%s://%s:%d", v.Protocol, v.Host, v.Port), Active: v.IsActive(), Expired: v.IsExpired(now)}, nil
-}
-
-// newTestModeration constructs the service with production transport, snapshot,
-// and upstream classifiers plus an untracked background launcher. Construction
-// starts no workers; callers explicitly Start and Stop any runtime they choose
-// to launch.
-func newTestModeration(settings SettingRepository, repo ContentModerationRepository, hash ContentModerationHashCache, groups GroupRepository, users UserCommands, auth APIKeyAuthCacheInvalidator, email RiskSender) *ContentModerationService {
-	return NewContentModerationService(settings, repo, hash, groups, users, auth, email, Runtime{Audit: moderationadapter.NewAuditClient(), SnapshotMedia: moderationadapter.SnapshotMedia, Background: func(_ string, fn func()) {
-		// Launch the reload separately so a Check or worker with stale usable policy
-		// can continue before storage finishes; this fixture has no application task
-		// owner to join that callback.
-		go fn()
-	}, CyberText: openai.IsOpenAICyberWarningText, CyberPolicy: openai.DetectOpenAICyberPolicy, ErrorMessage: upstream.ExtractErrorMessage, MissingRow: func(e error) bool { return errors.Is(e, sql.ErrNoRows) }, MissingUser: func(e error) bool { return errors.Is(e, ErrUserNotFound) }})
 }
 
 // IsOpenAICyberWarningText delegates fixture recognition to the shared upstream

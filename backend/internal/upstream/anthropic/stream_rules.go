@@ -32,7 +32,7 @@ const ClaudeCodeNoopDeltaKeepaliveMinVersion = "2.1.193"
 // ShouldUseClaudeCodeNoopDeltaKeepalive reports whether a parsed Claude CLI
 // version selects the repository's no-op delta rule. Versions below the
 // configured minimum and unrecognized User-Agents return false, selecting
-// ordinary pings in StreamResponse.
+// ordinary pings at the HTTP output boundary.
 func ShouldUseClaudeCodeNoopDeltaKeepalive(userAgent string) bool {
 	version := ExtractCLIVersion(userAgent)
 	if version == "" {

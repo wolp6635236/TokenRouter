@@ -58,6 +58,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ProviderPlatform, ProviderType } from '@/api/admin/providers.types'
+import { platformBadgeLightClass, platformLabel as getPlatformLabel } from '@/utils/platformColors'
 import PlatformIcon from './PlatformIcon.vue'
 import GrokFreeIcon from './GrokFreeIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -106,25 +107,11 @@ interface Props {
 const props = defineProps<Props>()
 
 /**
- * platformLabel maps known provider platforms to display names and uses Gemini for the
- * remaining platform branch.
+ * platformLabel reads known display names from the shared platform catalog.
+ * Unknown identifiers keep their supplied text so the badge retains the
+ * provider identity when the catalog lacks an entry.
  */
-const platformLabel = computed(() => {
-  if (props.platform === 'anthropic') return 'Anthropic'
-  if (props.platform === 'openai') return 'OpenAI'
-  if (props.platform === 'antigravity') return 'Antigravity'
-  if (props.platform === 'qoder') return 'Qoder'
-  if (props.platform === 'grok') return 'Grok'
-  if (props.platform === 'kimi') return 'Kimi'
-  if (props.platform === 'zhipu') return 'Zhipu GLM'
-  if (props.platform === 'deepseek') return 'DeepSeek'
-  if (props.platform === 'jev') return 'Jev'
-  /**
-   * The remaining platform branch uses the Gemini label, matching the final blue
-   * platform palette used by this badge.
-   */
-  return 'Gemini'
-})
+const platformLabel = computed(() => getPlatformLabel(props.platform))
 
 /**
  * normalizedAuthMode removes case and separator differences before distinguishing
@@ -249,10 +236,11 @@ const planIconName = computed<'bolt' | null>(() => {
   return null
 })
 /**
- * platformClass assigns the platform segment palette, using the blue Gemini palette
- * for its final platform branch.
+ * platformClass assigns the platform segment palette and uses the shared neutral
+ * badge colors for OpenCode. Platforms without a dedicated branch use blue.
  */
 const platformClass = computed(() => {
+  if (props.platform === 'opencode') return platformBadgeLightClass(props.platform)
   if (props.platform === 'anthropic') {
     return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
   }
@@ -285,6 +273,7 @@ const platformClass = computed(() => {
  * parts read as one badge.
  */
 const typeClass = computed(() => {
+  if (props.platform === 'opencode') return platformBadgeLightClass(props.platform)
   if (props.platform === 'anthropic') {
     return 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400'
   }

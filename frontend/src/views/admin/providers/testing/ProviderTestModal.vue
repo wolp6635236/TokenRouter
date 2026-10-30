@@ -385,10 +385,11 @@ const hasProviderBrandIcon = computed(() =>
 )
 
 /**
- * Decision provider state selects the SystemOne form and receives its validated payload,
- * including null while the form is invalid.
+ * Decision state follows the selected SystemOne protocol, which Jev fixes and other providers
+ * may choose among their enabled protocols. It selects the SystemOne form and receives its
+ * validated payload, including null while the form is invalid.
  */
-const isDecisionProvider = computed(() => props.provider?.platform === 'jev')
+const isDecisionProvider = computed(() => testProtocol.value === 'systemone')
 const decisionPayload = ref<SystemOneTestPayload | null>(null)
 
 /**

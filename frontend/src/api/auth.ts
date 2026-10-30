@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { buildApiUrl } from './url'
 import { refreshAuthTokens, type RefreshTokenResponse } from './tokenRefresh'
 export type { RefreshTokenResponse } from './tokenRefresh'
 import type {
@@ -83,15 +84,13 @@ export type GoogleOneTapResponse =
     }
 
 /**
- * buildOAuthLoginStartURL constructs an OAuth start URL using the configured API
- * base. It removes one trailing slash and encodes the supplied query parameters;
- * the default base applies when the environment value is absent.
+ * buildOAuthLoginStartURL builds a navigation URL on the shared browser API entry.
+ * The same base serves POST starts and callback suggestions; query parameters are
+ * encoded together so nested return URLs remain one parameter.
  */
 export function buildOAuthLoginStartURL(request: OAuthLoginStart): string {
-  const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api/v1'
-  const normalized = apiBase.replace(/\/$/, '')
   const query = new URLSearchParams(request.params).toString()
-  const path = `${normalized}/auth/oauth/${request.provider}/start`
+  const path = buildApiUrl(`/auth/oauth/${request.provider}/start`)
   return query ? `${path}?${query}` : path
 }
 

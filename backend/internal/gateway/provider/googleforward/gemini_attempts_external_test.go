@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +67,34 @@ type rateLimit429ProviderRepoStub struct {
 	rateLimitCalls                  int       // provider cooldown write count
 	lastRateLimitID                 int64     // last cooled provider identifier
 	lastRateLimitReset              time.Time // last cooldown expiration time
+}
+
+// TestGeminiNativeStreamFailurePreservesUsage retains accounting through transport loss.
+// Sparse usage must survive the failed attempt, while delivered content prevents
+// failover and the native client receives exactly one structured stream error.
+func TestGeminiNativeStreamFailurePreservesUsage(t *testing.T) {
+	payload := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n" +
+		"data: {\"usageMetadata\":{\"candidatesTokenCount\":5}}\n\n"
+	stub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}},
+		Body: io.NopCloser(io.MultiReader(strings.NewReader(payload), iotest.ErrReader(io.ErrUnexpectedEOF))),
+	}}
+	svc := newGeminiFixture(geminiDependencies{httpUpstream: stub, cfg: &googleforward.Options{}})
+	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 203, Platform: capability.PlatformGemini, Type: capability.ProviderTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key"}}}
+	c, recorder := newGeminiNativeTestContext(t)
+	result, err := svc.ForwardNative(context.Background(), gatewayhttp.NewGoogleBoundary(c, svc.Options, false), provider, "gemini-2.5-flash", "streamGenerateContent", true, []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.NotNil(t, result)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+	var failover *forwardcore.UpstreamFailoverError
+	require.False(t, errors.As(err, &failover))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "partial")
+	require.Equal(t, 1, strings.Count(recorder.Body.String(), `"error"`))
+	failure, ok := gatewayhttp.GetOpsStreamError(c)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadGateway, failure.IntendedStatus)
 }
 
 // TestParseGeminiRateLimitResetTime_QuotaResetDelay_RoundsUp parses a

@@ -13,6 +13,9 @@ import type { ModelAttributes } from '@/api/modelAttributes.types'
  * criteria in an attribute profile.
  */
 export interface AttributeRule {
+  // reference_model selects another model in this profile. Supplied targets require
+  // empty attributes; omission retains the rule's ordinary attribute overrides.
+  reference_model?: string // Same-profile attribute reference.
   id?: string // Record identifier value.
   models: string[] // Model identifier list.
   attributes: ModelAttributes // Resolved model attributes.
@@ -41,6 +44,7 @@ export interface AttributeRouteMatch {
  * attributes and their resolution sources.
  */
 export interface ResolvedAttributes {
+  reference_model?: string // Effective attribute reference.
   target: AttributeRouteMatch & {
     model: string // Requested model identifier.
     catalog_provider?: string // Catalog provider identifier.

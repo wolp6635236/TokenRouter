@@ -58,7 +58,7 @@ func BuildProviderForCreate(input *CreateProviderInput, providerExtra map[string
 	delete(providerExtra, OllamaCloudUsageSessionExtraKey)
 	delete(providerExtra, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(providerExtra, OllamaCloudUsageSnapshotExtraKey)
-	delete(providerExtra, CNUsageMonitorSnapshotExtraKey)
+	delete(providerExtra, UsageMonitorSnapshotExtraKey)
 	// Fingerprint preparation strips caller-supplied seeds and creates a seed only
 	// for modes requiring one, so its value comes from the creation factory rather
 	// than an imported seed entry.
@@ -77,7 +77,7 @@ func BuildProviderForCreate(input *CreateProviderInput, providerExtra map[string
 		Status:      StatusActive,
 		Schedulable: true,
 	}
-	if err := NormalizeCNProviderCredentials(provider, true); err != nil {
+	if err := NormalizeTextEndpointCredentials(provider, true); err != nil {
 		return nil, err
 	}
 	if err := NormalizeOpenAIAPIKeyConfiguration(provider); err != nil {

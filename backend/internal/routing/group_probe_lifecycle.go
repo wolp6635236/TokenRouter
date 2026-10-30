@@ -53,6 +53,7 @@ type ProbeExecutionResult struct {
 // GroupProbeTarget identifies a selected provider and its group-mapped
 // execution model.
 type GroupProbeTarget struct {
+	RequestedModel string // original group probe model
 	// Attributes retains the selected attempt's catalogue and group profile for
 	// provider testing. Automatic probes leave it nil and initialize testing normally.
 	Attributes *ModelAttributeSession

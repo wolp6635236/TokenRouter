@@ -19,6 +19,11 @@ import (
 	xai "github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 )
 
+// model_catalogue_test.go checks platform model endpoints, authentication, and
+// catalogue parsing through controlled requests and transport responses. Fixtures
+// retain prepared requests so tests can inspect credentials and destinations
+// before any external service is involved.
+
 // modelCatalogueTransportFixture captures one model request and returns the
 // configured response object.
 type modelCatalogueTransportFixture struct {
@@ -30,10 +35,11 @@ type modelCatalogueTransportFixture struct {
 	lastReq *http.Request // captured model catalogue request
 }
 
-// TestBuildUpstreamModelsRequest_CNProviders selects CN pay-as-you-go and
-// coding credentials without custom roots. Each request must use its platform's
-// OpenAI-format models endpoint and the configured bearer key.
-func TestBuildUpstreamModelsRequest_CNProviders(t *testing.T) {
+// TestBuildUpstreamModelsRequest_KimiZhipuDeepSeek selects Kimi, Zhipu, and
+// DeepSeek pay-as-you-go and coding credentials without custom roots. Each
+// request must use its platform's OpenAI-format models endpoint and the
+// configured bearer key.
+func TestBuildUpstreamModelsRequest_KimiZhipuDeepSeek(t *testing.T) {
 	t.Parallel()
 
 	svc := &ModelCatalogue{Options: upstreamModelSyncTestConfig()}
@@ -644,4 +650,40 @@ func TestJevModelSyncUsesNames(t *testing.T) {
 	ids, err := extractJevModelIDs([]byte(`{"models":[{"name":"jev-preview","description":"preview"},{"name":"jev-latest","release_date":"2026-09-15"}]}`))
 	require.NoError(t, err)
 	require.Equal(t, []string{"jev-latest", "jev-preview"}, ids)
+}
+
+// TestOpenCodeModelSyncUsesModeServiceRoot builds API-key model queries for both
+// modes and a custom root. The selected root stays independent from inference
+// protocol overrides and never adds a protocol family to the model-list URL.
+func TestOpenCodeModelSyncUsesModeServiceRoot(t *testing.T) {
+	catalogue := &ModelCatalogue{Options: ModelCatalogueOptions{ValidateURL: func(raw string) (string, error) { return raw, nil }}}
+	for _, tc := range []struct{ mode, base, want string }{
+		{"payg", "", "https://opencode.ai/inference/v1/models"},
+		{"go", "", "https://opencode.ai/inference/go/v1/models"},
+		{"go", "https://relay.example/prefix", "https://relay.example/prefix/v1/models"},
+	} {
+		value := &providercore.Record{Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test", "provider_mode": tc.mode, "base_url": tc.base, "api_base_urls": map[string]any{"responses": "https://elsewhere.example/v1"}}}
+		req, err := catalogue.buildUpstreamModelsRequest(t.Context(), value)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, req.URL.String())
+		require.Equal(t, "Bearer test", req.Header.Get("Authorization"))
+	}
+}
+
+// TestOpenCodeModelSyncNormalizesFinalAuthentication supplies whitespace around
+// a validated API key. The completed model request contains a legal normalized
+// Authorization value after provider overrides have been applied.
+func TestOpenCodeModelSyncNormalizesFinalAuthentication(t *testing.T) {
+	catalogue := &ModelCatalogue{Options: ModelCatalogueOptions{ValidateURL: func(raw string) (string, error) { return raw, nil }}}
+	value := &providercore.Record{
+		Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey,
+		Credentials: map[string]any{"api_key": " \nfixture-key\r\n"},
+	}
+	require.NoError(t, providercore.ValidateOpenCodeCredentials(value))
+	req, err := catalogue.buildUpstreamModelsRequest(t.Context(), value)
+	require.NoError(t, err)
+	require.Equal(t, "Bearer fixture-key", req.Header.Get("Authorization"))
+	require.NotContains(t, req.Header.Get("Authorization"), "\n")
+	require.Empty(t, req.Header.Get("X-Api-Key"))
+	require.Empty(t, req.Header.Get("X-Goog-Api-Key"))
 }

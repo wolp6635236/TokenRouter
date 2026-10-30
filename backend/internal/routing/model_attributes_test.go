@@ -88,12 +88,13 @@ func TestModelAttributesRequestLanguage(t *testing.T) {
 	}}
 	config := &ModelAttributeConfig{Status: StatusActive, Rules: []ModelAttributeRule{
 		{Models: []string{"model"}, Attributes: modelcatalog.Attributes{DisplayNameLocalization: &content}},
+		{Models: []string{"alias"}, ReferenceModel: "model"},
 	}}
 	service := ModelAttributeService{
 		Repo:    &attributeRepoFixture{config: config, groups: map[int64]*ModelAttributeConfig{1: config}},
 		Catalog: ModelAttributeCatalog{Lookup: func(string) modelcatalog.Attributes { return modelcatalog.Attributes{} }},
 	}
-	models := []RequestableModel{{ID: "model"}}
+	models := []RequestableModel{{ID: "model"}, {ID: "alias"}}
 	for code, want := range map[string]string{"en": "English name", "zh-Hans": "中文名称"} {
 		ctx := locale.WithLanguage(context.Background(), code)
 		single, err := service.ResolveModels(ctx, 1, models)
@@ -105,6 +106,9 @@ func TestModelAttributesRequestLanguage(t *testing.T) {
 		marketplace, err := service.ResolveMarketplaceGroups(ctx, map[int64][]RequestableModel{1: models})
 		require.NoError(t, err)
 		require.Equal(t, single["model"], marketplace[1]["model"].Presentation)
+		require.Equal(t, single["model"], single["alias"])
+		require.Equal(t, single["alias"], batch[1]["alias"])
+		require.Equal(t, single["alias"], marketplace[1]["alias"].Presentation)
 	}
 }
 
@@ -225,8 +229,8 @@ func TestAttributeRulesSeparateRoutesAndStableIDs(t *testing.T) {
 	}}
 	require.NoError(t, (&ModelAttributeService{Repo: &attributeRepoFixture{}}).Save(context.Background(), config))
 	require.NotEqual(t, config.Rules[0].ID, config.Rules[1].ID)
-	require.Equal(t, one, *config.match("model", nil, modelcatalog.Target{Platform: "openai"}).OutputLimit)
-	require.Equal(t, two, *config.match("model", nil, modelcatalog.Target{Platform: "grok"}).OutputLimit)
+	require.Equal(t, one, *config.matchRule("model", nil, modelcatalog.Target{Platform: "openai"}).Attributes.OutputLimit)
+	require.Equal(t, two, *config.matchRule("model", nil, modelcatalog.Target{Platform: "grok"}).Attributes.OutputLimit)
 	config.Rules[0].Match = nil
 	config.Rules[1].Match = &ModelAttributeMatch{}
 	require.Error(t, (&ModelAttributeService{Repo: &attributeRepoFixture{}}).Save(context.Background(), config))

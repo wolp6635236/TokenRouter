@@ -51,6 +51,9 @@ type RouteAccess struct {
 
 // RouteMiddleware contains authentication, settings, and observation callbacks assembled by app.
 type RouteMiddleware struct {
+	// DownstreamKeepalive installs text SSE liveness after request timing. Nil
+	// disables this optional middleware for route fixtures and alternate assembly.
+	DownstreamKeepalive gin.HandlerFunc
 	// TTFTMode snapshots the global upstream event selection before request execution.
 	TTFTMode func(context.Context) string
 

@@ -15,22 +15,16 @@ import (
 // platform and credential-type eligibility before outgoing overrides are resolved.
 const credKeyHeaderOverrideEnabled = "header_override_enabled"
 
-// IsHeaderOverrideEligible reports whether administrator Header overrides apply
-// to this provider. API Keys qualify on Anthropic, OpenAI, Kimi, Zhipu,
-// DeepSeek, Jev and Grok; Grok OAuth also qualifies, while nil records return
-// false.
+// IsHeaderOverrideEligible reports whether the platform declares Header overrides
+// for the record's credential type. API-key and OAuth choices are independent;
+// nil records, undeclared platforms, and other credential types return false.
 func (r *Record) IsHeaderOverrideEligible() bool {
 	if r == nil {
 		return false
 	}
-	switch r.Platform {
-	case PlatformAnthropic, PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformJev:
-		return r.Type == ProviderTypeAPIKey
-	case PlatformGrok:
-		return r.Type == ProviderTypeAPIKey || r.Type == ProviderTypeOAuth
-	default:
-		return false
-	}
+	rules := r.rules()
+	return (r.Type == ProviderTypeAPIKey && rules.apiKeyHeaderOverrides) ||
+		(r.Type == ProviderTypeOAuth && rules.oauthHeaderOverrides)
 }
 
 // IsHeaderOverrideEnabled reports whether an eligible provider has a true

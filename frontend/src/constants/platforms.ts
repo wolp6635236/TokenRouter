@@ -1,9 +1,9 @@
 import type { ProviderPlatform } from '@/api/admin/providers.types'
 
 // platforms.ts defines the concrete provider-platform options used by administration
-// filters. Each entry pairs a provider API identifier with its display label, and the
-// typed catalog lets downstream controls derive consistent choices while preserving
-// their declared order.
+// filters and platform labels. Each entry pairs a provider API identifier with its
+// display label, and the typed catalog lets downstream controls derive consistent
+// choices and names while preserving their declared order.
 
 // PlatformOption pairs a selectable platform identifier with display data and optional
 // extensions.
@@ -22,7 +22,8 @@ export const CONCRETE_PLATFORM_OPTIONS = [
   { value: 'qoder', label: 'Qoder' },
   { value: 'grok', label: 'Grok' },
   { value: 'kimi', label: 'Kimi' },
-  { value: 'zhipu', label: 'Zhipu' },
+  { value: 'zhipu', label: 'Zhipu GLM' },
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'jev', label: 'Jev' },
+  { value: 'opencode', label: 'OpenCode' },
 ] as const satisfies readonly PlatformOption<ProviderPlatform>[]

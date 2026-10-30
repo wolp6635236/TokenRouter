@@ -6,10 +6,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCNProviderResponseIndicatesInsufficientBalance checks Chinese and
-// English phrases in several raw response shapes. It also checks that
-// unrelated quota or rate-limit wording and empty input stay unmatched.
-func TestCNProviderResponseIndicatesInsufficientBalance(t *testing.T) {
+// TestResponseIndicatesInsufficientBalance checks Chinese and English phrases
+// in several raw response shapes. It also checks that unrelated quota or
+// rate-limit wording and empty input stay unmatched.
+func TestResponseIndicatesInsufficientBalance(t *testing.T) {
 	t.Parallel()
 	positive := []string{
 		`{"error":{"message":"余额不足"}}`,
@@ -19,7 +19,7 @@ func TestCNProviderResponseIndicatesInsufficientBalance(t *testing.T) {
 		`"no enough balance"`,
 	}
 	for _, body := range positive {
-		require.True(t, CNResponseIndicatesInsufficientBalance([]byte(body)), body)
+		require.True(t, ResponseIndicatesInsufficientBalance([]byte(body)), body)
 	}
 	negative := []string{
 		`{"error":{"message":"rate limit exceeded"}}`,
@@ -27,7 +27,7 @@ func TestCNProviderResponseIndicatesInsufficientBalance(t *testing.T) {
 		``,
 	}
 	for _, body := range negative {
-		require.False(t, CNResponseIndicatesInsufficientBalance([]byte(body)), body)
+		require.False(t, ResponseIndicatesInsufficientBalance([]byte(body)), body)
 	}
 }
 

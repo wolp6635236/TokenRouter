@@ -25,8 +25,9 @@ type ModelMappingDefaults struct {
 	// Models supplies finite route candidates and Spark quota models. A nil function
 	// leaves platform enumeration empty and gives Spark shadows an empty scope.
 	Models func(*Record) []string
-	// Antigravity must be callable when an Antigravity record needs defaults.
-	// Explicit string mappings bypass it; its returned map is copied before use.
+	// Antigravity supplies defaults for Antigravity records without usable saved
+	// mappings. Explicit string mappings bypass it, its returned map is copied
+	// before use, and nil leaves those records with no mapping.
 	Antigravity func() map[string]string
 }
 
@@ -55,8 +56,14 @@ func ResolveForwardMappedModel(value *Record, requested string, defaults ModelMa
 		return ""
 	}
 	mapped, matched := ResolveMappedModel(ResolveModelMapping(value, defaults), requested)
-	// Missing and blank targets keep the request's spelling so downstream platform
-	// normalization receives the caller's model rather than an empty mapping value.
+	return ForwardMappedTarget(requested, mapped, matched)
+}
+
+// ForwardMappedTarget turns one mapping result into the model to forward.
+// A miss or a whitespace-only target returns requested exactly as supplied, so
+// platform normalization receives the caller's model instead of an empty
+// value; a usable target is returned trimmed.
+func ForwardMappedTarget(requested, mapped string, matched bool) string {
 	if !matched || strings.TrimSpace(mapped) == "" {
 		return requested
 	}
@@ -65,8 +72,8 @@ func ResolveForwardMappedModel(value *Record, requested string, defaults ModelMa
 
 // ResolveModelMapping returns caller-owned string mappings for a nonnil record.
 // Antigravity uses a copied default map when credentials, the mapping container,
-// or all string entries are absent. Its default factory must be callable on those
-// paths; other platforms return nil.
+// or all string entries are absent, and a nil default factory yields no mapping
+// on those paths; other platforms return nil.
 //
 // Any string-valued entry selects the entire configured map, including an empty
 // target. Nonstring entries are skipped, keys and targets retain their spelling,
@@ -78,13 +85,13 @@ func ResolveModelMapping(a *Record, defaults ModelMappingDefaults) map[string]st
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
 	if a.Credentials == nil {
 		if a.Platform == PlatformAntigravity {
-			return maps.Clone(defaults.Antigravity())
+			return defaults.antigravityMapping()
 		}
 		return nil
 	}
 	if len(rawMapping) == 0 {
 		if a.Platform == PlatformAntigravity {
-			return maps.Clone(defaults.Antigravity())
+			return defaults.antigravityMapping()
 		}
 		return nil
 	}
@@ -102,7 +109,16 @@ func ResolveModelMapping(a *Record, defaults ModelMappingDefaults) map[string]st
 	// A populated raw map can contain only nonstring values. Treat that unusable
 	// configuration like an absent mapping so Antigravity still receives defaults.
 	if a.Platform == PlatformAntigravity {
-		return maps.Clone(defaults.Antigravity())
+		return defaults.antigravityMapping()
 	}
 	return nil
+}
+
+// antigravityMapping returns a copied Antigravity default map, or nil when the
+// caller supplied no default factory, such as a snapshot of saved mappings only.
+func (d ModelMappingDefaults) antigravityMapping() map[string]string {
+	if d.Antigravity == nil {
+		return nil
+	}
+	return maps.Clone(d.Antigravity())
 }

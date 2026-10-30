@@ -371,6 +371,38 @@ describe('ProviderUpstreamUsageCell', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  // An OpenCode Go observation includes an over-limit five-hour window and two
+  // longer windows. The cell preserves utilization and shows the vendor's rate-limit status.
+  it('renders Go percentage windows and rate-limited status', () => {
+    const wrapper = mountCell({
+      provider: { ...provider(), platform: 'opencode', credentials: { provider_mode: 'go' } },
+      result: {
+        provider_id: 17,
+        adapter: 'opencode_go',
+        observed_at: '2026-10-26T00:00:00Z',
+        provider: 'opencode',
+        mode: 'limits',
+        unit: 'PERCENT',
+        limits: [
+          {
+            name: '5h',
+            used: 125,
+            limit: 100,
+            remaining: 0,
+            status: 'rate-limited',
+            reset_at: '2026-10-26T05:00:00Z',
+          },
+          { name: 'weekly', used: 30, limit: 100, remaining: 70 },
+          { name: 'monthly', used: 10, limit: 100, remaining: 90 },
+        ],
+      },
+    })
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(3)
+    expect(wrapper.text()).toContain('5h|125|2026-10-26T05:00:00Z')
+    expect(wrapper.text()).toContain('admin.providers.upstreamUsage.status.rateLimited')
+    expect(wrapper.text()).not.toContain('PERCENT')
+  })
+
   // A Zhipu API Key account uses pay-as-you-go mode. The upstream data region
   // and query button are both absent for that unsupported query mode.
   it('智谱 payg 明确显示不支持且不提供查询按钮', () => {

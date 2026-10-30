@@ -296,14 +296,14 @@ func GetInboundEndpoint(c *gin.Context) string {
 
 // GetUpstreamEndpoint returns the actual endpoint when recorded, otherwise deriving it
 // from the inbound request and selected provider platform.
-// Callers provide a nonnil HTTP context for the fallback lookup. OpenAI, Grok,
-// and CN providers first consult the OpenAI runtime override, then the generic
-// attempt override; other platforms consult the generic override directly.
+// Callers provide a nonnil HTTP context for the fallback lookup. OpenAI-compatible
+// platforms first consult the OpenAI runtime override, then the generic attempt
+// override; other platforms consult the generic override directly.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
 	// Runtime endpoint state takes precedence over inbound-path inference.
 	// A force_chat_completions failure may have no ForwardResult, so this state is
 	// needed to avoid reporting the inbound Responses path as the upstream endpoint.
-	if platform == capability.PlatformOpenAI || platform == capability.PlatformGrok || providererrors.IsCNProvider(platform) {
+	if providererrors.IsOpenAICompatible(platform) {
 		if endpoint := GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
 			return endpoint
 		}

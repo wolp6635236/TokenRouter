@@ -84,11 +84,11 @@ func (p mediaHTTPAdapter) ModerateSystemOne(c *gin.Context, log *zap.Logger, mod
 	return true
 }
 
-// Select captures a Jev execution candidate under the current Key group and
+// Select captures a SystemOne execution candidate under the current Key group and
 // exclusions. An absent selection/provider yields a zero snapshot with its
 // error; a valid candidate updates request Ops identity before returning.
 func (p *systemOneRun) Select(ctx context.Context, excluded map[int64]struct{}) (provider.ProviderSnapshot, error) {
-	selection, _, err := p.h.bindings.Common.Selection.SelectProviderWithSchedulerForCapability(ctx, p.key.GroupID, "", "", p.input.Model, excluded, egress.OpenAIUpstreamTransportHTTPSSE, "", false, false, provider.PlatformJev)
+	selection, _, err := p.h.bindings.Common.Selection.SelectProviderWithSchedulerForCapability(ctx, p.key.GroupID, "", "", p.input.Model, excluded, egress.OpenAIUpstreamTransportHTTPSSE, "", false, false, "")
 	p.selection = selection
 	if selection == nil || selection.Provider == nil {
 		return provider.ProviderSnapshot{}, err
@@ -202,7 +202,7 @@ func (p *systemOneRun) MissingUsage(_ context.Context, result upstream.AttemptRe
 	value := p.selection.Provider.Record
 	p.log.Warn("systemone.usage_invalid", zap.Int64("provider_id", value.ID), zap.String("upstream_request_id", result.RequestID))
 	gatewayhttp.AppendOpsUpstreamError(p.c, ops.OpsUpstreamErrorEvent{
-		Platform:           provider.PlatformJev,
+		Platform:           value.Platform,
 		ProviderID:         value.ID,
 		ProviderName:       value.Name,
 		UpstreamStatusCode: http.StatusOK,

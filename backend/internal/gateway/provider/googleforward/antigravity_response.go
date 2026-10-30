@@ -38,10 +38,12 @@ func (s *Antigravity) antigravityResponseAdapter(c *attempt) *antigravity.Respon
 		IsFailover:    func(err error) bool { var value *forwardcore.UpstreamFailoverError; return errors.As(err, &value) },
 		MarkCommitted: func() { c.Commit() },
 	}
+	if c != nil && c.Output != nil {
+		opts.Context = c.RequestContext()
+	}
 	if s.Options.Configured {
 		opts.MaxLineSize = s.Options.MaxLineSize
 		opts.StreamDataIntervalTimeout = s.Options.StreamInterval
-		opts.StreamKeepaliveInterval = s.Options.StreamKeepalive
 	}
 	return &antigravity.ResponseAdapter{Options: opts}
 }

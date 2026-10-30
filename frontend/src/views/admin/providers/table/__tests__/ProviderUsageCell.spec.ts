@@ -83,6 +83,36 @@ describe('ProviderUsageCell', () => {
     })
   })
 
+  // OpenCode payg and disabled Go providers still have local requests and token
+  // statistics. Hiding upstream controls must leave those local observations visible.
+  it.each(['payg', 'disabled'])(
+    'retains local OpenCode statistics for %s queries',
+    async (mode) => {
+      const requestUpstreamUsage = vi.fn()
+      const wrapper = mount(ProviderUsageCell, {
+        props: {
+          provider: makeProvider({
+            platform: 'opencode',
+            type: 'apikey',
+            credentials: { provider_mode: mode === 'payg' ? 'payg' : 'go' },
+            extra: { upstream_usage_query: { enabled: mode !== 'disabled' } },
+          }),
+          todayStats: { requests: 12, tokens: 345, cost: 1, standard_cost: 1, user_cost: 2 },
+          requestUpstreamUsage,
+        },
+        global: { stubs: { UsageProgressBar: true, ProviderQuotaInfo: true } },
+      })
+      await flushPromises()
+      expect(wrapper.get('[data-stat="requests"]').text()).toContain('12')
+      expect(wrapper.get('[data-stat="tokens"]').text()).toContain('345')
+      expect(wrapper.find('[data-testid="provider-upstream-usage"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('admin.providers.usageWindow.activeQuery')
+      expect(requestUpstreamUsage).not.toHaveBeenCalled()
+      expect(getUsage).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
   // Monthly-only quotas are configured in rolling and fixed modes. Both
   // display twenty-five percent usage, with rolling reset calculated from the
   // start and fixed reset taken from its timestamp.

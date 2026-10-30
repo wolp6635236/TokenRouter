@@ -33,7 +33,7 @@ Grok 的原生协议集合包括 HTTP Responses、Chat、Images、视频和 Voic
 
 原生 Responses 在同一提供商内，保留一次密文和 Compact 的解码恢复；Chat 转 Responses 和图片辅助请求只交换一次。HTTP 提交、关闭重试窗口、语义输出和 TTFT 是四个独立的观测。执行结果可以和错误同时存在，Grok 的失败入口按自己的规则判断能否结算；只看到响应 ID、前导事件或部分输出，不足以执行"成功之后"才做的操作。
 
-Grok Responses 的上游可能插入严格客户端不认识的 `event: ping` 帧。流式转发会把 data 里没有声明冲突事件类型的 ping，改写成 `: ping` 的 SSE 注释：连接保持活跃，Grok CLI 和 Codex CLI 也不会因此中断。普通事件、带未知字段的帧和结尾的用量事件，原样进入公共的流处理链路。
+Grok 的 `event: ping` 按通用规则在上游一侧丢弃，下游连接由统一组件维护，详见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)。JSON type 声明实际业务事件时保留该数据；未知字段、缓冲上限和不完整帧使用通用过滤器的保守放行规则。
 
 Responses WebSocket 是 Grok 和 OpenAI 的原生传输能力，兼容 Responses 的开关不会把它扩展到其他平台。图片和视频由独立的媒体资格和分组策略控制，与文本协议集合无关。
 

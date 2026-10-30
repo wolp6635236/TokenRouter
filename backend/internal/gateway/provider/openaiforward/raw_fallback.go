@@ -227,7 +227,8 @@ func ResponsesViaRawChat(ctx context.Context, body []byte, p RawFallbackPorts) (
 	}
 	// Usage records use effort from the final Chat request after conversion and policy processing.
 	reasoningEffort := p.EffectiveEffort(chatBody, body, upstreamModel, billingModel, originalModel)
-	// Record a default display effort for supported CN models with thinking enabled and no explicit effort.
+	// Record a default display effort for supported Kimi, Zhipu, and DeepSeek
+	// models with thinking enabled and no explicit effort.
 	reasoningEffort = p.ThinkingFallback(reasoningEffort, chatBody, billingModel)
 	if serviceTier == nil {
 		serviceTier = p.ServiceTier(chatBody)

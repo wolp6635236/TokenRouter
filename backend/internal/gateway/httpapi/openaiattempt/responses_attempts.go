@@ -31,9 +31,9 @@ import (
 // their retry and completion outcomes.
 // Responses attempts retain canonical request input while providers, resource
 // callbacks, and observed results change through a serial text loop. A selected
-// HTTP continuation target needs API-key credentials; unsuitable credentials
-// return a skip result with their acquisition released, allowing another
-// provider to receive the intact continuation input.
+// HTTP continuation target needs eligible native Responses API-key credentials.
+// Unsuitable routes release acquired capacity and return a skip result; the
+// selector keeps an immutable continuation bound to its originating provider.
 //
 // Forwarding releases provider capacity before recording Cyber effects and
 // exposing its outcome. Adjusted output size distinguishes registered
@@ -126,7 +126,7 @@ type responsesAttemptBridge struct {
 	// text loop chooses completion handling.
 	result *forwardcore.OpenAIResult
 	// writerSizeBeforeForward measures adjusted output before this
-	// exchange. Compact heartbeat subtraction makes RetryReady compare
+	// exchange. Heartbeat subtraction makes RetryReady compare
 	// meaningful bytes rather than committed keepalive traffic.
 	writerSizeBeforeForward int
 	// cyberPolicyHandled and wroteFallback retain different terminal
@@ -148,11 +148,12 @@ type responsesAttemptBridge struct {
 // target is retained for acquisition, forwarding, scheduling observations, and
 // cleanup.
 //
-// HTTP previous_response_id requires an OpenAI API-key provider in this
-// adapter. Other selected credentials release any selection callback and return
-// a classified Skip outcome so the loop can try another provider with
-// continuation input intact. Eligible targets receive a retained pool-session
-// seed and selected-provider observations.
+// HTTP previous_response_id requires an eligible native Responses API-key
+// route. Other selected routes release any selection callback and return
+// a classified Skip outcome. Selection retains the originating provider for
+// immutable HTTP continuations, so a rejected binding cannot send its response
+// reference through another credential. Eligible targets receive a retained
+// pool-session seed and selected-provider observations.
 func (b *responsesAttemptBridge) Select(excluded map[int64]struct{}) (textflow.ResponseSelection, error) {
 	b.reqLog.Debug("openai.provider_selecting", zap.Int("excluded_provider_count", len(excluded)))
 	var scheduleDecision scheduler.PlatformDecision
@@ -192,12 +193,9 @@ func (b *responsesAttemptBridge) Select(excluded map[int64]struct{}) (textflow.R
 		zap.Float64("load_skew", scheduleDecision.LoadSkew),
 	)
 	b.provider = b.selection.Provider
-	if b.previousResponseID != "" && !b.provider.View().IsOpenAIApiKey() {
-		// This HTTP continuation adapter requires an OpenAI API-key
-		// target. Release the rejected selection before returning Skip
-		// so another target receives the continuation input retained
-		// for this request.
-
+	if b.previousResponseID != "" && !gatewaycapture.ExecutionProtocolTarget(b.provider).SupportsHTTPResponsesContinuation() {
+		// Continuation references require an eligible native Responses route.
+		// Release the rejected target so failed admission cannot retain provider capacity.
 		if b.selection.ReleaseFunc != nil {
 			b.selection.ReleaseFunc()
 			b.selection.ReleaseFunc = nil
@@ -208,7 +206,7 @@ func (b *responsesAttemptBridge) Select(excluded map[int64]struct{}) (textflow.R
 			Scope:            forwardcore.GatewayFailureScopeRequest,
 			Reason:           forwardcore.OpenAIHTTPContinuationUnsupportedReason,
 			ClientStatusCode: http.StatusBadRequest,
-			ClientMessage:    "previous_response_id requires an OpenAI API-key provider for HTTP requests",
+			ClientMessage:    "previous_response_id requires a native Responses API-key provider for HTTP requests",
 		}
 		b.reqLog.Debug("openai.provider_skipped_http_continuation_unsupported",
 			zap.Int64("provider_id", b.provider.Record.ID),
@@ -288,7 +286,7 @@ func (b *responsesAttemptBridge) Acquire() bool {
 // capture, while the bridge retains provider and result metadata for those
 // later steps.
 //
-// Adjusted pre-forward output size excludes registered Compact heartbeat bytes.
+// Adjusted pre-forward output size excludes all recorded heartbeat bytes.
 // Response timing subtracts a positive upstream phase only when total
 // forwarding duration exceeds it; otherwise it retains the full duration.
 // Result presence, images, native partial usage, HTTP commitment, and
@@ -298,10 +296,10 @@ func (b *responsesAttemptBridge) Forward() textflow.ResponseOutcome {
 	var err error
 	gatewayhttp.SetOpsLatencyMs(b.c, gatewayhttp.OpsRoutingLatencyMsKey, time.Since(b.routingStart).Milliseconds())
 	forwardStart := time.Now()
-	// Registered Compact heartbeat bytes can commit headers before usable
+	// Recorded heartbeat bytes can commit headers before usable
 	// output. Subtract those bytes here so later retry readiness compares
 	// the actual exchange output.
-	b.writerSizeBeforeForward = gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(b.c)
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	// A managed-mode provider after passthrough needs separately derived
 	// reasoning input. Rebuild from canonical bytes so a previous
 	// provider's sanitation does not replace future input.
@@ -514,7 +512,7 @@ func (b *responsesAttemptBridge) OtherFailure(err error) {
 	// Warning handling can emit terminal JSON or response.failed. Recheck
 	// the communicated-error and adjusted-size evidence so supplying a
 	// fallback does not duplicate that output.
-	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || gatewayhttp.OpenAICompactKeepaliveAdjustedWrittenSize(b.c) == b.writerSizeBeforeForward) {
+	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) == b.writerSizeBeforeForward) {
 		b.wroteFallback = b.binding().ensureOpenAIForwardErrorResponse(b.c, *b.streamStarted, err)
 	}
 	b.fields = []zap.Field{

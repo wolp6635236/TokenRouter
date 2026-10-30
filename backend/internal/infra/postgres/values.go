@@ -3,6 +3,7 @@ package postgres
 import (
 	"database/sql"
 	"strings"
+	"unicode/utf8"
 )
 
 // values.go converts optional IDs, truncates diagnostic text, and escapes
@@ -32,9 +33,16 @@ func TruncateText(s string, max int) string {
 		return s
 	}
 	runes := []rune(s)
+	encodedLength := 0
+	for _, r := range runes {
+		encodedLength += utf8.RuneLen(r)
+	}
 	// Remove complete decoded runes so audit fields fit their byte limits
 	// while a final multibyte character is not cut into an invalid suffix.
-	for len(string(runes)) > max && len(runes) > 0 {
+	// Track the decoded length because invalid input bytes expand to replacement
+	// runes, and repeatedly encoding the retained prefix would rescan that text.
+	for encodedLength > max && len(runes) > 0 {
+		encodedLength -= utf8.RuneLen(runes[len(runes)-1])
 		runes = runes[:len(runes)-1]
 	}
 	return string(runes)

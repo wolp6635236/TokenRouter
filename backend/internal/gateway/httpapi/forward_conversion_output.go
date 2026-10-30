@@ -13,6 +13,7 @@ import (
 	egressprovider "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
 
 // forward_conversion_output.go delivers converted JSON and SSE responses and
@@ -30,7 +31,9 @@ import (
 // responsible for their content and the HTTP adapter responsible for
 // synchronous response delivery. Converted upstream events carry timing source
 // observation through the active writer chain. Locally generated stream errors
-// use LocalEvent so they cannot establish upstream delivery milestones.
+// use LocalEvent so they cannot establish upstream delivery milestones. Timed
+// streaming conversion prepares metadata in a deferred output context, preserving
+// downstream header-wait heartbeats until the first converted event is ready.
 
 // The interface assertion verifies that conversion output implements the shared
 // synchronous header, body, event and diagnostic callbacks used by forwarders.
@@ -39,6 +42,9 @@ var _ forwardcore.Output = ForwardConversionOutput{}
 // ForwardConversionOutput holds the current HTTP output and protocol conversion callbacks.
 type ForwardConversionOutput struct {
 	Context *gin.Context // required synchronous HTTP request context
+	// streamWriter privately stages streaming metadata until the first event.
+	// Nil preserves direct Gin output for buffered conversion and standalone errors.
+	streamWriter upstream.OutputWriter
 	// Filter controls allowed upstream header copying; nil skips that step. A
 	// present filter is read when CopyHeaders is invoked for this response.
 	Filter *egress.CompiledHeaderFilter
@@ -60,7 +66,7 @@ type ForwardConversionOutput struct {
 // request writer and applies its configured header policy synchronously.
 func (o ForwardConversionOutput) CopyHeaders(headers map[string][]string) {
 	if o.Filter != nil {
-		egressprovider.WriteFilteredHeaders(o.Context.Writer.Header(), headers, o.Filter)
+		egressprovider.WriteFilteredHeaders(o.streamResponseWriter().Header(), headers, o.Filter)
 	}
 }
 
@@ -69,16 +75,16 @@ func (o ForwardConversionOutput) BeginJSON() {
 	o.Context.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 }
 
-// BeginStream installs SSE transport headers and writes the successful status
-// line. It requires the bound request writer; callers then emit events and
+// BeginStream prepares SSE transport headers and the successful status. It
+// requires the bound request writer; callers then emit events and
 // separately mark handled output when their terminal or error path qualifies.
 func (o ForwardConversionOutput) BeginStream() {
-	h := o.Context.Writer.Header()
+	h := o.streamResponseWriter().Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
-	o.Context.Writer.WriteHeader(http.StatusOK)
+	o.streamResponseWriter().WriteHeader(http.StatusOK)
 }
 
 // ReverseTools delegates restoration through the required callback bound to
@@ -163,7 +169,7 @@ func (o ForwardConversionOutput) writeEvent(kind string, body []byte) (int, erro
 	} else {
 		frame = fmt.Sprintf("data: %s\n\n", body)
 	}
-	n, err := fmt.Fprint(o.Context.Writer, frame)
+	n, err := fmt.Fprint(o.streamResponseWriter(), frame)
 	// Require a complete terminal write before reporting handled stream output,
 	// so partial delivery leaves outer processing able to retain its failure and usage evidence.
 	if err == nil && n == len(frame) {
@@ -180,8 +186,14 @@ func (o ForwardConversionOutput) writeEvent(kind string, body []byte) (int, erro
 	return n, err
 }
 
-// Flush sends buffered conversion bytes through the bound Gin response writer.
-func (o ForwardConversionOutput) Flush() { o.Context.Writer.Flush() }
+// Flush sends buffered conversion bytes through the selected stream response writer.
+func (o ForwardConversionOutput) Flush() {
+	if o.streamWriter != nil {
+		o.streamWriter.Flush()
+		return
+	}
+	o.Context.Writer.Flush()
+}
 
 // Error marks this conversion error handled before writing its JSON envelope.
 // Responses puts kind in code and Chat puts it in type; the marker describes
@@ -238,4 +250,14 @@ func WriteForwardCountError(c *gin.Context, status int, kind, message string) {
 func WriteForwardGeminiErrorBody(c *gin.Context, status int, contentType string, body []byte, commit func()) {
 	commit()
 	c.Data(status, contentType, body)
+}
+
+// streamResponseWriter selects deferred metadata for timed streaming conversion.
+// The optional writer is created by the HTTP boundary and shared by value
+// copies of this adapter; other callers retain the original Gin writer.
+func (o ForwardConversionOutput) streamResponseWriter() http.ResponseWriter {
+	if o.streamWriter != nil {
+		return o.streamWriter
+	}
+	return o.Context.Writer
 }

@@ -35,10 +35,10 @@ const (
 	// mode. Platform remains the recorded snapshot, so provider metadata changes
 	// cannot relabel existing usage.
 	usageAnalyticsRawDimensionsSQL = `
-			ul.user_id,
-			COALESCE(ul.billing_user_id, ul.user_id),
+			COALESCE(ul.user_id, 0),
+			COALESCE(ul.billing_user_id, ul.user_id, 0),
 			COALESCE(ul.team_id, 0),
-			ul.api_key_id,
+			COALESCE(ul.api_key_id, 0),
 			COALESCE(ul.group_id, 0),
 			COALESCE(NULLIF(TRIM(ul.model), ''), NULLIF(TRIM(ul.requested_model), ''), ''),
 			CASE
@@ -58,7 +58,8 @@ const (
 				END
 			),
 			ul.platform,
-			COALESCE(ul.inbound_endpoint, ''),`
+			COALESCE(ul.inbound_endpoint, ''),
+			ul.request_source,`
 )
 
 // AggregateUsageAnalyticsRange refreshes UTC hourly rows and the affected daily
@@ -167,9 +168,9 @@ func (r *AggregationStore) aggregateUsageAnalyticsRangeInTx(ctx context.Context,
 		INSERT INTO usage_analytics_hourly (
 			bucket_start, user_id, billing_user_id, team_id, api_key_id, group_id,
 			requested_model, request_type, stream, billing_type, billing_mode,
-			platform, inbound_endpoint, total_requests, input_tokens, output_tokens,
+			platform, inbound_endpoint, request_source, total_requests, input_tokens, output_tokens,
 			cache_creation_tokens, cache_read_tokens, total_cost, actual_cost,
-			provider_cost, total_duration_ms, duration_count, computed_at
+			provider_cost, total_duration_ms, duration_count, incomplete_cost_requests, computed_at
 		)
 		SELECT
 			date_trunc('hour', ul.created_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
@@ -184,12 +185,13 @@ func (r *AggregationStore) aggregateUsageAnalyticsRangeInTx(ctx context.Context,
 			COALESCE(SUM(COALESCE(ul.provider_stats_cost, ul.total_cost) * COALESCE(ul.provider_rate_multiplier, 1)), 0),
 			COALESCE(SUM(COALESCE(ul.duration_ms, 0)), 0),
 			COUNT(ul.duration_ms),
+			COUNT(*) FILTER (WHERE ul.system_usage->>'cost_state' IN ('unknown','partial')),
 			NOW()
 		FROM usage_logs ul
 		LEFT JOIN groups g ON g.id = ul.group_id
 		LEFT JOIN providers a ON a.id = ul.provider_id
 		WHERE ul.created_at >= $1 AND ul.created_at < $2
-		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 	`, hourStart, scanEnd); err != nil {
 		return err
 	}
@@ -271,21 +273,21 @@ func (r *AggregationStore) rebuildUsageAnalyticsDailyRangeInTx(ctx context.Conte
 		INSERT INTO usage_analytics_daily (
 			bucket_date, user_id, billing_user_id, team_id, api_key_id, group_id,
 			requested_model, request_type, stream, billing_type, billing_mode,
-			platform, inbound_endpoint, total_requests, input_tokens, output_tokens,
+			platform, inbound_endpoint, request_source, total_requests, input_tokens, output_tokens,
 			cache_creation_tokens, cache_read_tokens, total_cost, actual_cost,
-			provider_cost, total_duration_ms, duration_count, computed_at
+			provider_cost, total_duration_ms, duration_count, incomplete_cost_requests, computed_at
 		)
 		SELECT
 			(bucket_start AT TIME ZONE 'UTC')::date,
 			user_id, billing_user_id, team_id, api_key_id, group_id,
 			requested_model, request_type, stream, billing_type, billing_mode,
-			platform, inbound_endpoint,
+			platform, inbound_endpoint, request_source,
 			SUM(total_requests), SUM(input_tokens), SUM(output_tokens),
 			SUM(cache_creation_tokens), SUM(cache_read_tokens), SUM(total_cost),
-			SUM(actual_cost), SUM(provider_cost), SUM(total_duration_ms), SUM(duration_count), NOW()
+			SUM(actual_cost), SUM(provider_cost), SUM(total_duration_ms), SUM(duration_count), SUM(incomplete_cost_requests), NOW()
 		FROM usage_analytics_hourly
 		WHERE bucket_start >= $1 AND bucket_start < $2
-		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
+		GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 	`, dayStart, dayEnd)
 	return err
 }

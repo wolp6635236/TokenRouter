@@ -27,16 +27,20 @@ import (
 // creation, and cache-read usage buckets. Converted Responses and Chat output
 // reconstruct those fragments while retaining the vendor model declaration
 // before restoring the caller model, and their OpenAI completion input count
-// includes every input bucket.
+// includes every input bucket. Completion separately receives normalized native
+// usage, including cache lifetimes and speed, so inclusive client counts cannot
+// be mistaken for billable uncached input. All four readers pass each data
+// payload to anthropicUsageCollector. It decodes the event once for conversion
+// and the typed usage merge, reconciles raw usage fields from the same payload,
+// and builds the returned Result with the vendor model evidence.
 //
 // Buffered conversion waits for a message_start before producing JSON, while
-// streaming conversion commits SSE headers and records the first decoded event
-// as its timing observation. An idle timeout closes the upstream body; buffered
-// output reports a failure with no result, and streaming output returns
-// collected usage beside that error. Responses streaming continues conversion
-// state after client disconnection, while Chat streaming continues usage
-// collection and stops its ordinary event conversion. The execution caller
-// retains final body cleanup.
+// streaming conversion commits SSE headers before reading vendor events. An
+// idle timeout closes the upstream body; buffered output returns any observed
+// usage beside the error, and streaming output returns its current usage
+// snapshot. Responses streaming continues conversion state after client
+// disconnection, while Chat streaming continues usage collection and stops its
+// ordinary event conversion. The execution caller retains final body cleanup.
 
 // AnthropicOutputOptions supplies request-bound conversion, header, and diagnostic operations for Anthropic events.
 type AnthropicOutputOptions struct {
@@ -47,6 +51,19 @@ type AnthropicOutputOptions struct {
 	ReverseTools   func([]byte) []byte            // request-bound tool name restorer
 	Error          func(int, string, string)      // client conversion error presenter
 	Warn           func(string, ...zap.Field)     // structured read diagnostic writer
+}
+
+// anthropicUsageCollector accumulates the completion evidence shared by the
+// converted Messages readers: normalized native usage and the vendor model
+// declaration. It also builds each reader's Result from that evidence.
+type anthropicUsageCollector struct {
+	usage  upstream.TokenUsage            // normalized native buckets
+	models protocol.ResponseModelObserver // vendor model declaration evidence
+	// identity holds the request, model, endpoint, and stream fields copied into
+	// every Result; Usage, NativeUsage, Duration, and disconnect state are
+	// filled when a Result is built.
+	identity  Result
+	startTime time.Time // request start for result durations
 }
 
 // AnthropicUsageToOpenAI builds inclusive OpenAI input usage from normalized
@@ -68,9 +85,9 @@ func AnthropicUsageToOpenAI(u *upstream.TokenUsage) protocolopenai.ForwardUsage 
 
 // ResponsesFromAnthropicBuffered reconstructs Responses JSON and completion
 // usage from paired Anthropic event/data lines. The caller closes the response
-// body after reading; a missing message_start or idle expiry returns no result
-// and writes the applicable client failure. Non-idle scanner failures end
-// accumulation after diagnostic handling.
+// body after reading; a missing message_start or idle expiry writes the client
+// failure and returns any accumulated usage beside the error. Non-idle scanner
+// failures end accumulation after diagnostic handling.
 //
 // Content deltas append to the matching reconstructed block, including split
 // tool arguments, and vendor model evidence is captured before caller-model
@@ -79,12 +96,6 @@ func AnthropicUsageToOpenAI(u *upstream.TokenUsage) protocolopenai.ForwardUsage 
 // the completion result even if scanning ended early, so callers use this
 // reader's actual return rules when determining completion.
 func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o AnthropicOutputOptions, originalModel, billingModel, upstreamModel string, reasoningEffort *string, startTime time.Time, clientToolMapping bridge.ResponsesClientToolMapping) (out *Result, failure error) {
-	var modelObserver protocol.ResponseModelObserver
-	defer func() {
-		if out != nil {
-			out.UpstreamResponseModel = modelObserver.Model()
-		}
-	}()
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -95,7 +106,15 @@ func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputConte
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	var finalResp *protocolanthropic.AnthropicResponse
-	var usage upstream.TokenUsage
+	collector := newAnthropicUsageCollector(resp, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, false)
+	// Preserve measured work when buffered conversion fails after observing usage.
+	// Completion eligibility stays with the caller, while the returned evidence
+	// remains available for diagnostics or an eligible partial-completion record.
+	defer func() {
+		if failure != nil && out == nil {
+			out = collector.PartialResult()
+		}
+	}()
 
 	// The line-consumer interval bounds buffered waiting before JSON output;
 	// expiry closes the body so the scanner can finish and the client receives a
@@ -156,25 +175,18 @@ func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputConte
 			continue
 		}
 
-		modelObserver.ObserveAnthropic([]byte(payload))
-		var event protocolanthropic.AnthropicStreamEvent
+		event, decoded := collector.Observe(payload)
 		// Skip payloads that cannot decode as an Anthropic event, allowing later
 		// valid events to continue supplying message state and usage observations.
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		if !decoded {
 			continue
 		}
 
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
-			protocolanthropic.MergeAnthropicUsage(&usage, event.Message.Usage)
 		}
-		if event.Type == "message_delta" {
-			if event.Usage != nil {
-				protocolanthropic.MergeAnthropicUsage(&usage, *event.Usage)
-			}
-			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
-				finalResp.StopReason = bridge.AnthropicStopReasonPtr(event.Delta.StopReason)
-			}
+		if event.Type == "message_delta" && event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
+			finalResp.StopReason = bridge.AnthropicStopReasonPtr(event.Delta.StopReason)
 		}
 		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
 			finalResp.Content = append(finalResp.Content, *event.ContentBlock)
@@ -208,7 +220,7 @@ func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputConte
 	// Replace message usage when accumulated uncached input or output is
 	// positive; cache-only observations still reach completion through the
 	// separate accumulator while client conversion retains message_start usage.
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+	if usage := collector.usage; usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		finalResp.Usage = protocolanthropic.AnthropicUsage{
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
@@ -238,18 +250,7 @@ func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputConte
 		c.JSON(http.StatusOK, responsesResp)
 	}
 
-	return &Result{
-		RequestID:        requestID,
-		Headers:          resp.Header,
-		Usage:            AnthropicUsageToOpenAI(&usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		ReasoningEffort:  reasoningEffort,
-		Stream:           false,
-		Duration:         time.Since(startTime),
-	}, nil
+	return collector.Result(false), nil
 }
 
 // ResponsesFromAnthropicStreaming converts paired Anthropic event/data lines
@@ -264,12 +265,6 @@ func ResponsesFromAnthropicBuffered(resp *http.Response, c *upstream.OutputConte
 // failures skip the affected event, and terminal conversion output is written
 // only while the client remains connected.
 func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, o AnthropicOutputOptions, originalModel, billingModel, upstreamModel string, reasoningEffort *string, startTime time.Time, clientToolMapping bridge.ResponsesClientToolMapping) (out *Result, failure error) {
-	var modelObserver protocol.ResponseModelObserver
-	defer func() {
-		if out != nil {
-			out.UpstreamResponseModel = modelObserver.Model()
-		}
-	}()
 	requestID := resp.Header.Get("x-request-id")
 
 	o.CopyHeaders(c.Writer.Header(), resp.Header)
@@ -283,8 +278,7 @@ func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputCont
 	state.Model = originalModel
 	clientToolRestorer := bridge.NewResponsesClientToolStreamRestorer(clientToolMapping)
 
-	var usage upstream.TokenUsage
-
+	collector := newAnthropicUsageCollector(resp, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, true)
 	clientDisconnected := false
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -293,23 +287,6 @@ func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputCont
 	// is smaller; that maximum bounds subsequent scanner growth while this
 	// converter reads Anthropic lines.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
-	resultWithUsage := func() *Result {
-		return &Result{
-			RequestID:        requestID,
-			Headers:          resp.Header,
-			Usage:            AnthropicUsageToOpenAI(&usage),
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			UpstreamEndpoint: "/v1/messages",
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-
-			ClientDisconnect: clientDisconnected,
-		}
-	}
 
 	// Bound idle reads so draining a detached upstream request cannot wait indefinitely
 	// when the upstream keeps its connection open without sending more lines.
@@ -333,23 +310,13 @@ func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputCont
 			zap.String("request_id", requestID),
 			zap.Duration("interval", streamInterval),
 		)
-		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
+		return collector.Result(clientDisconnected), fmt.Errorf("stream data interval timeout")
 	}
 
-	// After client disconnection, keep advancing conversion state and draining usage.
-	// The final output token count arrives in a trailing message_delta event.
+	// After client disconnection, keep advancing conversion state while the read
+	// loop drains usage; the final output token count arrives in a trailing
+	// message_delta event.
 	processAnthropicEvent := func(event *protocolanthropic.AnthropicStreamEvent) {
-		// Measure the first decoded vendor event, including metadata-only events,
-		// from request start; this observation can precede the first client-visible
-		// converted chunk.
-
-		if event.Type == "message_delta" && event.Usage != nil {
-			protocolanthropic.MergeAnthropicUsage(&usage, *event.Usage)
-		}
-		if event.Type == "message_start" && event.Message != nil {
-			protocolanthropic.MergeAnthropicUsage(&usage, event.Message.Usage)
-		}
-
 		events := bridge.AnthropicEventToResponsesEvents(o.Runtime, event, state)
 		if clientDisconnected {
 			return
@@ -409,15 +376,16 @@ func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputCont
 			continue
 		}
 
-		modelObserver.ObserveAnthropic([]byte(payload))
-		var event protocolanthropic.AnthropicStreamEvent
-		// Skip payloads that cannot decode as an Anthropic event, allowing later
-		// valid events to continue supplying message state and usage observations.
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		// Observe usage before conversion, so trailing message_delta tokens still
+		// count after output to this client has stopped. Skip payloads that cannot
+		// decode as an Anthropic event, allowing later valid events to continue
+		// supplying conversion state and usage observations.
+		event, decoded := collector.Observe(payload)
+		if !decoded {
 			continue
 		}
 
-		processAnthropicEvent(&event)
+		processAnthropicEvent(event)
 	}
 
 	// Finalize Responses conversion after scanner completion even if client output
@@ -455,27 +423,22 @@ func ResponsesFromAnthropicStreaming(resp *http.Response, c *upstream.OutputCont
 		}
 	}
 
-	return resultWithUsage(), nil
+	return collector.Result(clientDisconnected), nil
 }
 
 // ChatFromAnthropicBuffered reconstructs Chat JSON and completion usage from
 // paired Anthropic event/data lines. The caller retains response-body cleanup;
-// idle expiry and an absent message_start produce client failure with no
-// result, while other scanner endings allow reconstruction from available
+// idle expiry and an absent message_start produce client failure with any
+// observed usage, while other scanner endings allow reconstruction from available
 // content.
 //
 // Vendor model evidence is captured before converting through Responses into
 // the caller's Chat model. Content and tool-argument fragments accumulate in
 // the Anthropic message before conversion. Successful preparatory marshaling
 // applies reverse-tool names, and the returned result carries normalized
-// inclusive input usage independently of that client output representation.
+// inclusive input usage and complete native buckets independently of that client
+// output representation.
 func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o AnthropicOutputOptions, originalModel, billingModel, upstreamModel string, reasoningEffort *string, startTime time.Time) (out *Result, failure error) {
-	var modelObserver protocol.ResponseModelObserver
-	defer func() {
-		if out != nil {
-			out.UpstreamResponseModel = modelObserver.Model()
-		}
-	}()
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -486,7 +449,15 @@ func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	var finalResp *protocolanthropic.AnthropicResponse
-	var usage upstream.TokenUsage
+	collector := newAnthropicUsageCollector(resp, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, false)
+	// Preserve measured work when buffered conversion fails after observing usage.
+	// Completion eligibility stays with the caller, while the returned evidence
+	// remains available for diagnostics or an eligible partial-completion record.
+	defer func() {
+		if failure != nil && out == nil {
+			out = collector.PartialResult()
+		}
+	}()
 
 	// The line-consumer interval bounds buffered waiting before JSON output;
 	// expiry closes the body so the scanner can finish and the client receives a
@@ -547,25 +518,18 @@ func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o
 			continue
 		}
 
-		modelObserver.ObserveAnthropic([]byte(payload))
-		var event protocolanthropic.AnthropicStreamEvent
+		event, decoded := collector.Observe(payload)
 		// Skip payloads that cannot decode as an Anthropic event, allowing later
 		// valid events to continue supplying message state and usage observations.
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		if !decoded {
 			continue
 		}
 
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
-			protocolanthropic.MergeAnthropicUsage(&usage, event.Message.Usage)
 		}
-		if event.Type == "message_delta" {
-			if event.Usage != nil {
-				protocolanthropic.MergeAnthropicUsage(&usage, *event.Usage)
-			}
-			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
-				finalResp.StopReason = bridge.AnthropicStopReasonPtr(event.Delta.StopReason)
-			}
+		if event.Type == "message_delta" && event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
+			finalResp.StopReason = bridge.AnthropicStopReasonPtr(event.Delta.StopReason)
 		}
 		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
 			finalResp.Content = append(finalResp.Content, *event.ContentBlock)
@@ -599,7 +563,7 @@ func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o
 	// Replace message usage when accumulated uncached input or output is
 	// positive; cache-only observations still reach completion through the
 	// separate accumulator while client conversion retains message_start usage.
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+	if usage := collector.usage; usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		finalResp.Usage = protocolanthropic.AnthropicUsage{
 			InputTokens:              usage.InputTokens,
 			OutputTokens:             usage.OutputTokens,
@@ -625,18 +589,7 @@ func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o
 		c.JSON(http.StatusOK, ccResp)
 	}
 
-	return &Result{
-		RequestID:        requestID,
-		Headers:          resp.Header,
-		Usage:            AnthropicUsageToOpenAI(&usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		ReasoningEffort:  reasoningEffort,
-		Stream:           false,
-		Duration:         time.Since(startTime),
-	}, nil
+	return collector.Result(false), nil
 }
 
 // ChatFromAnthropicStreaming converts Anthropic events through Responses state
@@ -651,12 +604,6 @@ func ChatFromAnthropicBuffered(resp *http.Response, c *upstream.OutputContext, o
 // affected chunks, and client-disconnect evidence comes from chunk writes; the
 // final [DONE] write is attempted without recording its error.
 func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, o AnthropicOutputOptions, originalModel, billingModel, upstreamModel string, reasoningEffort *string, startTime time.Time, includeUsage bool) (out *Result, failure error) {
-	var modelObserver protocol.ResponseModelObserver
-	defer func() {
-		if out != nil {
-			out.UpstreamResponseModel = modelObserver.Model()
-		}
-	}()
 	requestID := resp.Header.Get("x-request-id")
 
 	o.CopyHeaders(c.Writer.Header(), resp.Header)
@@ -672,8 +619,7 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 	ccState.Model = originalModel
 	ccState.IncludeUsage = includeUsage
 
-	var usage upstream.TokenUsage
-
+	collector := newAnthropicUsageCollector(resp, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, true)
 	clientDisconnected := false
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -682,23 +628,6 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 	// is smaller; that maximum bounds subsequent scanner growth while this
 	// converter reads Anthropic lines.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
-	resultWithUsage := func() *Result {
-		return &Result{
-			RequestID:        requestID,
-			Headers:          resp.Header,
-			Usage:            AnthropicUsageToOpenAI(&usage),
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			UpstreamEndpoint: "/v1/messages",
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-
-			ClientDisconnect: clientDisconnected,
-		}
-	}
 
 	// Bound idle reads while draining a detached upstream request after client disconnection.
 	// A connection left open without more data would otherwise keep the scanner blocked.
@@ -727,7 +656,7 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 				zap.Duration("interval", streamInterval),
 			)
 		}
-		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
+		return collector.Result(clientDisconnected), fmt.Errorf("stream data interval timeout")
 	}
 
 	writeChunk := func(chunk protocolopenai.ChatCompletionsChunk) bool {
@@ -750,19 +679,6 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 	}
 
 	processAnthropicEvent := func(event *protocolanthropic.AnthropicStreamEvent) bool {
-		// Measure the first decoded vendor event, including metadata-only events,
-		// from request start; this observation can precede the first client-visible
-		// converted chunk.
-
-		// Update usage before the disconnect guard so trailing message_delta tokens
-		// remain available even after conversion output has stopped for that client.
-		if event.Type == "message_delta" && event.Usage != nil {
-			protocolanthropic.MergeAnthropicUsage(&usage, *event.Usage)
-		}
-		if event.Type == "message_start" && event.Message != nil {
-			protocolanthropic.MergeAnthropicUsage(&usage, event.Message.Usage)
-		}
-
 		// After output failure, skip ordinary event conversion while the outer reader
 		// continues consuming lines; accumulated usage still reaches the returned
 		// partial observation.
@@ -813,16 +729,17 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 			continue
 		}
 
-		modelObserver.ObserveAnthropic([]byte(payload))
-		var event protocolanthropic.AnthropicStreamEvent
-		// Skip payloads that cannot decode as an Anthropic event, allowing later
-		// valid events to continue supplying message state and usage observations.
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		// Observe usage before conversion, so trailing message_delta tokens still
+		// count after output to this client has stopped. Skip payloads that cannot
+		// decode as an Anthropic event, allowing later valid events to continue
+		// supplying conversion state and usage observations.
+		event, decoded := collector.Observe(payload)
+		if !decoded {
 			continue
 		}
 
-		if processAnthropicEvent(&event) {
-			return resultWithUsage(), nil
+		if processAnthropicEvent(event) {
+			return collector.Result(clientDisconnected), nil
 		}
 	}
 
@@ -848,5 +765,75 @@ func ChatFromAnthropicStreaming(resp *http.Response, c *upstream.OutputContext, 
 		c.Writer.Flush()
 	}
 
-	return resultWithUsage(), nil
+	return collector.Result(clientDisconnected), nil
+}
+
+// newAnthropicUsageCollector prepares usage collection for one converted
+// Messages response. The response headers and request ID are captured for
+// every Result, and stream selects whether results describe streamed output.
+func newAnthropicUsageCollector(resp *http.Response, originalModel, billingModel, upstreamModel string, reasoningEffort *string, startTime time.Time, stream bool) *anthropicUsageCollector {
+	return &anthropicUsageCollector{
+		identity: Result{
+			RequestID:        resp.Header.Get("x-request-id"),
+			Headers:          resp.Header,
+			Model:            originalModel,
+			BillingModel:     billingModel,
+			UpstreamModel:    upstreamModel,
+			UpstreamEndpoint: "/v1/messages",
+			ReasoningEffort:  reasoningEffort,
+			Stream:           stream,
+		},
+		startTime: startTime,
+	}
+}
+
+// Observe records model evidence from one Messages SSE data payload, decodes
+// it once, and merges its usage. It returns the decoded event for conversion,
+// or false when the payload is not an Anthropic event; such payloads still
+// contribute model evidence but no usage.
+//
+// The typed merge runs first so compatible providers keep output counts they
+// report in message_start. Raw parsing of the same payload then reconciles
+// what the typed fields cannot represent: cache TTL presence, explicit zero
+// TTL buckets, and prompt totals that include TTL-only cache writes. Readers
+// call Observe before deciding whether to convert an event, so usage keeps
+// accumulating after client output stops.
+func (c *anthropicUsageCollector) Observe(payload string) (*protocolanthropic.AnthropicStreamEvent, bool) {
+	c.models.ObserveAnthropic([]byte(payload))
+	var event protocolanthropic.AnthropicStreamEvent
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return nil, false
+	}
+	if event.Type == "message_start" && event.Message != nil {
+		protocolanthropic.MergeAnthropicUsage(&c.usage, event.Message.Usage)
+	}
+	if event.Type == "message_delta" && event.Usage != nil {
+		protocolanthropic.MergeAnthropicUsage(&c.usage, *event.Usage)
+	}
+	protocolanthropic.ParseSSEUsagePassthrough(payload, &c.usage)
+	return &event, true
+}
+
+// Result builds the reader result from the evidence collected so far, with
+// clientDisconnect reporting failed client output. NativeUsage points at the
+// collector's live buckets, so callers build the result after the last
+// observation; Usage holds the inclusive OpenAI projection of the same buckets.
+func (c *anthropicUsageCollector) Result(clientDisconnect bool) *Result {
+	out := c.identity
+	out.Usage = AnthropicUsageToOpenAI(&c.usage)
+	out.NativeUsage = &c.usage
+	out.UpstreamResponseModel = c.models.Model()
+	out.Duration = time.Since(c.startTime)
+	out.ClientDisconnect = clientDisconnect
+	return &out
+}
+
+// PartialResult returns the buffered reader result for a failed conversion, or
+// nil when no usage has been observed. Buffered output never reaches a client
+// before conversion succeeds, so the result reports no client disconnect.
+func (c *anthropicUsageCollector) PartialResult() *Result {
+	if c.usage == (upstream.TokenUsage{}) {
+		return nil
+	}
+	return c.Result(false)
 }

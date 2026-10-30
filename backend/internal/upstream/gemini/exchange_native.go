@@ -3,7 +3,6 @@ package gemini
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -14,9 +13,10 @@ import (
 // exchange_native.go retries native Gemini requests and selects final
 // responses or eligible local token estimates.
 // Native Gemini retries can return a local count estimate after transport or
-// eligible status attempts are exhausted. Error policy and recognized scope
-// failures stop before that fallback, leaving the caller to handle their
-// selected response.
+// eligible status attempts are exhausted. ExternalRetry instead returns the
+// first failure for caller-owned provider retry and count policy. Error policy
+// and recognized scope failures stop local retries, leaving the caller to
+// handle their selected response.
 //
 // Every attempt rebuilds the request and its ID-header selection. Retried
 // error bodies close after capture and final error responses are reconstructed
@@ -31,28 +31,44 @@ import (
 //
 // Policy matches stop before status retry, scope-rejected 403 responses are
 // rebuilt and returned, and 429 invokes caller observation before waiting.
-// Transport retries use the same attempt count and an uninterruptible backoff
-// sleep. Native fallback can instead return an independent estimated token
+// Transport retries use the same attempt count and a cancellable backoff
+// wait. Native fallback can instead return an independent estimated token
 // count after eligible retry exhaustion; that result is separate from server
-// usage.
+// usage. ExternalRetry disables local retries and count estimates.
 func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResult, error) {
+	maxAttempts := options.MaxRetries
+	// External retry ownership limits this exchange to one dispatch, returning
+	// failures for the caller's provider budget and count policy to handle.
+	if options.ExternalRetry {
+		maxAttempts = 1
+	}
 	requestIDHeader := options.RequestIDHeader
 	var resp *http.Response
+	candidateCount := 1
 	// Rebuild the request and its ID-header selection for every attempt,
 	// including after caller body replacement. Captured HTTP error bytes survive
 	// stream closing before another request or final error mapping.
-	for attempt := 1; attempt <= options.MaxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ExchangeResult{}, err
+		}
 		upstreamReq, idHeader, err := options.Build(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return ExchangeResult{}, err
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
 			}
 			return ExchangeResult{}, options.BuildError(err)
 		}
 		requestIDHeader = idHeader
+		candidateCount = requestCandidateCount(upstreamReq)
 
 		resp, err = options.Do(upstreamReq)
 		if err != nil {
+			// Caller cancellation ends the exchange. Transport-local deadlines leave
+			// the caller alive and must reach retry or final-error classification.
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
+			}
 			safeErr := options.Sanitize(err.Error())
 			options.Observe(ExchangeNotice{
 				Platform:           options.Platform,
@@ -65,15 +81,17 @@ func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			// Transport failures share the total attempt budget with HTTP retries;
 			// wait before rebuilding so repeated failures cannot form an immediate
 			// dispatch loop.
-			if attempt < options.MaxRetries {
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, options.MaxRetries, err)
-				SleepGeminiBackoff(attempt)
+			if attempt < maxAttempts {
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, maxAttempts, err)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			// After the retry budget ends, a native count fallback returns its local
 			// estimate separately from usage and avoids exposing the final transport
 			// failure as generation output.
-			if options.CountFallback {
+			if options.CountFallback && !options.ExternalRetry {
 				estimated := options.EstimateCount()
 				return ExchangeResult{EstimatedTokens: &estimated}, nil
 			}
@@ -90,7 +108,7 @@ func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			break
 		}
 
-		if resp.StatusCode >= 400 && options.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && !options.ExternalRetry && options.ShouldRetry(resp.StatusCode) {
 			respBody := options.ReadError(resp)
 			_ = resp.Body.Close()
 			// Rebuild the consumed scope-rejection body and return it because another
@@ -112,7 +130,7 @@ func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			// Retry this classified HTTP failure while attempt slots remain; its body
 			// is already captured and closed before waiting and constructing another
 			// request.
-			if attempt < options.MaxRetries {
+			if attempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -131,14 +149,16 @@ func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResul
 					Detail:             upstreamDetail,
 				})
 
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, options.MaxRetries)
-				SleepGeminiBackoff(attempt)
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, maxAttempts)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			// After the eligible HTTP retry budget ends, return the configured count
 			// estimate separately from usage; policy matches and recognized scope
 			// responses already selected their own earlier outcomes.
-			if options.CountFallback {
+			if options.CountFallback && !options.ExternalRetry {
 				estimated := options.EstimateCount()
 				return ExchangeResult{EstimatedTokens: &estimated}, nil
 			}
@@ -156,5 +176,5 @@ func ExchangeNative(ctx context.Context, options ExchangeOptions) (ExchangeResul
 		break
 	}
 
-	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader}, nil
+	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader, CandidateCount: candidateCount}, nil
 }

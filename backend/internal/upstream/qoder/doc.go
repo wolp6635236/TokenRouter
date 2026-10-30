@@ -12,8 +12,8 @@
 // oauth.go, credential_builder.go, and refresh_exchange.go. Session headers
 // and request encoding use session.go, signature.go, and encoding.go. Site and
 // model controls use site.go and models.go. Conversation snapshots and
-// rollback use conversation.go, while stream_conversion.go and
-// output_observation.go retain output and usage evidence. Quota metadata uses
-// quota_usage.go; the localauth package isolates manual import and opt-in
-// local tests.
+// rollback use conversation.go. stream_tool_text.go recognizes text-encoded
+// invocations, while stream_conversion.go and output_observation.go retain output
+// and usage evidence. Quota metadata uses quota_usage.go; the localauth package
+// isolates manual import and opt-in local tests.
 package qoder

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-// Use the compiler-enabled build because this test renders literal JSON message
-// text; the application alias selects the runtime-only build.
+// Import the compiler-enabled distribution explicitly to verify literal JSON
+// messages and named placeholders independently of the application's bundler alias.
 import { createI18n } from '../../../node_modules/vue-i18n/dist/vue-i18n.mjs'
 import enMessages from '../locales/en'
 import zhMessages from '../locales/zh'

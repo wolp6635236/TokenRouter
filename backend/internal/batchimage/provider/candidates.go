@@ -20,8 +20,8 @@ import (
 // later execution binding, so callers keep that record stable throughout the
 // candidate's use.
 //
-// The protocol-enabled callback reads captured routing fields, while attribute
-// lookup resolves its protocol from the retained record. SupportsProvider and
+// The submission callback reads captured routing fields, while attribute
+// lookup resolves its protocol from the retained record. SupportsSubmission and
 // bound execution receive CloneRecord views for their provider operations.
 // Upstream model resolution uses the prepared one-hop mapping and reports the
 // trimmed result to an optional observer, keeping discovery and submitted model
@@ -48,7 +48,7 @@ type Candidates struct {
 	// prepared candidates, so the source and callers keep their contents stable
 	// through subsequent query and execution binding use.
 	Source CandidateProviders // provider query record source
-	// Registry supplies adapters used by SupportsProvider and Bind callbacks.
+	// Registry supplies adapters used by CanSubmit and Bind callbacks.
 	// A candidate's requested platform must exist before binding operations;
 	// callers keep registered adapters available during their use.
 	Registry *batchimage.Registry[BatchImageProvider] // batch platform adapter registry
@@ -108,7 +108,7 @@ func (r *Candidates) project(values []provider.Record) []batchimage.Candidate {
 // the retained record and observer state stable while the candidate or its
 // bound execution operations remain in use.
 //
-// ProtocolEnabled uses the captured routing snapshot, whereas attribute lookup
+// CanSubmit uses the captured routing snapshot, whereas attribute lookup
 // resolves the retained record's current batch protocol. Provider support checks
 // clone the record, and Bind retains it for per-operation cloning. Upstream
 // resolution trims the prepared one-hop mapped name and optionally observes
@@ -125,21 +125,20 @@ func (r *Candidates) Project(value *provider.Record) *batchimage.Candidate {
 	result := &batchimage.Candidate{ID: value.ID, Priority: value.Priority, CandidateRules: candidateRules{Record: value, models: models}}
 	result.AttributeTarget = func(model string) modelcatalog.Target {
 		// Attribute lookup uses the resolved upstream protocol field independently
-		// of route admission. ProtocolEnabled performs the availability check when the
+		// of route admission. CanSubmit performs the availability check when the
 		// candidate is tested for the batch route.
 		protocol, _ := resolveBatchProtocol(value)
 		return value.ModelAttributeTarget(model, string(protocol))
 	}
-	result.ProtocolEnabled = func() bool {
-		_, ok := routing.Plan(routing.PlanInput{ClientProtocol: protocol.ProtocolImageBatches}).ResolveCandidate(snapshot)
-		return ok
-	}
-	// Give adapter eligibility a CloneRecord view because it may inspect mutable
-	// credentials. The candidate still retains its source record for later bindings,
-	// so cloning this call does not detach that binding's lifetime.
-	result.SupportsProvider = func(name string) bool {
+	// Resolve protocol admission before adapter-specific new-job checks. Existing
+	// jobs bind through ResultAccess, whose credential checks do not depend on
+	// current submission permission or new-job storage configuration.
+	result.CanSubmit = func(name string) bool {
+		if _, ok := routing.Plan(routing.PlanInput{ClientProtocol: protocol.ProtocolImageBatches}).ResolveCandidate(snapshot); !ok {
+			return false
+		}
 		selected, ok := r.Registry.Get(name)
-		return ok && selected != nil && selected.SupportsProvider(provider.CloneRecord(value))
+		return ok && selected != nil && selected.SupportsSubmission(provider.CloneRecord(value))
 	}
 	result.Bind = func(name string) batchimage.ExecutionProvider {
 		selected, _ := r.Registry.Get(name)

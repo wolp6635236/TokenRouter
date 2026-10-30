@@ -4,11 +4,8 @@ package app
 
 import (
 	"context"
-	"errors"
 	"io"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +14,6 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/app/lifecycle"
 	"github.com/TokenFlux/TokenRouter/internal/config"
-	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
@@ -33,40 +29,6 @@ import (
 // selected provider alongside typed test-start and successful completion
 // events.
 
-// nativeProviderTestTransport records platform test requests and serves a
-// configured stream body.
-type nativeProviderTestTransport struct {
-	body string // configured platform stream
-	// requests and ids are appended together for each Do invocation. Sequential
-	// subtests inspect the corresponding indexes after platform Test returns, retaining each supplied request pointer.
-	requests []*http.Request // captured upstream requests
-	ids      []int64         // captured provider identities
-}
-
-// probeAttributeRepository supplies group-specific profiles for assembled provider tests.
-type probeAttributeRepository struct {
-	routing.ModelAttributeRepository // unused profile management operations
-	// config changes between platform cases to restrict the same declaration to
-	// that platform's endpoint. Each resolution reads a detached profile copy.
-	config *routing.ModelAttributeConfig
-	groups []int64 // observed profile lookup identifiers
-}
-
-// Do records the request and provider ID before returning the configured
-// stream. The caller closes the owned response body, while proxy and
-// concurrency inputs are ignored by this sequential platform-test fixture.
-func (f *nativeProviderTestTransport) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
-	f.requests = append(f.requests, req)
-	f.ids = append(f.ids, id)
-	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(f.body))}, nil
-}
-
-// DoWithTLS delegates the configured platform test exchange while ignoring TLS
-// profile.
-func (f *nativeProviderTestTransport) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
-	return f.Do(req, proxy, id, concurrency)
-}
-
 // TestNativeProviderTestAssembly runs OpenAI, Gemini, Anthropic, and Kimi tests
 // against stored API-Key providers. It checks construction performs no
 // exchange, each platform uses its expected path and provider, and SSE contains
@@ -76,7 +38,7 @@ func TestNativeProviderTestAssembly(t *testing.T) {
 	store := providerpostgres.NewProviderStore(f.client, f.db, providerpostgres.ProviderStoreOptions{})
 	transport := &nativeProviderTestTransport{}
 	manager := lifecycle.New()
-	core := NewProviderTestsForTest(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, nil)
+	core := NewProviderTestsForTest(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, nil, nil)
 	require.Empty(t, transport.requests, "构造不请求供应商")
 	for _, test := range []struct {
 		platform, model, path, body string // platform: tested provider platform; model: requested test model; path: expected upstream path; body: supplied protocol stream
@@ -109,23 +71,6 @@ func TestNativeProviderTestAssembly(t *testing.T) {
 	require.NoError(t, manager.Stop(ctx))
 }
 
-// ForGroup supplies group 59's profile, fails group 61, and rejects output in 62.
-// Other groups inherit catalogue defaults, allowing each test to observe isolated overrides.
-func (r *probeAttributeRepository) ForGroup(_ context.Context, groupID int64) (*routing.ModelAttributeConfig, error) {
-	r.groups = append(r.groups, groupID)
-	if groupID == 61 {
-		return nil, errors.New("profile storage unavailable")
-	}
-	if groupID == 62 {
-		empty := []string{}
-		return &routing.ModelAttributeConfig{Status: "active", Rules: []routing.ModelAttributeRule{{Models: []string{"*"}, Attributes: modelcatalog.Attributes{OutputModalities: &empty}}}}, nil
-	}
-	if groupID == 59 {
-		return r.config, nil
-	}
-	return nil, nil
-}
-
 // TestProviderTestAssemblyUsesGroupAttributes exercises manual and automatic probes for unknown mapped models.
 // API-key and OAuth probes admit the configured image group; absent, rejected,
 // or unreadable output declarations stop before upstream traffic reaches transport.
@@ -138,7 +83,7 @@ func TestProviderTestAssemblyUsesGroupAttributes(t *testing.T) {
 	outputs := []string{"image"}
 	repo := &probeAttributeRepository{config: &routing.ModelAttributeConfig{Status: "active", Rules: []routing.ModelAttributeRule{{Models: []string{"custom-image-final"}, Attributes: modelcatalog.Attributes{OutputModalities: &outputs}}}}}
 	attributes := &routing.ModelAttributeService{Repo: repo, Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
-	core := provideProviderTests(store, nil, nil, &provider.GrokTokenSource{}, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes)
+	core := provideProviderTests(store, nil, nil, &provider.GrokTokenSource{}, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes, nil)
 	for _, credential := range []struct {
 		platform string // selected platform executor
 		kind     string // provider credential kind
@@ -217,7 +162,7 @@ func TestProviderTestAssemblyMatchesTextAttributeProtocol(t *testing.T) {
 	repo := &probeAttributeRepository{config: &routing.ModelAttributeConfig{Status: "active", Rules: []routing.ModelAttributeRule{{Models: []string{"custom-text-final"}, Attributes: modelcatalog.Attributes{OutputModalities: &outputs}}}}}
 	attributes := &routing.ModelAttributeService{Repo: repo, Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
 	transport := &nativeProviderTestTransport{}
-	core := provideProviderTests(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes)
+	core := provideProviderTests(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes, nil)
 	for _, tc := range []struct {
 		name      string                 // selected routing scenario
 		mode      provider.TextRouteMode // configured upstream text mode
@@ -271,7 +216,7 @@ func TestProviderTestAssemblyExecutesGroupProtocolRoutes(t *testing.T) {
 	disabled := false
 	repo := &probeAttributeRepository{config: &routing.ModelAttributeConfig{Status: "active", Rules: []routing.ModelAttributeRule{{Models: []string{"final-model"}, Attributes: modelcatalog.Attributes{OutputModalities: &outputs, Temperature: &disabled, TopP: &disabled}}}}}
 	attributes := &routing.ModelAttributeService{Repo: repo, Catalog: routing.ModelAttributeCatalog{View: testkit.OfflineView}}
-	core := provideProviderTests(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes)
+	core := provideProviderTests(store, nil, nil, nil, nil, transport, &config.Config{}, nil, nil, nil, nil, manager, nil, attributes, nil)
 	for _, tc := range []struct {
 		name     string // route scenario name
 		platform string // provider platform identity

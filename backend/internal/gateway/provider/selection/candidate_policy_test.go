@@ -19,13 +19,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// candidateAttributeRepo supplies protocol-scoped attributes for candidate eligibility tests.
-type candidateAttributeRepo struct {
-	failure                          error                         // configured profile read failure
-	routing.ModelAttributeRepository                               // unused attribute repository operations
-	config                           *routing.ModelAttributeConfig // configured route capability rules
-}
-
 // TestMixedGroupImageCandidateUsesFinalMappedModel maps an image alias through
 // a wildcard provider scope. A text target is rejected and an image-generation
 // target passes, protecting final-model checks during image selection.
@@ -37,11 +30,6 @@ func TestMixedGroupImageCandidateUsesFinalMappedModel(t *testing.T) {
 	require.Equal(t, "MODEL_CAPABILITY_UNKNOWN", selector.candidateEligibilityReason(ctx, &value, "", "image-alias", false, ""))
 	value.Record.Credentials["model_mapping"] = map[string]any{"image-alias": "gpt-image-1"}
 	require.Empty(t, selector.candidateEligibilityReason(ctx, &value, "", "image-alias", false, ""))
-}
-
-// ForGroup returns the configured profile or read failure for this selection.
-func (r candidateAttributeRepo) ForGroup(context.Context, int64) (*routing.ModelAttributeConfig, error) {
-	return r.config, r.failure
 }
 
 // TestImageCandidateProtocolOverride declares image output on one upstream protocol.

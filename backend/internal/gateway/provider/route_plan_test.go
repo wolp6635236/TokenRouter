@@ -67,22 +67,22 @@ func TestProtocolRouteNativeFirstAndExplicitFallback(t *testing.T) {
 	selected, err = ProviderForProtocolAttempt(ctx, provider)
 	require.NoError(t, err)
 	require.Equal(t, providercore.APIProtocolResponses, ExecutionProtocolTarget(selected).GetAPIProtocol())
-	require.Equal(t, "https://relay.example/responses", ExecutionProtocolTarget(selected).GetCNProtocolBaseURL(providercore.APIProtocolResponses))
+	require.Equal(t, "https://relay.example/responses", ExecutionProtocolTarget(selected).GetTextAPIKeyProtocolBaseURL(providercore.APIProtocolResponses))
 	// Conversion targets need not be exposed to clients; each failover candidate supplies its own protocol set.
 	require.False(t, group.AllowsClientProtocol(protocolcore.ProtocolOpenAIResponses))
 	next := *provider
 	next.Record.Credentials = map[string]any{providercore.UpstreamProtocolsKey: []string{"openai_chat_completions"}}
-	require.False(t, ExecutionModelPolicy(&next).AllowsProtocol(ctx))
+	require.False(t, ExecutionModelPolicy(&next).AllowsProtocol(ctx, ""))
 	group.ProtocolFallbacks[protocolcore.ProtocolAnthropicMessages] = []protocolcore.ProtocolID{}
 	ctx = requeststate.WithGroup(ctx, group)
-	require.False(t, ExecutionModelPolicy(provider).AllowsProtocol(ctx))
+	require.False(t, ExecutionModelPolicy(provider).AllowsProtocol(ctx, ""))
 }
 
-// TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming creates an attempt
+// TestRoutePlanRebuildsCandidateAndRetainsModelSnapshot creates an attempt
 // from a shared provider target and changes its model rules. Candidate state
-// stays on the attempt, later mapping reads see its replacement credentials,
+// stays on the attempt, later mapping reads retain the captured identity,
 // and incompatible fresh protocols return an error.
-func TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming(t *testing.T) {
+func TestRoutePlanRebuildsCandidateAndRetainsModelSnapshot(t *testing.T) {
 	group := &routing.Group{ID: 7, AllowedProtocols: []protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages}, ProtocolFallbacks: map[protocolcore.ProtocolID][]protocolcore.ProtocolID{protocolcore.ProtocolAnthropicMessages: {protocolcore.ProtocolOpenAIResponses}}}
 	ctx := requeststate.WithClientProtocol(requeststate.WithGroup(context.Background(), group), protocolcore.ProtocolAnthropicMessages)
 	mapping := routing.GroupMappingResult{MappedModel: "group-model", Mapped: true, PricingConfigID: 9, BillingModelSource: "requested"}
@@ -98,9 +98,26 @@ func TestRoutePlanRebuildsCandidateAndKeepsModelReadTiming(t *testing.T) {
 	require.True(t, captured)
 	require.Equal(t, "first", ExecutionModelPolicy(first).Mapped("group-model"))
 	first.Record.Credentials = map[string]any{providercore.UpstreamProtocolsKey: []string{"openai_responses"}, "model_mapping": map[string]any{"group-model": "latest"}}
-	require.Equal(t, "latest", ExecutionModelPolicy(first).Mapped("group-model"))
+	require.Equal(t, "first", ExecutionModelPolicy(first).Mapped("group-model"))
+	refreshed, err := ProviderForProtocolAttempt(ctx, first)
+	require.NoError(t, err)
+	require.Equal(t, "latest", ExecutionModelPolicy(refreshed).Mapped("group-model"))
 	require.Equal(t, "first", ExecutionModelPolicy(shared).Mapped("group-model"))
 	first.Record.Credentials = map[string]any{providercore.UpstreamProtocolsKey: []string{"openai_chat_completions"}}
 	_, err = ProviderForProtocolAttempt(ctx, first)
 	require.Error(t, err, "已有尝试副本也须复核 fresh 能力")
+}
+
+// TestOpenCodeAttemptRetainsFinalModel binds an alias whose target is another
+// alias key. Mapping the requested or final spelling again keeps the admitted
+// model, so a captured target never takes a second alias hop.
+func TestOpenCodeAttemptRetainsFinalModel(t *testing.T) {
+	value := &ExecutionProvider{Record: providercore.Record{ID: 7, Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test", "model_mapping": map[string]any{"a": "minimax-m3", "minimax-m3": "claude-opus-4-7"}}}}
+	plan := routing.Plan(routing.PlanInput{RequestedModel: "a", ClientProtocol: protocolcore.ProtocolOpenAIChatCompletions})
+	ctx := requeststate.WithRoutePlan(requeststate.WithClientProtocol(context.Background(), protocolcore.ProtocolOpenAIChatCompletions), plan)
+	attempt, err := ProviderForProtocolAttempt(ctx, value)
+	require.NoError(t, err)
+	policy := ExecutionModelPolicy(attempt)
+	require.Equal(t, "minimax-m3", policy.UpstreamModel(ctx, "a"))
+	require.Equal(t, "minimax-m3", policy.UpstreamModel(ctx, "minimax-m3"))
 }

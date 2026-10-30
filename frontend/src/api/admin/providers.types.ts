@@ -19,6 +19,7 @@ export type ProviderPlatform =
   | 'zhipu'
   | 'deepseek'
   | 'jev'
+  | 'opencode'
 
 // ProviderType identifies the credential and connection mode of an upstream provider.
 export type ProviderType =
@@ -507,6 +508,7 @@ export type UpstreamUsageAdapter =
   | 'kimi_coding'
   | 'zhipu_coding'
   | 'deepseek_balance'
+  | 'opencode_go'
 
 // UpstreamUsageAmount contains optional used, total, and remaining upstream quota
 // amounts.
@@ -526,6 +528,7 @@ export interface UpstreamUsageBalanceEntry {
 // UpstreamUsageLimit reports consumption and reset information for a named upstream
 // limit.
 export interface UpstreamUsageLimit {
+  status?: string // Upstream allowance status.
   name: string // Record display name.
   used?: number // Consumed allowance amount.
   limit?: number // Observed quota ceiling.
@@ -869,6 +872,7 @@ export interface ProviderUsageHistory {
 // ProviderUsageSummary aggregates provider activity and identifies the highest-cost and
 // busiest days.
 export interface ProviderUsageSummary {
+  incomplete_cost_requests?: number // Requests with unknown or partial expense.
   days: number // Requested reporting duration days.
   actual_days_used: number // Days with observed usage.
   total_cost: number // Provider cost (provider multiplier)

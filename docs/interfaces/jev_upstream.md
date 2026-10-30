@@ -7,7 +7,7 @@
 
 提供商使用 `platform=jev`、`type=apikey`，品牌标识为 `typesafe`。`credentials.api_key` 保存 TypeSafe 或兼容上游的 API Key，`base_url` 缺省为 `https://api.typesafe.ai`。请求使用 Bearer 认证，地址校验、代理和请求头覆写由共享传输组件处理。
 
-客户端入口为 `POST /v1/systemone`。Jev 提供商默认启用 `systemone`，管理员需要在分组中开放这个入口。空的提供商协议集合关闭新请求。SystemOne 支持同步 JSON 请求，问题类型为 `noul`、`choice`、`score`；`stream=true` 返回 400。
+客户端入口为 `POST /v1/systemone`，也可以选择声明该模型支持 SystemOne 的 OpenCode 提供商，地址和认证见 [OpenCode 上游](opencode_upstream.md)。Jev 提供商默认启用 `systemone`，管理员需要在分组中开放这个入口。空的提供商协议集合关闭新请求。SystemOne 支持同步 JSON 请求，问题类型为 `noul`、`choice`、`score`；`stream=true` 返回 400。
 
 请求需要 `model`、`state` 和非空的 `questions`。state 和问题 instructions 接受字符串、对象或数组。请求按照复合 Key、Key 重定向、分组映射、提供商映射的顺序解析模型，替换顶层 model 后发送。问题和扩展字段随请求转发。内容审核从 state、instructions 和 criteria 中提取 JSON 解码后的键和值，转义字符与明文使用相同的关键词匹配。字面反斜杠按一次 JSON 解码的结果处理。
 
@@ -21,7 +21,7 @@ app 通过 `provideSystemOneExecutor` 构造决策执行器，直接注入共享
 
 池模式按配置的状态码和次数在同一提供商上重试，耗尽后才占用换号预算。原地重试期间持有提供商租约，每次请求前复查资金和价格。退避使用共享默认间隔，并等待上游要求的 Retry-After；客户端取消会结束等待并释放租约。管理员的停调策略命中时，直接换号。
 
-最终错误按 `jev` 匹配管理员的错误响应规则，覆盖重试耗尽和 422 等直接返回的错误。状态码、自定义消息和监控跳过按命中规则处理。规则改写后的错误使用未压缩的 JSON，响应头设置为 `application/json; charset=utf-8` 并移除上游的 `Content-Encoding`。直接返回的错误没有命中规则时，交付上游报文。自定义错误码功能启用但未命中时，返回通用 500。
+最终错误按实际选中提供商的平台（`jev` 或 `opencode`）匹配管理员的错误响应规则，覆盖重试耗尽和 422 等直接返回的错误。状态码、自定义消息和监控跳过按命中规则处理。规则改写后的错误使用未压缩的 JSON，响应头设置为 `application/json; charset=utf-8` 并移除上游的 `Content-Encoding`。直接返回的错误没有命中规则时，交付上游报文。自定义错误码功能启用但未命中时，返回通用 500。
 
 <a id="systemone_usage"></a>
 ## 用量与价格
@@ -30,7 +30,7 @@ app 通过 `provideSystemOneExecutor` 构造决策执行器，直接注入共享
 
 成功响应的用量缺失、为负、类型错误或超出整数范围时，答案照常交付。网关记录 `systemone.usage_invalid` 告警和关联请求的 `usage_unknown` 尝试，跳过资金结算及正常用量账单。有效的零用量按正常响应处理。该响应结束本次上游尝试。
 
-models.dev 的默认 JSON 接口会过滤 decision 等特殊模型。目录同步使用 `catalog.json?type=all`，离线快照包含 Jev 属性及各渠道报价。`model_supplements.json` 在同一型号条目内保存 TypeSafe 直连的价格、缺失属性和核验来源，覆盖 `jev-latest`、`jev-preview`、`jev-1.13.0`。目录已有值优先，渠道价和免费价各自按完整 ID 查询。输入模态为文本，输出为结构化决策，在当前模态分类中标为 text 并声明 structured_output。
+models.dev 的默认 JSON 接口会过滤 decision 等特殊模型。目录同步使用 `catalog.json?type=all`，离线快照保留原始资料，解析时保留 Jev 公共属性和原厂记录，并排除第三方渠道报价。`model_supplements.json` 在同一型号条目内保存 TypeSafe 直连的价格、缺失属性和核验来源，覆盖 `jev-latest`、`jev-preview`、`jev-1.13.0`。目录已有值优先，渠道售价可通过价卡或本地补充按完整 ID 配置，明确零价保持有效。输入模态为文本，输出为结构化决策，在当前模态分类中标为 text 并声明 structured_output。
 
 ## 管理与展示
 

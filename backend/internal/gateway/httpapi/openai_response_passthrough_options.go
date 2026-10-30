@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -115,19 +114,6 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 		Headers: func(dst, src http.Header) {
 			WriteOpenAIPassthroughResponseHeaders(dst, src, p.Headers)
 		},
-		StartKeepalive: func(headers http.Header) func() {
-			// Prepared headers must reach the live writer before a heartbeat can
-			// commit its status; copy value slices to keep later header-map edits separate.
-			for key, values := range headers {
-				c.Writer.Header()[key] = append([]string(nil), values...)
-			}
-			if p.Options.Configured && p.Options.StreamKeepaliveInterval > 0 {
-				// Heartbeat settings store seconds; the reader receives its stop callback
-				// and ends that writer before its own response lifetime finishes.
-				return StartOpenAISSEKeepalive(c, time.Duration(p.Options.StreamKeepaliveInterval)*time.Second)
-			}
-			return func() {}
-		},
 		MissingUsage: func(resp *http.Response, usage *openai.ForwardUsage, event string, disconnected bool) {
 			if resp == nil {
 				return
@@ -141,8 +127,8 @@ func (p *OpenAIResponseOutput) PassthroughOptions(ctx context.Context, c *gin.Co
 		MissingTerminal: func(id string) {
 			logging.FromContext(ctx).With(zap.String("component", "service.openai_gateway"), zap.Int64("provider_id", provider.Record.ID), zap.String("upstream_request_id", id)).Info("OpenAI passthrough upstream stream ended without [DONE], possible interrupted stream")
 		},
-		PassthroughFailoverWithModel: func(id string, body []byte, message, model string) error {
-			return p.NewStreamFailureWithModel(c, provider, true, id, body, message, model)
+		PassthroughFailoverWithModel: func(id string, body []byte, message, model string, headers http.Header) error {
+			return p.NewStreamFailureWithModel(c, provider, true, id, body, message, model, headers)
 		},
 	}
 }

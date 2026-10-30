@@ -80,7 +80,7 @@ WITH stats AS (
     COALESCE(SUM(ul.output_tokens), 0)::bigint AS total_output_tokens,
     COALESCE(ROUND(AVG(ul.duration_ms)::numeric, 0), 0)::bigint AS avg_duration_ms,
     COUNT(CASE WHEN ` + usageTTFTSQL("ul") + ` IS NOT NULL THEN 1 END)::bigint AS requests_with_first_token
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   ` + join + `
   ` + where + `
   GROUP BY ul.model

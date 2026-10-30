@@ -90,10 +90,10 @@ type HealthOptions struct {
 	// RateLimit429Settings reads reset-less 429 policy. Missing, nil, or failed
 	// reads keep Fallback429Cooldown's built-in enabled policy available.
 	RateLimit429Settings func(context.Context) (*RateLimit429CooldownSettings, error)
-	// CNIntervalMinutes is the configured monitor interval used by
-	// CNBalanceCooldownDuration to derive the insufficient-balance cooldown and
+	// UsageMonitorIntervalMinutes is the configured monitor interval used by
+	// BalanceCooldownDuration to derive the insufficient-balance cooldown and
 	// resolve its defaults.
-	CNIntervalMinutes int
+	UsageMonitorIntervalMinutes int
 	// ForbiddenCounter supplies shared OpenAI 403 counts. With threshold handling
 	// enabled, an absent counter selects authentication failure rather than a
 	// verified subthreshold pause.

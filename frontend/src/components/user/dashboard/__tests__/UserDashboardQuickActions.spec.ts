@@ -1,19 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { nextTick, ref } from 'vue'
+import { nextTick } from 'vue'
 import { useAppStore } from '@/stores/app'
 import type { PublicSettings } from '@/api/settings.types'
 import UserDashboardQuickActions from '../UserDashboardQuickActions.vue'
 
 // UserDashboardQuickActions.spec.ts mounts dashboard shortcuts with controlled feature
-// availability. It checks visible destinations and navigation while the app store and batch-
-// image access composable provide deterministic account permissions for each scenario.
+// availability. It checks visible destinations and navigation while the app store supplies
+// deterministic public payment settings for each scenario, including changes after mount.
 
-// Router and access-refresh spies capture shortcut navigation and mount effects while the
+// Router spies capture shortcut navigation while the
 // app store controls payment-entry visibility in each scenario.
 const routerPush = vi.fn()
-const refreshBatchImageAccess = vi.fn()
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: routerPush }),
@@ -26,13 +25,6 @@ vi.mock('vue-i18n', async () => {
     useI18n: () => ({ t: (key: string) => key }),
   }
 })
-
-vi.mock('@/composables/useBatchImageAccess', () => ({
-  useBatchImageAccess: () => ({
-    canUseBatchImage: ref(false),
-    refreshBatchImageAccess,
-  }),
-}))
 
 describe('UserDashboardQuickActions', () => {
   beforeEach(() => {

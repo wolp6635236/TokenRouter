@@ -32,6 +32,13 @@ import (
 // and lightweight reader methods required by selection.
 var _ Groups = (*mockGroupRepoForGemini)(nil)
 
+// candidateAttributeRepo supplies attribute profiles for candidate and probe tests.
+type candidateAttributeRepo struct {
+	failure                          error                         // configured profile read failure
+	routing.ModelAttributeRepository                               // unused attribute repository operations
+	config                           *routing.ModelAttributeConfig // configured route capability rules
+}
+
 // grokFreeQuotaUsageRepoStub records quota usage reads and copies provider
 // statistics under its mutex.
 type grokFreeQuotaUsageRepoStub struct {
@@ -819,6 +826,11 @@ func newCompatibleSelectionForTest(deps CompatibleDependencies, cfg *config.Conf
 		deps.Parameters = schedulercore.NewParameters(schedulercore.NewSettingsRuntime(schedulercore.Diagnostics{}), nil, diagnosticParameterDefaults(cfg))
 	}
 	return NewCompatible(deps, selectionOptionsForTest(cfg))
+}
+
+// ForGroup returns the configured profile or read failure for this selection.
+func (r candidateAttributeRepo) ForGroup(context.Context, int64) (*routing.ModelAttributeConfig, error) {
+	return r.config, r.failure
 }
 
 // selectionFixtureGroupID returns a fixture group from request state, candidate

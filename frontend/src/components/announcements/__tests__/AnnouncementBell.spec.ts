@@ -96,9 +96,9 @@ describe('AnnouncementBell', () => {
     expect(dialog?.querySelectorAll('[data-testid="announcement-list-status-read"]')).toHaveLength(
       1,
     )
-    expect(dialog?.querySelectorAll('[data-testid="announcement-list-unread-pulse"]')).toHaveLength(
-      1,
-    )
+    expect(
+      dialog?.querySelectorAll('[data-testid="announcement-list-unread-marker"]'),
+    ).toHaveLength(1)
     expect(dialog?.textContent).toContain('1 announcements.unread')
 
     wrapper.unmount()

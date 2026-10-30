@@ -48,8 +48,8 @@ type KimiBalanceUsageAdapter struct{}
 // converts it to percent, while a nonpositive limit reports zero utilization.
 // The parser retains over-one-hundred percentages and optional normalized reset
 // text, and later details cannot add duplicate five-hour windows.
-func ParseKimiUsageTiers(body []byte) []usageview.CNQuotaTier {
-	var tiers []usageview.CNQuotaTier
+func ParseKimiUsageTiers(body []byte) []usageview.PercentageQuotaWindow {
+	var tiers []usageview.PercentageQuotaWindow
 
 	if limits := gjson.GetBytes(body, "limits"); limits.IsArray() {
 		limits.ForEach(func(_, item gjson.Result) bool {
@@ -61,8 +61,8 @@ func ParseKimiUsageTiers(body []byte) []usageview.CNQuotaTier {
 			// Unsupported fields become zero, while returned
 			// nonfinite values can reach the calculation; callers
 			// validate the derived percentage separately.
-			limit, _ := usageclient.CnParseF64(detail.Get("limit").Value())
-			remaining, _ := usageclient.CnParseF64(detail.Get("remaining").Value())
+			limit, _ := usageclient.ParseFloat64(detail.Get("limit").Value())
+			remaining, _ := usageclient.ParseFloat64(detail.Get("remaining").Value())
 			used := limit - remaining
 			// A remaining amount above the limit would imply
 			// negative usage. Floor that derived amount so the
@@ -76,10 +76,10 @@ func ParseKimiUsageTiers(body []byte) []usageview.CNQuotaTier {
 				// percentage unit.
 				util = used / limit * 100
 			}
-			tiers = append(tiers, usageview.CNQuotaTier{
+			tiers = append(tiers, usageview.PercentageQuotaWindow{
 				Window:      "5h",
 				UsedPercent: util,
-				ResetAt:     usageclient.CnNormalizeResetTime(detail.Get("resetTime").Value()),
+				ResetAt:     usageclient.NormalizeResetTime(detail.Get("resetTime").Value()),
 			})
 			// Stop at the selected detail so subsequent limit
 			// entries cannot add another five-hour window to the
@@ -93,8 +93,8 @@ func ParseKimiUsageTiers(body []byte) []usageview.CNQuotaTier {
 		// success flags. Keep window metadata while shared limit
 		// normalization checks the derived percentage, including any
 		// nonfinite calculation result.
-		limit, _ := usageclient.CnParseF64(usage.Get("limit").Value())
-		remaining, _ := usageclient.CnParseF64(usage.Get("remaining").Value())
+		limit, _ := usageclient.ParseFloat64(usage.Get("limit").Value())
+		remaining, _ := usageclient.ParseFloat64(usage.Get("remaining").Value())
 		used := limit - remaining
 		// Weekly remaining can exceed the limit too. Floor derived
 		// usage so this observation uses the same nonnegative
@@ -107,10 +107,10 @@ func ParseKimiUsageTiers(body []byte) []usageview.CNQuotaTier {
 			// Express weekly usage in the shared percentage unit.
 			util = used / limit * 100
 		}
-		tiers = append(tiers, usageview.CNQuotaTier{
+		tiers = append(tiers, usageview.PercentageQuotaWindow{
 			Window:      "7d",
 			UsedPercent: util,
-			ResetAt:     usageclient.CnNormalizeResetTime(usage.Get("resetTime").Value()),
+			ResetAt:     usageclient.NormalizeResetTime(usage.Get("resetTime").Value()),
 		})
 	}
 
@@ -126,7 +126,7 @@ func (*KimiCodingUsageAdapter) Name() string { return usageview.UpstreamUsageAda
 // unsuccessful HTTP status return shared usage errors.
 func (*KimiCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
-	endpoint, err := usageclient.CnUsageEndpoint(client.BaseURL, "/v1/usages", true)
+	endpoint, err := usageclient.FixedUsageEndpoint(client.BaseURL, "/v1/usages", true)
 	if err != nil {
 		return nil, usageview.ErrUpstreamUsageConfigInvalid.WithCause(err)
 	}
@@ -134,11 +134,11 @@ func (*KimiCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.R
 	if err != nil {
 		return nil, err
 	}
-	if err := usageclient.ValidateCNUsageStatus(status); err != nil {
+	if err := usageclient.UpstreamUsageHTTPError(status, true); err != nil {
 		return nil, err
 	}
 	tiers := ParseKimiUsageTiers(body)
-	return usageclient.CnUsageLimits("kimi", tiers)
+	return usageclient.PercentageUsageLimits("kimi", tiers)
 }
 
 // Name returns the registry identifier for Kimi CNY wallet-balance queries.
@@ -150,7 +150,7 @@ func (*KimiBalanceUsageAdapter) Name() string { return usageview.UpstreamUsageAd
 // absent, unparseable, or nonfinite available_balance.
 func (*KimiBalanceUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
-	endpoint, err := usageclient.CnUsageEndpoint(client.BaseURL, "/v1/users/me/balance", false)
+	endpoint, err := usageclient.FixedUsageEndpoint(client.BaseURL, "/v1/users/me/balance", false)
 	if err != nil {
 		return nil, usageview.ErrUpstreamUsageConfigInvalid.WithCause(err)
 	}
@@ -158,13 +158,13 @@ func (*KimiBalanceUsageAdapter) Query(ctx context.Context, input *usagecontract.
 	if err != nil {
 		return nil, err
 	}
-	if err := usageclient.ValidateCNUsageStatus(status); err != nil {
+	if err := usageclient.UpstreamUsageHTTPError(status, true); err != nil {
 		return nil, err
 	}
 	if code := gjson.GetBytes(body, "code"); code.Exists() && code.Int() != 0 {
 		return nil, usageview.ErrUpstreamUsageInvalidResponse
 	}
-	value, ok := usageclient.CnParseF64(gjson.GetBytes(body, "data.available_balance").Value())
+	value, ok := usageclient.ParseFloat64(gjson.GetBytes(body, "data.available_balance").Value())
 	if !ok || !usageview.ValidFiniteNumber(value) {
 		return nil, usageview.ErrUpstreamUsageInvalidResponse
 	}

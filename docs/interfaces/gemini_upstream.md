@@ -9,6 +9,7 @@
 - [模型与会话](#模型与会话)：修改模型解析、thinking、signature 或缓存连续性时读取。
 - [配额与调度](#配额与调度)：修改 tier、模型限流或粘性时读取。
 - [错误与诊断](#错误与诊断)：修改 Google 错误、刷新或 failover 时读取。
+- [SSE 生命周期](#gemini_stream_lifecycle)：修改心跳、帧读取、终态、空闲超时或流内错误时读取。
 - [原生执行与提供商授权](#gemini_native_execution)：修改执行器、授权会话或批量调用时读取。
 - [Vertex 服务账号与对象流](#vertex_service_account_execution)：修改 Vertex token、Batch 或 GCS 时读取。
 
@@ -28,7 +29,7 @@ Gemini 正式支持：
 
 Code Assist 和 Google One 需要有效的 project；AI Studio 的 project 可选，并使用所选的 tier。第三方 API Key 保持 `type=apikey` 和兼容 Gemini 的请求格式，但需要配置非 Google 官方域名的 Base URL；它没有 Google 官方的提供商等级，所以不写 `tier_id`，也不参与本地模拟的 RPD、RPM 预检和用量窗口。本地配额预检由 app 构造一个 `provider.GeminiPrecheck`，直接绑定给执行方，按洛杉矶时间的日界读取 usage 批量数据和缓存。
 
-第三方上游实际返回 `429` 时，都使用通用冷却，不按 Google 日配额的重置规则解析。OAuth refresh 会重试，并兼容历史的 client 元数据；token provider 在过期前提前刷新，并用并发锁防止同一提供商重复刷新。其他导入类型没有 Gemini 的正式转发实现，见[上游提供商能力矩阵](upstream_provider_matrix.md)。
+Gemini 平台的第三方上游实际返回 `429` 时，使用配置的通用冷却，不按 Google 日配额的重置规则解析。OpenCode 等非 Google 账户的提供商只复用 Gemini 报文处理，不适用 Google 的项目配置换号、countTokens 估算兜底和本地重试；健康观察使用共享错误策略及 Retry-After，同一提供商重试最多等待 8 秒。普通重试由外层提供商预算控制，协议签名修复单独有界执行。OAuth refresh 会重试，并兼容历史的 client 元数据；token provider 在过期前提前刷新，并用并发锁防止同一提供商重复刷新。其他导入类型没有 Gemini 的正式转发实现，见[上游提供商能力矩阵](upstream_provider_matrix.md)。
 
 <a id="gemini_protocol_dispatch"></a>
 ## 协议分派
@@ -39,11 +40,11 @@ Gemini SDK 和 CLI 使用 `/v1beta/models`、`/v1beta/models/{model}` 和 `{mode
 
 GenerateContent、StreamGenerateContent 和 CountTokens 的 POST 动作，受分组的 Gemini 协议开关控制；模型列表的 GET 不受影响。分组可以开放哪些入口，见[统一协议能力](protocol_capabilities.md#group_protocol_routes)。
 
-Responses 转换是正式支持的分支：非流式和 SSE 共用 Gemini 的上游执行、重试和响应适配，保留模型、reasoning、工具调用、usage、结束原因和首 Token 指标。上游失败时，只有在客户端收到第一个字节之前才能换提供商；流开始后，按 Responses SSE 的规则结束，不会改写成普通 JSON，也不会换提供商。
+Responses 转换是正式支持的分支：非流式和 SSE 共用 Gemini 的上游执行、重试和响应适配，保留模型、reasoning、工具调用、usage、结束原因和首 Token 指标。上游失败时，只有心跳的响应仍可按既有策略换提供商；非心跳协议输出之后，错误按当前 SSE 协议结束，不再换号或追加普通 JSON。
 
 Messages、Chat 和 Responses 转换先按最终服务与模型解析能力，再发送 thinking 控制。Gemini 2.5 的预算型条目使用 `thinkingBudget`，档位型条目使用 `thinkingLevel`；两个字段互斥。客户端的关闭、effort 和预算来自转换前的请求，明确的零预算会保留。原生 GenerateContent 入口按同一采样规则处理 `generationConfig` 和 `generation_config`，以及 `topP` 和 `top_p`。`reasoning=true` 与可调选项分开判断：选项缺失时继续转发客户端控制，空集合表示没有可配置控制。参数集合与管理员覆盖见[统一模型属性](model_catalog_and_marketplace.md#model_attributes)。
 
-API Key、OAuth 和 Vertex Service Account 在认证头、base URL、project 和 location、错误结构上都不同，协议转换后这些传输差异仍然保留。每次 failover attempt 都重新选择提供商并重建 payload，流式输出开始后不再切换。
+API Key、OAuth 和 Vertex Service Account 在认证头、base URL、project 和 location、错误结构上都不同，协议转换后这些传输差异仍然保留。每次 failover attempt 都重新选择提供商并重建 payload；真正的协议输出关闭重试窗口，排队与空闲心跳不关闭。
 
 Antigravity 的专用入口 `/antigravity/v1beta/*` 强制选择 Antigravity 提供商，规则见 [Antigravity 上游](antigravity_upstream.md)。
 
@@ -70,6 +71,21 @@ Antigravity 提供商可以和 Gemini 提供商在同一个分组里参与调度
 OAuth refresh、Service Account token、project 和 tier 发现、上游请求的错误分别记录。401 和 403 需要区分凭据、project 或 region、API 未启用，还是策略拒绝；429 解析 reset 时间并更新限流；网络错误和 5xx 只在响应还没开始时才换提供商。
 
 Gemini 原生入口返回 Google 格式的错误，Anthropic 和 OpenAI 入口返回对应客户端的格式。最终错误可以应用[网关错误响应策略](gateway_error_policy.md)，但 project、service account JSON、token、API key 和上游的内部响应，默认都不透传。排查问题时，核对 OAuth 变体、project、location 和 tier、最终的模型、thought 和 session 状态、配额 reset 时间和 attempt 链。
+
+<a id="gemini_stream_lifecycle"></a>
+## SSE 生命周期
+
+Gemini REST、OAuth、Vertex 共用的 SSE 读取，以及 Antigravity 的 Gemini 原生输出，使用 `upstream.ReadGeminiStream`。Messages、Chat、Responses 转换和非流式客户端汇总上游 SSE 也遵守相同的读取规则。普通 JSON 上游不经过这个读取器。
+
+读取器按完整事件处理 LF、CRLF 和多行 data，允许 JSON 完整但缺少末尾空行的最后一帧。`MaxLineSize` 在这里约束完整帧字节，包括忽略的注释和元数据。无效 JSON、超限帧、空流以及缺失终态的 EOF 都返回失败。原生输出只包含单行 `data: <JSON>\n\n`，平台解包后仍保留未知 JSON 字段；event、id、retry 和上游心跳不转给 Google SDK。中央及排队保活均发送 `\n\n` 空事件，计入心跳字节，且不建立业务输出、TTFT 或重试提交。第三方上游仅含空 candidates 的占位帧也按空事件消费，不建立首事件时间；带有其他实际元数据的帧仍保留。
+
+候选索引按最终请求的 `candidateCount` 跟踪，默认一个候选；一个候选结束不能提前完成其他候选。所有预期候选完成或出现明确的 `promptFeedback.blockReason` 时建立终态。有效候选内容之后的 `[DONE]` 也作为兼容完成信号，但该字符串不下发；只有用量、心跳或 DONE 的响应仍判为空流。工具调用、安全阻止和 `MAX_TOKENS` 等合法结果保留原来的转换语义。
+
+等待响应头由传输层超时控制。响应头到达后，`stream_data_interval_timeout` 限制实际读到上游字节之间的空闲，默认 180 秒，0 禁用；上游心跳会更新这个时钟，本地下游心跳不会。有效终态后停止下游心跳，并继续接收用量尾帧，直到 EOF、DONE 或固定五秒上限。尾部传输中断或到期记录 `gemini.stream_tail_incomplete`，保留已完成结果与已有用量；明确的上游业务错误仍返回失败。每次结束都关闭响应体并等待读取协程退出。
+
+HTTP 200 中的 Google error 在转换之前识别，不能被吞掉或补成成功结束。本地读超时、截断和格式故障按 502 进入既有策略；上游明确错误保留状态及安全消息。尚未提交 HTTP 时使用 JSON 错误，已提交原生 SSE 时使用 data-only Google error 对象，包含 code、message 和 status；转换入口使用各自的流式错误，且只呈现一次。读取失败保留已观测的部分结果，结算资格仍由原有入口规则判断。
+
+汇总上游 SSE 时，各候选分别累积内容与终态，不能被另一个候选覆盖。相邻文本只有在其他元数据完全一致时才合并，以保留不同的 thought signature。稀疏用量尾帧仅更新出现且非 null 的字段，明确的零值仍有效；缺失字段不会抹掉先前观察到的输入或缓存计数。
 
 <a id="gemini_native_execution"></a>
 ## 原生执行与提供商授权

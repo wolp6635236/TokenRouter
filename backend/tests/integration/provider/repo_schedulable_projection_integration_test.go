@@ -4,19 +4,24 @@ package provider_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/TokenFlux/TokenRouter/ent"
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// The schedulable load query needs the same candidate IDs and order as the full
-// provider query. PostgreSQL fixtures compare both results across disabled,
-// expired, overloaded, rate-limited, and temporarily blocked states, and check
-// load-factor and concurrency defaults.
+// repo_schedulable_projection_integration_test.go checks provider eligibility
+// and the lightweight load projection against PostgreSQL. Fixtures cover
+// disabled, expired, overloaded, rate-limited, and temporarily paused providers,
+// with platform and membership restrictions, hydrated groups, priority ordering,
+// and load-factor defaults.
 
 // TestListSchedulableProviderLoadsMatchesListSchedulable creates PostgreSQL
 // providers spanning configuration, health-window, and expiry conditions.
@@ -114,5 +119,117 @@ func TestListSchedulableProviderLoadsMatchesListSchedulable(t *testing.T) {
 	}
 	for _, excluded := range []*providercore.Record{disabled, unschedulable, expired, overloaded, rateLimited, tempBlocked} {
 		require.NotContains(t, byID, excluded.ID)
+	}
+}
+
+// TestPlatformSchedulingEligibility applies every platform selector to the same
+// PostgreSQL fixtures. Eligibility windows, membership filtering, hydration,
+// and priority ordering agree across single-platform and multiple-platform calls.
+func TestPlatformSchedulingEligibility(t *testing.T) {
+	ctx := t.Context()
+	tx := testEntTx(t)
+	client := tx.Client()
+	repo := newProviderStoreContract(client, tx, nil)
+	group := mustCreateGroup(t, client, &routing.Group{Name: "platform-eligibility"})
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	fixtures := []struct {
+		name     string                       // fixture state label
+		platform string                       // stored platform identifier
+		eligible bool                         // expected window eligibility
+		grouped  bool                         // attach group membership
+		update   func(*ent.ProviderUpdateOne) // optional state mutation
+	}{
+		{name: "ordinary", eligible: true},
+		{name: "grouped", eligible: true, grouped: true},
+		{name: "disabled", update: func(q *ent.ProviderUpdateOne) { q.SetStatus(billing.StatusDisabled) }},
+		{name: "unschedulable", update: func(q *ent.ProviderUpdateOne) { q.SetSchedulable(false) }},
+		{name: "deleted", update: func(q *ent.ProviderUpdateOne) { q.SetDeletedAt(past) }},
+		{name: "expired", update: func(q *ent.ProviderUpdateOne) {
+			q.SetExpiresAt(past)
+			q.SetAutoPauseOnExpired(true)
+		}},
+		{name: "expired-allowed", eligible: true, update: func(q *ent.ProviderUpdateOne) {
+			q.SetExpiresAt(past)
+			q.SetAutoPauseOnExpired(false)
+		}},
+		{name: "future-expiry", eligible: true, update: func(q *ent.ProviderUpdateOne) {
+			q.SetExpiresAt(future)
+			q.SetAutoPauseOnExpired(true)
+		}},
+		{name: "overload", update: func(q *ent.ProviderUpdateOne) { q.SetOverloadUntil(future) }},
+		{name: "overload-cleared", eligible: true, update: func(q *ent.ProviderUpdateOne) { q.SetOverloadUntil(past) }},
+		{name: "rate-limit", update: func(q *ent.ProviderUpdateOne) { q.SetRateLimitResetAt(future) }},
+		{name: "rate-limit-cleared", eligible: true, update: func(q *ent.ProviderUpdateOne) { q.SetRateLimitResetAt(past) }},
+		{name: "temp-pause", update: func(q *ent.ProviderUpdateOne) { q.SetTempUnschedulableUntil(future) }},
+		{name: "temp-pause-cleared", eligible: true, update: func(q *ent.ProviderUpdateOne) { q.SetTempUnschedulableUntil(past) }},
+		{name: "openai", platform: capability.PlatformOpenAI, eligible: true},
+		{name: "gemini", platform: capability.PlatformGemini, eligible: true},
+	}
+	providerIDs := make([]int64, len(fixtures))
+	for index, fixture := range fixtures {
+		provider := mustCreateProvider(t, client, &providercore.Record{
+			Name:     "eligibility-" + fixture.name,
+			Platform: fixture.platform,
+			Priority: len(fixtures) - index,
+		})
+		providerIDs[index] = provider.ID
+		if fixture.update != nil {
+			update := client.Provider.UpdateOneID(provider.ID)
+			fixture.update(update)
+			require.NoError(t, update.Exec(ctx))
+		}
+		if fixture.grouped {
+			mustBindProviderToGroup(t, client, provider.ID, group.ID)
+		}
+	}
+
+	for _, test := range []struct {
+		name      string                                               // selected method label
+		multiple  bool                                                 // include OpenAI providers
+		ungrouped bool                                                 // exclude grouped providers
+		query     func(context.Context) ([]providercore.Record, error) // selector under test
+	}{
+		{name: "platform", query: func(ctx context.Context) ([]providercore.Record, error) {
+			return repo.ListSchedulableByPlatform(ctx, capability.PlatformAnthropic)
+		}},
+		{name: "platforms", multiple: true, query: func(ctx context.Context) ([]providercore.Record, error) {
+			return repo.ListSchedulableByPlatforms(ctx, []string{capability.PlatformAnthropic, capability.PlatformOpenAI})
+		}},
+		{name: "ungrouped_platform", ungrouped: true, query: func(ctx context.Context) ([]providercore.Record, error) {
+			return repo.ListSchedulableUngroupedByPlatform(ctx, capability.PlatformAnthropic)
+		}},
+		{name: "ungrouped_platforms", multiple: true, ungrouped: true, query: func(ctx context.Context) ([]providercore.Record, error) {
+			return repo.ListSchedulableUngroupedByPlatforms(ctx, []string{capability.PlatformAnthropic, capability.PlatformOpenAI})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wantIDs := make([]int64, 0)
+			for index := range slices.Backward(fixtures) {
+				fixture := fixtures[index]
+				if !fixture.eligible || (test.ungrouped && fixture.grouped) || fixture.platform == capability.PlatformGemini {
+					continue
+				}
+				if fixture.platform == capability.PlatformOpenAI && !test.multiple {
+					continue
+				}
+				wantIDs = append(wantIDs, providerIDs[index])
+			}
+			records, err := test.query(t.Context())
+			require.NoError(t, err)
+			gotIDs := make([]int64, 0, len(records))
+			for _, record := range records {
+				gotIDs = append(gotIDs, record.ID)
+				if record.ID == providerIDs[1] {
+					require.Equal(t, []int64{group.ID}, record.GroupIDs)
+					require.Len(t, record.Groups, 1)
+					require.Equal(t, group.Name, record.Groups[0].Name)
+					require.Len(t, record.ProviderGroups, 1)
+				}
+			}
+			require.Equal(t, wantIDs, gotIDs)
+		})
 	}
 }

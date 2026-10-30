@@ -7,17 +7,17 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// requests.go resolves Responses target URLs and builds ordinary or
-// passthrough upstream requests.
-// Responses endpoint selection depends on credential type and the provider's
-// protocol-specific base URL. OAuth targets use the Codex address, while API
-// Key targets validate custom bases before endpoint suffix construction; native
-// CN bodies receive best-effort stateless patches before ordinary or passthrough
-// request builders add headers.
+// requests.go resolves Responses target URLs and builds ordinary or passthrough
+// upstream requests. Responses endpoint selection depends on credential type
+// and the provider's protocol-specific base URL. OAuth targets use the Codex
+// address, while API Key targets validate custom bases before endpoint suffix
+// construction; native Kimi, Zhipu, and DeepSeek bodies receive best-effort
+// stateless patches before ordinary or passthrough request builders add
+// headers.
 
 // RequestTargetOptions supplies credential type, default URLs, and target resolution callbacks.
 type RequestTargetOptions struct {
@@ -92,19 +92,17 @@ func BuildPassthroughRequest(ctx context.Context, body []byte, target RequestTar
 // base URL. DeepSeek uses an unversioned suffix; the endpoint joiner handles a
 // version already present in the base.
 func ResponsesEndpoint(platform, base string) string {
-	if platform == capability.PlatformDeepseek {
-		return httpclient.BuildOpenAIEndpointURL(base, "/responses")
-	}
-	return httpclient.BuildOpenAIEndpointURL(base, "/v1/responses")
+	return httpclient.BuildOpenAIEndpointURL(base, provider.ResponsesOperationPath(platform))
 }
 
-// NormalizeCNResponsesBody attempts stateless preparation for native CN
-// execution. A failed storage edit returns supplied bytes, and a failed
-// continuation deletion keeps the completed storage edit. Other routes borrow
-// the supplied slice, so callers retain stable bytes while forwarding.
-func NormalizeCNResponsesBody(native bool, body []byte) []byte {
-	// The native-CN marker scopes removal of server-side continuation state; other
-	// routes keep their supplied payload for their own protocol preparation.
+// NormalizeStatelessResponsesBody attempts stateless preparation for Kimi and
+// DeepSeek execution. A failed storage edit returns supplied bytes, and a
+// failed continuation deletion keeps the completed storage edit. Other routes
+// borrow the supplied slice, so callers retain stable bytes while forwarding.
+func NormalizeStatelessResponsesBody(native bool, body []byte) []byte {
+	// The Kimi and DeepSeek marker scopes removal of server-side continuation
+	// state; other routes keep their supplied payload for their own protocol
+	// preparation.
 	if !native {
 		return body
 	}

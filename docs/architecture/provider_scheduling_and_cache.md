@@ -103,11 +103,13 @@ OpenAI 兼容选择、诊断和 WS 复核共用 `ModelPolicy.SupportsCompatibleR
 <a id="scheduler_snapshot_consistency"></a>
 ## 快照一致性
 
-跨平台分组的调度 Redis 快照命名空间是 `sched:v5:`。完整和轻量两种提供商快照都带有 `upstream_protocols`、认证方式和 `responses_ws_connection_mode`，分组认证快照（版本 46）带有准入集合、转换映射和 Responses 图片策略。协议候选过滤在评分前执行，每次换号、fresh 复核和数据库复核时重新检查；转发目标只保存在本次的提供商副本里，共享缓存保持原样。
+跨平台分组的调度 Redis 快照命名空间是 `sched:v5:`。OpenCode 的完整和轻量快照保留模式、已接受目录及人工模型协议覆盖，候选过滤按最终映射模型解析原生协议。解析结果把最终模型和协议一起交给执行方，自动探针同样检查模型协议的启用状态。完整和轻量两种提供商快照都带有 `upstream_protocols`、认证方式和 `responses_ws_connection_mode`，分组认证快照（版本 46）带有准入集合、转换映射和 Responses 图片策略。协议候选过滤在评分前执行，每次换号、fresh 复核和数据库复核时重新检查；转发目标只保存在本次的提供商副本里，共享缓存保持原样。
 
 调度事件的格式、去重编码和 SQL 读写在 `scheduler` 和 `scheduler/postgres`。同一事务里写入的事件，提交后尽力发布。`scheduler.SnapshotService` 负责重建、事件消费和受限回退，网关读取和生命周期都直接绑定这个实例。`scheduler/rediscache` 负责 `sched:v5` 的快照发布、epoch 和 tombstone，bucket 锁继续使用 `sched:v4:lock:`，其中 `codec.ProviderCodec` 负责完整和轻量提供商的存储格式和字段过滤，使用 Provider 的字段名，并区分 nil 和空集合。
 
 Gemini 配额预检在补全提供商凭据之前执行，轻量快照需要保存 `provider_type`、`oauth_type` 和 `tier_id`。第三方提供商跳过本地官方配额预检，官方提供商按保存的等级选取配额；遗漏这些字段会让候选被按默认档位过滤。服务启动和周期重建会从数据库重新生成快照，修复字段过滤后，已有缓存通过重建更新。
+
+图片能力筛选也在补全提供商记录之前执行，轻量快照保留 `base_url`，使模型属性解析能够区分第三方中继与官方服务。OpenAI 兼容中继中的 Gemini 图片别名可以通过分组的 `reference_model` 继承图片能力；丢失地址会改变引用目标的服务身份，导致探针或图片请求被误判为能力未知。该字段通过现有的启动和周期重建进入已有缓存，无需修改分组属性配置。
 
 app 把 provider 和 routing 的存储、凭据刷新后的提供商记录绑定到同一个缓存，执行目标通过 app 注入的受控读取接口取得。编码器内部持有完整记录，核心只读取不含凭据的候选元数据。执行凭据由 provider 模块受控提供，分组数据从 routing 读取。
 

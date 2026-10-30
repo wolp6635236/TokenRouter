@@ -22,6 +22,7 @@ import (
 // before their referenced entities are soft-deleted or physically removed.
 // Counts, pagination, identity filters, platform snapshots, and token totals
 // remain stable; group-name drilldown reflects the remaining group rows.
+// Internal probe failures must not appear as successful customer requests.
 func TestHistoricalRequestQueriesKeepSavedDimensions(t *testing.T) {
 	ctx := t.Context()
 	start := time.Date(2042, 10, 23, 12, 0, 0, 0, time.UTC)
@@ -115,6 +116,12 @@ INSERT INTO ops_error_logs(request_id, platform, error_phase, error_type, status
 VALUES('error-exclusive-end', 'openai', 'request', 'api_error', 503, $1)`, end)
 	require.NoError(t, err)
 
+	// Internal usage can retain billable tokens after a failed exchange. Keep
+	// that expense out of the customer-success branch and its throughput totals.
+	_, err = integrationDB.ExecContext(ctx, `INSERT INTO usage_logs
+ (provider_id,request_id,platform,model,input_tokens,created_at,request_source,system_usage)
+ VALUES ($1,'system-failed','openai','saved-model',999,$2,'group_probe','{"outcome":"failed","usage_state":"partial","cost_state":"unknown"}')`, providerIDs[0], start.Add(30*time.Minute))
+	require.NoError(t, err)
 	repo := NewOpsRepository(integrationDB)
 	filter := &ops.OpsRequestDetailFilter{StartTime: &start, EndTime: &end, Page: 1, PageSize: 20}
 	before, beforeTotal, err := repo.ListRequestDetails(ctx, filter)

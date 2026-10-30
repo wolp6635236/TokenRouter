@@ -32,7 +32,7 @@ import (
 // Native Messages also needs local interception and serial message ownership
 // before platform forwarding. Qoder credential recovery stays within the same
 // target when its exchange returns nil result and leaves writer size unchanged.
-// First Gin header commitment changes that size and blocks recovery. Native result
+// Header-only commitment without recorded heartbeats blocks recovery. Native result
 // conversion copies token buckets but retains mutable metadata references, so
 // completion capture creates its own recording input before later request state
 // can change.
@@ -84,12 +84,12 @@ func (e *UnifiedTextExecutor) Responses(ctx context.Context, c *gin.Context, tar
 	defer func() { captureTextPerformance(c.Request.Context(), result, failure) }()
 	c.Request = c.Request.WithContext(ctx)
 	var err error
-	body, err = e.prepare(c, target, body, protocol.ProtocolOpenAIResponses)
+	target, body, err = e.prepare(c, target, body, protocol.ProtocolOpenAIResponses)
 	if err != nil {
 		return nil, err
 	}
 	ctx = c.Request.Context()
-	if target.View().IsOpenAICompatible() {
+	if usesOpenAIExecutor(target) {
 		return e.OpenAI.Forward(ctx, c, target, body)
 	}
 	return e.native(ctx, c, target, body, protocol.ProtocolOpenAIResponses)
@@ -104,12 +104,12 @@ func (e *UnifiedTextExecutor) Messages(ctx context.Context, c *gin.Context, targ
 	c.Request = c.Request.WithContext(ctx)
 	c.Set(nativeMessageInterceptedKey, false)
 	var err error
-	body, err = e.prepare(c, target, body, protocol.ProtocolAnthropicMessages)
+	target, body, err = e.prepare(c, target, body, protocol.ProtocolAnthropicMessages)
 	if err != nil {
 		return nil, err
 	}
 	ctx = c.Request.Context()
-	if target.View().IsOpenAICompatible() {
+	if usesOpenAIExecutor(target) {
 		return e.OpenAI.Text.Messages(ctx, c, target, body, cacheKey, model, tls...)
 	}
 	return e.native(ctx, c, target, body, protocol.ProtocolAnthropicMessages)
@@ -123,36 +123,46 @@ func (e *UnifiedTextExecutor) Chat(ctx context.Context, c *gin.Context, target *
 	defer func() { captureTextPerformance(c.Request.Context(), result, failure) }()
 	c.Request = c.Request.WithContext(ctx)
 	var err error
-	body, err = e.prepare(c, target, body, protocol.ProtocolOpenAIChatCompletions)
+	target, body, err = e.prepare(c, target, body, protocol.ProtocolOpenAIChatCompletions)
 	if err != nil {
 		return nil, err
 	}
 	ctx = c.Request.Context()
-	if target.View().IsOpenAICompatible() {
+	if usesOpenAIExecutor(target) {
 		return e.OpenAI.Text.Chat(ctx, c, target, body, cacheKey, model, tls...)
 	}
 	return e.native(ctx, c, target, body, protocol.ProtocolOpenAIChatCompletions)
 }
 
-// prepare records actual selected-provider attribution before checking price
-// and platform reasoning policy. Anthropic and OpenAI policy failures write
-// local permission output in the inbound format; other platforms retain the
-// supplied bytes after pricing, and caller context changes remain in Gin.
-func (e *UnifiedTextExecutor) prepare(c *gin.Context, target *gatewayadapter.ExecutionProvider, body []byte, source protocol.ProtocolID) ([]byte, error) {
+// prepare resolves the attempt route and records actual selected-provider
+// attribution before checking price and platform reasoning policy. It returns
+// the routed target, whose upstream protocol selects the executor. Anthropic
+// and OpenAI policy failures write local permission output in the inbound
+// format; other platforms retain the supplied bytes after pricing, and caller
+// context changes remain in Gin.
+func (e *UnifiedTextExecutor) prepare(c *gin.Context, target *gatewayadapter.ExecutionProvider, body []byte, source protocol.ProtocolID) (*gatewayadapter.ExecutionProvider, []byte, error) {
+	target, err := gatewayadapter.ProviderForProtocolAttempt(c.Request.Context(), target)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Failover can move to a provider served by the other executor family.
+	// Clear both observation slots so a failed attempt cannot attribute its
+	// predecessor's endpoint to this provider.
+	ClearActualOpenAIUpstreamEndpoint(c)
+	SetActualUpstreamEndpoint(c, "")
 	SetOpsSelectedProvider(c, target.Record.RoutingSnapshot())
 	if err := e.checkPricing(c, target, body, source); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	key, _ := EffectiveAPIKey(c)
 	var result []byte
-	var err error
 	switch target.Record.Platform {
 	case provider.PlatformAnthropic:
 		result, _, err = ApplyAnthropicReasoningEffortPolicyForRequest(c, key, body)
 	case provider.PlatformOpenAI:
 		result, _, err = ApplyOpenAIReasoningEffortPolicyForRequest(c, key, body)
 	default:
-		return body, nil
+		return target, body, nil
 	}
 	if err != nil {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
@@ -162,7 +172,14 @@ func (e *UnifiedTextExecutor) prepare(c *gin.Context, target *gatewayadapter.Exe
 			c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": err.Error(), "code": "reasoning_effort_limit"}})
 		}
 	}
-	return result, err
+	return target, result, err
+}
+
+// usesOpenAIExecutor reports whether the OpenAI-compatible executor serves the
+// target's attempt. Compatible platforms use it for every text protocol except
+// a Gemini route, whose request encoding belongs to the Gemini executor.
+func usesOpenAIExecutor(target *gatewayadapter.ExecutionProvider) bool {
+	return target.View().IsOpenAICompatible() && target.Route.Protocol() != protocol.ProtocolGeminiGenerateContent
 }
 
 // native dispatches one native-platform exchange and converts its retained
@@ -173,8 +190,8 @@ func (e *UnifiedTextExecutor) prepare(c *gin.Context, target *gatewayadapter.Exe
 // Platform adapters receive their specific protocol and session inputs; partial
 // results remain available alongside errors. Qoder can refresh credentials and
 // retry that same target once when the result is nil, writer size is unchanged
-// and the error allows refresh. First Gin header commitment changes -1 to zero
-// and prevents this retry. A successful refresh replaces the target record before
+// and the error allows refresh. Header-only commitment without recorded
+// heartbeats changes -1 to zero and prevents this retry. A successful refresh replaces the target record before
 // retry; failed refresh leaves the first execution error. No provider selection
 // is repeated by this function.
 func (e *UnifiedTextExecutor) native(ctx context.Context, c *gin.Context, target *gatewayadapter.ExecutionProvider, body []byte, source protocol.ProtocolID) (*forward.OpenAIResult, error) {
@@ -208,15 +225,7 @@ func (e *UnifiedTextExecutor) native(ctx context.Context, c *gin.Context, target
 			result, err = e.Anthropic.ForwardAsChatCompletions(ctx, c, target, body, nil)
 		}
 	case provider.PlatformGemini:
-		SetActualUpstreamEndpoint(c, EndpointGeminiModels)
-		switch source {
-		case protocol.ProtocolAnthropicMessages:
-			result, err = e.Gemini.Forward(ctx, c, target, body)
-		case protocol.ProtocolOpenAIResponses:
-			result, err = e.Gemini.ForwardAsResponses(ctx, c, target, body, nil)
-		default:
-			result, err = e.Gemini.ForwardAsChatCompletions(ctx, c, target, body)
-		}
+		result, err = e.forwardGemini(ctx, c, target, body, source)
 	case provider.PlatformAntigravity:
 		SetActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
 		switch source {
@@ -229,12 +238,12 @@ func (e *UnifiedTextExecutor) native(ctx context.Context, c *gin.Context, target
 			result, err = e.Antigravity.ForwardAsChatCompletions(ctx, c, target, body, nil)
 		}
 	case provider.PlatformQoder:
-		before := c.Writer.Size()
+		before := HeartbeatAdjustedWrittenSize(c)
 		result, err = ForwardQoderAttempt(ctx, c, e.Qoder, &target.Record, body, source)
 		// Retry within this target when its exchange has no result or writer-size
-		// change. First Gin header commitment counts as a change, preventing recovery
-		// after that newly committed response even before body output.
-		if err != nil && result == nil && c.Writer.Size() == before && qoder.MayRefreshAttempt(err) && e.QoderRefresh != nil {
+		// change after subtracting heartbeats. Headers committed without a recorded
+		// heartbeat retain Gin's zero size and still close this recovery path.
+		if err != nil && result == nil && HeartbeatAdjustedWrittenSize(c) == before && qoder.MayRefreshAttempt(err) && e.QoderRefresh != nil {
 			fresh, refreshErr := e.QoderRefresh.RefreshProviderSession(ctx, &target.Record)
 			// A usable refreshed record replaces this attempt target before its one
 			// retry; unsuccessful refresh retains the first exchange error for outer
@@ -245,9 +254,29 @@ func (e *UnifiedTextExecutor) native(ctx context.Context, c *gin.Context, target
 			}
 		}
 	default:
-		return nil, fmt.Errorf("unsupported provider platform %q", target.Record.Platform)
+		// A compatible platform can route a model through Gemini encoding; that
+		// route uses the Gemini executor regardless of the provider platform.
+		if target.Route.Protocol() != protocol.ProtocolGeminiGenerateContent {
+			return nil, fmt.Errorf("unsupported provider platform %q", target.Record.Platform)
+		}
+		result, err = e.forwardGemini(ctx, c, target, body, source)
 	}
 	return nativeTextResult(result, GetUpstreamEndpoint(c, target.Record.Platform)), err
+}
+
+// forwardGemini runs one Gemini-encoded exchange for the client source and
+// records the Gemini endpoint before dispatch. Partial results remain
+// available alongside errors for the caller's conversion.
+func (e *UnifiedTextExecutor) forwardGemini(ctx context.Context, c *gin.Context, target *gatewayadapter.ExecutionProvider, body []byte, source protocol.ProtocolID) (*forward.MessagesResult, error) {
+	SetActualUpstreamEndpoint(c, EndpointGeminiModels)
+	switch source {
+	case protocol.ProtocolAnthropicMessages:
+		return e.Gemini.Forward(ctx, c, target, body)
+	case protocol.ProtocolOpenAIResponses:
+		return e.Gemini.ForwardAsResponses(ctx, c, target, body, nil)
+	default:
+		return e.Gemini.ForwardAsChatCompletions(ctx, c, target, body)
+	}
 }
 
 // nativeTextResult converts retained native observations into the common text

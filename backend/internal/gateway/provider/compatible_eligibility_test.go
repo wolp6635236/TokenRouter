@@ -105,3 +105,18 @@ func TestGrokMediaCapabilityFiltersOnlyGeneration(t *testing.T) {
 		providercore.OpenAIEndpointCapabilityGrokMediaGeneration,
 	))
 }
+
+// TestOpenCodeAutomaticProbeRequiresEnabledModelProtocol checks candidate admission
+// with a known model and no client protocol. Empty and unrelated enabled sets
+// fail before selection; enabling that model's declared encoding permits it.
+func TestOpenCodeAutomaticProbeRequiresEnabledModelProtocol(t *testing.T) {
+	value := &ExecutionProvider{Record: providercore.Record{ID: 1, Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey, Status: billing.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "test", providercore.UpstreamProtocolsKey: []string{}}}}
+	ctx := context.Background()
+	require.False(t, CompatibleProviderEligible(ctx, value, "", "minimax-m3", false, providercore.OpenAIEndpointCapabilityTextGeneration))
+	value.Record.Credentials[providercore.UpstreamProtocolsKey] = []string{"anthropic_messages"}
+	require.True(t, ExecutionModelPolicy(value).AllowsProtocol(ctx, ""))
+	require.False(t, CompatibleProviderEligible(ctx, value, "", "minimax-m3", false, providercore.OpenAIEndpointCapabilityTextGeneration))
+	value.Record.Credentials[providercore.UpstreamProtocolsKey] = []string{"openai_chat_completions"}
+	require.True(t, CompatibleProviderEligible(ctx, value, "", "minimax-m3", false, providercore.OpenAIEndpointCapabilityTextGeneration))
+	require.False(t, CompatibleProviderEligible(ctx, value, "", "unknown", false, providercore.OpenAIEndpointCapabilityTextGeneration))
+}

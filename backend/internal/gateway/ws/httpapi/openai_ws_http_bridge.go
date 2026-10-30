@@ -561,7 +561,9 @@ func buildOpenAIWSHTTPBridgeFailedEvent(responseID, model string, source []byte,
 // bounded, distinct-body retry state. Initial transport failures and eligible
 // policy failures can return provider failover before committed output; later
 // policy failover also permits 429. Request-scoped errors bypass the
-// corresponding provider policy.
+// corresponding provider policy. Request-bound failures pass applied effects
+// directly to error construction. With a nil Gin context, the error builder
+// evaluates terminal effects independently.
 //
 // Initial OpenAI progress stays buffered until output or a terminal selects
 // delivery. A bare error waits for its terminal, a successful terminal clears
@@ -1093,13 +1095,17 @@ func (s *OpenAIWebSocketExecutor) proxyOpenAIWSHTTPBridgeTurn(
 			}
 			if !wroteDownstream && shouldFailover &&
 				(turn == 1 || statusCode == http.StatusTooManyRequests) {
-				if !requestScopedCapacity {
-					// Policy effects already ran for this failed event; mark their result before
-					// error construction so the output helper consumes them without another health write.
-					gatewayhttp.MarkOpenAIResponseFailureEffects(c, statusCode, terminalPolicy.Decision.StopScheduling)
+				var appliedEffects *gatewayhttp.AppliedOpenAIResponseEffects
+				if c != nil && !requestScopedCapacity {
+					// Policy effects already ran for this failed event. Pass their result
+					// directly so error construction reuses the request's existing health decision.
+					appliedEffects = &gatewayhttp.AppliedOpenAIResponseEffects{
+						StatusCode:     statusCode,
+						StopScheduling: terminalPolicy.Decision.StopScheduling,
+					}
 				}
 				return nil, s.Output.NewStreamPolicyFailureWithModel(
-					c, provider, true, resp.Header.Get("x-request-id"), resp.Header, upstreamMessage, errMessage, mappedModel,
+					c, provider, true, resp.Header.Get("x-request-id"), resp.Header, upstreamMessage, errMessage, appliedEffects, mappedModel,
 				)
 			}
 			if wroteDownstream && requestScopedCapacity && !capacityFailoverSuppressedLogged {
@@ -1163,11 +1169,15 @@ func (s *OpenAIWebSocketExecutor) proxyOpenAIWSHTTPBridgeTurn(
 				upstreamEventErr = errors.New("upstream error not in custom error codes")
 			} else if !wroteDownstream && (requestScopedCapacity || (!requestScopedError && decision.ShouldFailover(gatewayprovider.ExecutionErrorPolicy(provider), policyStatus, defaultFailover))) &&
 				(turn == 1 || policyStatus == http.StatusTooManyRequests) {
+				var appliedEffects *gatewayhttp.AppliedOpenAIResponseEffects
 				if c != nil && !requestScopedCapacity && !requestScopedError {
-					gatewayhttp.MarkOpenAIResponseFailureEffects(c, policyStatus, decision.StopScheduling)
+					appliedEffects = &gatewayhttp.AppliedOpenAIResponseEffects{
+						StatusCode:     policyStatus,
+						StopScheduling: decision.StopScheduling,
+					}
 				}
 				return nil, s.Output.NewStreamPolicyFailureWithModel(
-					c, provider, true, resp.Header.Get("x-request-id"), resp.Header, upstreamMessage, errMessage, mappedModel,
+					c, provider, true, resp.Header.Get("x-request-id"), resp.Header, upstreamMessage, errMessage, appliedEffects, mappedModel,
 				)
 			}
 			if wroteDownstream && requestScopedCapacity && !capacityFailoverSuppressedLogged {

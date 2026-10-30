@@ -28,6 +28,46 @@ type navigationSettingsSource struct {
 	prepared          *composite.Snapshot // captured normalized settings snapshot
 }
 
+// TestMergeNormalizedSettingsFieldsPreservesPresence covers normalized scalar
+// defaults and pointer-backed values in a partial update. Only supplied scalar
+// fields replace earlier values, while pointer-backed fields retain their
+// prepared representation even when absent from the raw request.
+func TestMergeNormalizedSettingsFieldsPreservesPresence(t *testing.T) {
+	for _, supplied := range []bool{false, true} {
+		name := "omitted"
+		if supplied {
+			name = "supplied"
+		}
+		t.Run(name, func(t *testing.T) {
+			fields := settings.Fields{
+				"registration_enabled": json.RawMessage("true"),
+				"site_name":            json.RawMessage(`"retained"`),
+				"unrelated":            json.RawMessage(`"value"`),
+			}
+			sent := map[string]json.RawMessage{}
+			if supplied {
+				sent["registration_enabled"] = json.RawMessage("false")
+				sent["site_name"] = json.RawMessage(`""`)
+			}
+			err := mergeNormalizedSettingsFields(fields, map[string]any{
+				"registration_enabled": false,
+				"site_name":            "",
+				"team_enabled":         nil,
+			}, sent)
+			require.NoError(t, err)
+			require.Equal(t, json.RawMessage(`"value"`), fields["unrelated"])
+			require.Equal(t, json.RawMessage("null"), fields["team_enabled"])
+			if supplied {
+				require.Equal(t, json.RawMessage("false"), fields["registration_enabled"])
+				require.Equal(t, json.RawMessage(`""`), fields["site_name"])
+			} else {
+				require.Equal(t, json.RawMessage("true"), fields["registration_enabled"])
+				require.Equal(t, json.RawMessage(`"retained"`), fields["site_name"])
+			}
+		})
+	}
+}
+
 // TestRemovedCrossClientModelMappingField submits the retired mapping switch
 // as true, false, and null through a handler with no services. Each request
 // returns bad request with model_mapping text before dependencies are accessed.

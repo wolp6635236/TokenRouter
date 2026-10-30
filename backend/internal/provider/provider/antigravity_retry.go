@@ -309,13 +309,14 @@ func (s *AntigravityRetry) modelLimitBeforePolicy(p AntigravityRetryRequest, sta
 	if (status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable) || p.Provider == nil || p.Provider.Platform != provider.PlatformAntigravity {
 		return false
 	}
-	_, limited, duration, model, capacity := antigravity.ShouldTriggerAntigravitySmartRetry(true, body)
-	if capacity || !limited || strings.TrimSpace(model) == "" {
+	decision := antigravity.ClassifyAntigravitySmartRetry(true, body)
+	if decision.Kind != antigravity.SmartRetryModelLimit || strings.TrimSpace(decision.ModelName) == "" {
 		return false
 	}
-	// ShouldTriggerAntigravitySmartRetry supplies a positive delay for long
+	// ClassifyAntigravitySmartRetry supplies a positive delay for long
 	// model limits. Its current result cannot reach this defensive default
 	// before the parsed model window is written.
+	duration := decision.WaitDuration
 	if duration <= 0 {
 		duration = antigravity.AntigravityDefaultRateLimitDuration
 	}
@@ -323,7 +324,7 @@ func (s *AntigravityRetry) modelLimitBeforePolicy(p AntigravityRetryRequest, sta
 	// Preserve model scope before custom policy can consume this response. Notify
 	// and release the binding only when at least one applicable model window
 	// was written.
-	if !s.Health.SetAntigravityModelRateLimits(p.Context, p.ModelStore, p.Provider, model, p.Prefix, status, reset, false) {
+	if !s.Health.SetAntigravityModelRateLimits(p.Context, p.ModelStore, p.Provider, decision.ModelName, p.Prefix, status, reset, false) {
 		return false
 	}
 	if p.Changed != nil {
@@ -332,7 +333,7 @@ func (s *AntigravityRetry) modelLimitBeforePolicy(p AntigravityRetryRequest, sta
 	if p.ClearSticky != nil {
 		p.ClearSticky()
 	}
-	logging.LegacyPrintf("service.antigravity_gateway", "%s status=%d model_rate_limited_before_error_policy model=%s provider=%d reset_in=%v", p.Prefix, status, model, p.Provider.ID, duration)
+	logging.LegacyPrintf("service.antigravity_gateway", "%s status=%d model_rate_limited_before_error_policy model=%s provider=%d reset_in=%v", p.Prefix, status, decision.ModelName, p.Provider.ID, duration)
 	return true
 }
 

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -16,18 +15,15 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/tierpolicy"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
-	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
-// openai_request_session_headers.go forwards trusted conversation headers and
-// rebuilds Codex model routing hints.
-// A conversation header carries client state to one trusted API-key origin,
-// while Codex routing hints describe the final model and service tier sent by
-// an OAuth attempt. Provider overrides and model rewrites can otherwise leave
-// headers referring to a different conversation or routing choice. Session
-// forwarding uses an exact HTTPS hostname check and runs after provider
-// overrides.
+// openai_request_session_headers.go supplies inbound headers for provider
+// identity finalization and rebuilds Codex model routing hints.
+// Codex routing hints describe the final model and service tier sent by an
+// OAuth attempt. Provider overrides and model rewrites can otherwise leave
+// headers referring to a different routing choice, while conversation and
+// authentication finalization belongs to gatewayprovider.FinalizeRequestHeaders.
 //
 // Routing hints are rebuilt after deleting all casing variants from the
 // outgoing map. The encoded model rejects delimiter characters, and the tier is
@@ -35,48 +31,17 @@ import (
 // attempts therefore clear inherited Codex hints, while diagnostics describe
 // the final body and the header actually produced for the current provider.
 
-// openCodeSessionHeader and OpenAICodexRoutingHintHeader name the outbound
-// conversation identifier and final-route hint inspected by request
-// construction and routing diagnostics.
-const (
-	// openCodeSessionHeader carries the caller's OpenCode conversation ID.
-	openCodeSessionHeader = "X-OpenCode-Session"
-	// OpenAICodexRoutingHintHeader names the final OAuth model/tier hint.
-	OpenAICodexRoutingHintHeader = "x-codex-routing-hint"
-)
+// OpenAICodexRoutingHintHeader names the final OAuth model/tier hint inspected
+// by request construction and routing diagnostics.
+const OpenAICodexRoutingHintHeader = "x-codex-routing-hint"
 
-// ApplyOpenCodeSessionHeader forwards a trimmed client conversation ID to HTTPS
-// opencode.ai. Callers invoke it after provider overrides with the final target
-// URL and header map. Only API-key providers qualify; missing caller values
-// leave existing overrides intact.
-//
-// A nonempty caller ID replaces every casing variant in the outgoing map before
-// setting the canonical header. This keeps that conversation's identity
-// authoritative when an override used a different casing or a fixed
-// provider-wide value.
-func ApplyOpenCodeSessionHeader(c *gin.Context, provider *gatewayprovider.ExecutionProvider, targetURL string, headers http.Header) {
-	if c == nil || c.Request == nil || provider == nil || provider.Record.Type != capability.ProviderTypeAPIKey || headers == nil {
-		return
+// clientHeaderReader returns the inbound header reader used to finalize
+// provider identity, or nil when the context carries no HTTP request.
+func clientHeaderReader(c *gin.Context) func(string) string {
+	if c == nil || c.Request == nil {
+		return nil
 	}
-
-	parsed, err := url.Parse(targetURL)
-	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "opencode.ai") {
-		return
-	}
-
-	sessionID := strings.TrimSpace(c.GetHeader(openCodeSessionHeader))
-	if sessionID == "" {
-		return
-	}
-	// Provider overrides can create noncanonical map keys. Remove every
-	// variant before installing the conversation ID so upstream sees one
-	// authoritative value.
-	for key := range headers {
-		if strings.EqualFold(key, openCodeSessionHeader) {
-			delete(headers, key)
-		}
-	}
-	headers.Set(openCodeSessionHeader, sessionID)
+	return c.GetHeader
 }
 
 // ResolveOpenAIUpstreamOriginator resolves the outbound identity from HTTP

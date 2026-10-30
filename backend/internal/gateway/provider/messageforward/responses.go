@@ -44,15 +44,9 @@ func (r *Runtime) streamOptions(output HTTPBoundary, state *AttemptState, target
 			return &forward.UpstreamFailoverError{StatusCode: 502, ResponseBody: body, RetryableOnSameProvider: true}
 		},
 	}
-	if output.RequestPresent() {
-		options.UserAgent = output.RequestHeaders().Get("User-Agent")
-	}
 	options.MaxLineSize = r.options.MaxLineSize
 	if r.options.StreamInterval > 0 {
 		options.Interval = r.options.StreamInterval
-	}
-	if r.options.StreamKeepalive > 0 {
-		options.Keepalive = r.options.StreamKeepalive
 	}
 	if output.HasHeaderFilter() {
 		options.WriteHeaders = func(dst, src http.Header) { output.WriteHeaders(dst, src, false) }

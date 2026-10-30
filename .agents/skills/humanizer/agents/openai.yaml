@@ -1,4 +1,4 @@
 interface:
   display_name: "Humanizer"
-  short_description: "Remove AI writing patterns under TokenRouter's prose rules"
-  default_prompt: "Use $humanizer to write or revise this text under TokenRouter's writing rules while preserving its facts."
+  short_description: "Remove AI writing patterns while preserving meaning"
+  default_prompt: "Use $humanizer to revise this prose while preserving its meaning and the writer's voice."

@@ -79,3 +79,30 @@ describe('Select dropdown viewport constraints', () => {
     wrapper.unmount()
   })
 })
+
+// An exact search creates a manual action beside the existing catalog option.
+// Distinct render keys keep both choices mounted without Vue duplicate-key warnings.
+it('keeps creation and existing options distinct for an exact query', async () => {
+  const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const wrapper = mount(Select, {
+    props: {
+      modelValue: '',
+      searchable: true,
+      creatable: true,
+      options: [{ value: 'target', label: 'target' }],
+    },
+  })
+  await wrapper.get('button').trigger('click')
+  await nextTick()
+  const search = document.body.querySelector<HTMLInputElement>('.select-search-input')!
+  search.value = 'target'
+  search.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  const options = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+  expect(options).toHaveLength(2)
+  expect(warnings.mock.calls.flat().join(' ')).not.toContain('Duplicate keys')
+  options[1]!.click()
+  await nextTick()
+  expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual(['target'])
+  wrapper.unmount()
+})

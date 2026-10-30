@@ -66,8 +66,6 @@ export default {
     quickActions: 'Quick Actions',
     createApiKey: 'Create API Key',
     generateNewKey: 'Generate a new API key',
-    batchImageAgent: 'Batch Image Assistant',
-    batchImageAgentDesc: 'Copy instructions for an agent',
     viewUsage: 'View Usage',
     checkDetailedLogs: 'Check detailed usage logs',
     purchasePlanOrRecharge: 'Purchase a plan or add balance',
@@ -452,6 +450,9 @@ export default {
     totalCost: 'Total Cost',
     standardCost: 'Standard',
     actualCost: 'Actual',
+    costUnknown: 'Cost unknown',
+    costPartial: '(partial)',
+    incompleteCosts: '{count} requests have incomplete costs',
     providerCost: 'Cost',
     actualDescription:
       'The amount actually charged to the user. Calculated with the group multiplier and any user-specific multiplier, and used to deduct user balance or subscription quota.',

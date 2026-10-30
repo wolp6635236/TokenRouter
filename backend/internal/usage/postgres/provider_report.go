@@ -27,6 +27,7 @@ import (
 // providerReportData holds sorted provider breakdowns and the duration inputs
 // used by report summaries.
 type providerReportData struct {
+	incompleteCostRequests int64 // unknown or partial expenses
 	// history, models, endpoints, and upstreamEndpoints contain separate
 	// groupings of the same scoped requests; adding across these collections
 	// would count the same request more than once.
@@ -93,7 +94,7 @@ func (r *Store) scanProviderReport(ctx context.Context, id int64, start, end tim
 	 COALESCE(NULLIF(TRIM(inbound_endpoint),''),'unknown') AS inbound,
 	 COALESCE(NULLIF(TRIM(upstream_endpoint),''),'unknown') AS upstream,
 	 input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost,actual_cost,
-	 COALESCE(provider_stats_cost,total_cost)*COALESCE(provider_rate_multiplier,1) AS provider_cost,duration_ms
+	 COALESCE(provider_stats_cost,total_cost)*COALESCE(provider_rate_multiplier,1) AS provider_cost,duration_ms,system_usage
 	 FROM usage_logs WHERE provider_id=$1 AND created_at >= $2 AND created_at < $3
 	)
 	SELECT CASE WHEN GROUPING(day)=0 THEN 'day' WHEN GROUPING(model_name)=0 THEN 'model'
@@ -102,7 +103,7 @@ func (r *Store) scanProviderReport(ctx context.Context, id int64, start, end tim
 	 COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
 	 COALESCE(SUM(cache_creation_tokens),0),COALESCE(SUM(cache_read_tokens),0),
 	 COALESCE(SUM(total_cost),0),COALESCE(SUM(actual_cost),0),COALESCE(SUM(provider_cost),0),
-	 COALESCE(SUM(duration_ms),0),COUNT(duration_ms)
+	 COALESCE(SUM(duration_ms),0),COUNT(duration_ms),COUNT(*) FILTER (WHERE system_usage->>'cost_state' IN ('unknown','partial'))
 	FROM scoped GROUP BY GROUPING SETS ((day),(model_name),(inbound),(upstream))`
 	rows, err := r.sql.QueryContext(ctx, query, id, start, end)
 	if err != nil {
@@ -117,7 +118,8 @@ func (r *Store) scanProviderReport(ctx context.Context, id int64, start, end tim
 		var kind, label string
 		var requests, input, output, creation, read, duration, count int64
 		var cost, userCost, providerCost float64
-		if err := rows.Scan(&kind, &label, &requests, &input, &output, &creation, &read, &cost, &userCost, &providerCost, &duration, &count); err != nil {
+		var incomplete int64
+		if err := rows.Scan(&kind, &label, &requests, &input, &output, &creation, &read, &cost, &userCost, &providerCost, &duration, &count, &incomplete); err != nil {
 			return nil, err
 		}
 		tokens := input + output + creation + read
@@ -132,6 +134,7 @@ func (r *Store) scanProviderReport(ctx context.Context, id int64, start, end tim
 			// request once across the four representations.
 			data.durationSum += duration
 			data.durationCount += count
+			data.incompleteCostRequests += incomplete
 		case "model":
 			data.models = append(data.models, ModelStat{Model: label, Requests: requests, InputTokens: input, OutputTokens: output, CacheCreationTokens: creation, CacheReadTokens: read, TotalTokens: tokens, Cost: cost, ActualCost: userCost, ProviderCost: providerCost})
 		case "inbound":

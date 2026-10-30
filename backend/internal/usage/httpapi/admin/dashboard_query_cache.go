@@ -32,8 +32,9 @@ func (h *DashboardHandler) getUsageTrendCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]usage.TrendDataPoint, bool, error) {
-	return h.dashboardService.GetUsageTrendCached(ctx, startTime, endTime, granularity, userID, apiKeyID, providerID, groupID, teamID, model, requestType, stream, billingType, nativeCompactionV2)
+	return h.dashboardService.GetUsageTrendCached(ctx, startTime, endTime, granularity, userID, apiKeyID, providerID, groupID, teamID, model, requestType, stream, billingType, nativeCompactionV2, requestSources...)
 }
 
 // getModelStatsCached returns model-grouped data and cache-hit status from
@@ -48,8 +49,9 @@ func (h *DashboardHandler) getModelStatsCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]usage.ModelStat, bool, error) {
-	return h.dashboardService.GetModelStatsCached(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, modelSource, requestType, stream, billingType, nativeCompactionV2)
+	return h.dashboardService.GetModelStatsCached(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, modelSource, requestType, stream, billingType, nativeCompactionV2, requestSources...)
 }
 
 // getGroupStatsCached returns group data and cache-hit status from the
@@ -63,8 +65,9 @@ func (h *DashboardHandler) getGroupStatsCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]usage.GroupStat, bool, error) {
-	return h.dashboardService.GetGroupStatsCached(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, requestType, stream, billingType, nativeCompactionV2)
+	return h.dashboardService.GetGroupStatsCached(ctx, startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, requestType, stream, billingType, nativeCompactionV2, requestSources...)
 }
 
 // getAPIKeyUsageTrendCached returns a key trend and cache-hit status through

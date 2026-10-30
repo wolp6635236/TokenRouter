@@ -1,19 +1,17 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="TokenRouter" width="112" />
-
-  <h1>TokenRouter</h1>
-
-  <p>开源的大模型统一网关</p>
-
   <p>
-    <a href="https://github.com/TokenFlux/TokenRouter/actions/workflows/ci.yml"><img src="https://github.com/TokenFlux/TokenRouter/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <a href="https://github.com/TokenFlux/TokenRouter/releases"><img src="https://img.shields.io/github/v/release/TokenFlux/TokenRouter?display_name=tag" alt="Release" /></a>
-    <a href="https://github.com/TokenFlux/TokenRouter/pkgs/container/tokenrouter"><img src="https://img.shields.io/badge/container-ghcr.io%2Ftokenflux%2Ftokenrouter-2496ED?logo=docker&logoColor=white" alt="Container" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL--3.0--or--later-4c1.svg" alt="License: LGPL-3.0-or-later" /></a>
+    <img src="assets/readme/banner-zh.svg" width="100%" alt="TokenRouter，开源的大模型统一网关。Messages、Responses、Chat Completions 和 Gemini 请求从同一个入口进入，转发到 Anthropic、OpenAI、Gemini 等上游平台，上游出错时自动切换。" />
   </p>
 
-  <p><strong>简体中文</strong> | <a href="README.md">English</a></p>
-  <p><a href="https://discord.com/invite/7XZzukhX4E">加入 Discord 群组</a></p>
+  <p>
+    <a href="https://github.com/TokenFlux/TokenRouter/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/TokenFlux/TokenRouter/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white&labelColor=27272A" alt="CI" /></a>
+    <a href="https://github.com/TokenFlux/TokenRouter/releases"><img src="https://img.shields.io/github/v/release/TokenFlux/TokenRouter?display_name=tag&style=flat-square&label=release&labelColor=27272A&color=3F3F46" alt="Release" /></a>
+    <a href="https://github.com/TokenFlux/TokenRouter/pkgs/container/tokenrouter"><img src="https://img.shields.io/badge/container-ghcr.io-3F3F46?style=flat-square&logo=docker&logoColor=white&labelColor=27272A" alt="Container: ghcr.io/tokenflux/tokenrouter" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-LGPL--3.0--or--later-3F3F46?style=flat-square&labelColor=27272A" alt="License: LGPL-3.0-or-later" /></a>
+    <a href="https://discord.com/invite/7XZzukhX4E"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white&labelColor=27272A" alt="Discord" /></a>
+  </p>
+
+  <p><strong>简体中文</strong> · <a href="README.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="#文档">文档</a></p>
 </div>
 
 ## 简介
@@ -25,8 +23,16 @@ TokenRouter 是一个开源的大模型统一网关。它把 Anthropic、OpenAI�
 
 ## 界面预览
 
-<details open>
-<summary>浅色模式</summary>
+### 仪表盘
+
+<img src="assets/screenshots/dashboard-dark.jpg" alt="TokenRouter 仪表盘 · 深色模式" width="1600" />
+
+### 模型广场
+
+<img src="assets/screenshots/models-dark.jpg" alt="TokenRouter 模型广场 · 深色模式" width="1600" />
+
+<details>
+<summary>浅色模式截图</summary>
 
 ### 仪表盘
 
@@ -38,20 +44,7 @@ TokenRouter 是一个开源的大模型统一网关。它把 Anthropic、OpenAI�
 
 </details>
 
-<details>
-<summary>深色模式</summary>
-
-### 仪表盘
-
-<img src="assets/screenshots/dashboard-dark.jpg" alt="TokenRouter 仪表盘 · 深色模式" width="1600" />
-
-### 模型广场
-
-<img src="assets/screenshots/models-dark.jpg" alt="TokenRouter 模型广场 · 深色模式" width="1600" />
-
-</details>
-
-TokenFlux 官方运营站点：[tokenflux.dev](https://tokenflux.dev)。
+TokenFlux 官方运营站点：[tokenflux.com](https://tokenflux.com)。
 
 ## 核心能力
 

@@ -72,7 +72,7 @@ func TestOpenAIImagesOAuthBodyReadTransportErrorFailover(t *testing.T) {
 
 	_, _, _, readErr := upstreamopenai.ReadImagesOAuthNonStreaming(resp, ResponseSink{Writer: c.Writer}, svc.Output.ImageOptions(c), "b64_json", "gpt-image-2")
 	require.Error(t, readErr)
-	err := svc.handleOpenAIImagesOAuthResponseError(context.Background(), c, provider, "gpt-image-2", "https://api.openai.com/v1/responses", resp, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), readErr)
+	err := svc.handleOpenAIImagesOAuthResponseError(context.Background(), c, provider, "gpt-image-2", "https://api.openai.com/v1/responses", resp, HeartbeatAdjustedWrittenSize(c), readErr)
 
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
@@ -117,7 +117,7 @@ func TestOpenAIImagesOAuthBodyReadErrorsNotMisclassified(t *testing.T) {
 				err = upstreamopenai.NewUpstreamStreamReadError(err)
 			}
 
-			got := newImagesFixture(imagesFixtureInputs{}).handleOpenAIImagesOAuthResponseError(context.Background(), c, &gatewayprovider.ExecutionProvider{Record: providerimages.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI}}, "gpt-image-2", "", resp, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), err)
+			got := newImagesFixture(imagesFixtureInputs{}).handleOpenAIImagesOAuthResponseError(context.Background(), c, &gatewayprovider.ExecutionProvider{Record: providerimages.Record{LoadLocation: time.LoadLocation, Platform: capability.PlatformOpenAI}}, "gpt-image-2", "", resp, HeartbeatAdjustedWrittenSize(c), err)
 			var failoverErr *forwardcore.UpstreamFailoverError
 			require.False(t, errors.As(got, &failoverErr))
 			require.ErrorIs(t, got, tt.err)
@@ -133,7 +133,7 @@ func TestOpenAIImagesOAuthTransportErrorAfterDownstreamWriteDoesNotFailover(t *t
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
-	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	_, writeErr := c.Writer.Write([]byte("downstream image bytes"))
 	require.NoError(t, writeErr)
 	classifiedErr := upstreamopenai.NewUpstreamStreamReadError(errors.New("unexpected EOF"))
@@ -164,7 +164,7 @@ func TestBuildOpenAIImagesResponsesRequest_PassesThroughNForMultiImageModels(t *
 		N:        2,
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2", upstreamopenai.ImagesResponsesMainModel)
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.Equal(t, int64(2), gjson.GetBytes(body, "tools.0.n").Int())
@@ -183,7 +183,7 @@ func TestBuildOpenAIImagesResponsesRequest_ForcesImageToolChoice(t *testing.T) {
 		Prompt:   "draw a cat",
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2", upstreamopenai.ImagesResponsesMainModel)
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.Equal(t, "image_generation", gjson.GetBytes(body, "tool_choice.type").String())
@@ -202,7 +202,7 @@ func TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3(t *testing.T) {
 		N:        2,
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(parsed, "dall-e-3")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "dall-e-3", upstreamopenai.ImagesResponsesMainModel)
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.False(t, gjson.GetBytes(body, "tools.0.n").Exists())
@@ -223,7 +223,7 @@ func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 		},
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2", upstreamopenai.ImagesResponsesMainModel)
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.False(t, gjson.GetBytes(body, "tools.0.input_fidelity").Exists())
@@ -243,7 +243,7 @@ func TestBuildOpenAIImagesResponsesRequest_RequiresVerbatimUserPrompt(t *testing
 		N:        1,
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2", upstreamopenai.ImagesResponsesMainModel)
 	require.NoError(t, err)
 	require.Equal(t, upstreamopenai.ImagesVerbatimPromptInstructions, gjson.GetBytes(body, "instructions").String())
 	require.Equal(t, prompt, gjson.GetBytes(body, "input.0.content.0.text").String())
@@ -336,7 +336,7 @@ func TestHandleOpenAIImagesOAuthResponseError_TextFallbackDoesNotCoolProvider(t 
 
 	err := svc.handleOpenAIImagesOAuthResponseError(
 		context.Background(), c, provider, "gpt-image-2", "https://upstream.example/v1/responses",
-		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}}, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), upstreamErr,
+		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}}, HeartbeatAdjustedWrittenSize(c), upstreamErr,
 	)
 
 	require.Zero(t, repo.calls, "模型闲聊不构成提供商级证据，不得写 30 分钟冷却")
@@ -368,7 +368,7 @@ func TestHandleOpenAIImagesOAuthResponseError_StructuredUnavailableStillCoolsPro
 	// the returned failover classification.
 	_ = svc.handleOpenAIImagesOAuthResponseError(
 		context.Background(), c, provider, "gpt-image-2", "https://upstream.example/v1/responses",
-		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}}, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), upstreamErr,
+		&http.Response{StatusCode: http.StatusOK, Header: http.Header{}}, HeartbeatAdjustedWrittenSize(c), upstreamErr,
 	)
 
 	require.Equal(t, 1, repo.calls, "结构化上游证据仍须写冷却")
@@ -448,7 +448,7 @@ func TestImageStreamFailureUsesResponseDispatch(t *testing.T) {
 	svc := newImagesFixture(imagesFixtureInputs{})
 	_, _, _, readErr := upstreamopenai.ReadImagesOAuthNonStreaming(resp, ResponseSink{Writer: c.Writer}, svc.Output.ImageOptions(c), "b64_json", "gpt-image-2")
 	require.Error(t, readErr)
-	require.Error(t, svc.handleOpenAIImagesOAuthResponseError(ctx, c, target, "gpt-image-2", "", resp, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), readErr))
+	require.Error(t, svc.handleOpenAIImagesOAuthResponseError(ctx, c, target, "gpt-image-2", "", resp, HeartbeatAdjustedWrittenSize(c), readErr))
 	require.Equal(t, "failed", saved.Attempts[0].Outcome)
 	require.Equal(t, 502, saved.Attempts[0].Status)
 	require.Equal(t, "running", saved.Attempts[1].Outcome)

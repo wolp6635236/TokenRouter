@@ -35,3 +35,16 @@ func (s *ContentModerationService) buildTextLogForTest(input ContentModerationCh
 	content.Normalize()
 	return s.buildStructuredLog(input, cfg, action, flagged, highestCategory, highestScore, scores, content, latency, queueDelay, errText, nil)
 }
+
+// newTestModeration constructs the service with production transport, snapshot,
+// and upstream classifiers plus an untracked background launcher. Construction
+// starts no workers; callers explicitly Start and Stop any runtime they choose
+// to launch.
+func newTestModeration(settings SettingRepository, repo ContentModerationRepository, hash ContentModerationHashCache, groups GroupRepository, users UserCommands, auth APIKeyAuthCacheInvalidator, email RiskSender) *ContentModerationService {
+	return NewContentModerationService(settings, repo, hash, groups, users, auth, email, Runtime{Audit: moderationadapter.NewAuditClient(), SnapshotMedia: moderationadapter.SnapshotMedia, Background: func(_ string, fn func()) {
+		// Launch the reload separately so a Check or worker with stale usable policy
+		// can continue before storage finishes; this fixture has no application task
+		// owner to join that callback.
+		go fn()
+	}, CyberText: openai.IsOpenAICyberWarningText, CyberPolicy: openai.DetectOpenAICyberPolicy, ErrorMessage: upstream.ExtractErrorMessage, MissingRow: func(e error) bool { return errors.Is(e, sql.ErrNoRows) }, MissingUser: func(e error) bool { return errors.Is(e, ErrUserNotFound) }})
+}

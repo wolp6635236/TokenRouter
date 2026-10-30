@@ -111,11 +111,15 @@ func TestModelAttributeHTTPReadWriteAndAuthorization(t *testing.T) {
 }
 
 // TestModelAttributeDefaultsUsePagedIndex queries true and false reasoning
-// entries through an injected index. It checks total=2, the indexed version,
-// and no bare b model in the page, and fails if Defaults requests a snapshot
-// copy.
+// entries through an injected filtered index. Pagination counts retained
+// identities, provider choices include runtime services, and relay records
+// cannot reappear through the default attributes endpoint.
 func TestModelAttributeDefaultsUsePagedIndex(t *testing.T) {
-	catalog, err := modelcatalog.Parse([]byte(`{"providers":{"test":{"models":{"a":{"reasoning":true},"b":{"reasoning":false}}}}}`))
+	catalog, err := modelcatalog.Parse([]byte(`{"providers":{
+		"openai":{"models":{"a":{"reasoning":true},"b":{"reasoning":false}}},
+		"google-vertex":{"models":{"hosted":{"reasoning":false}}},
+		"openrouter":{"models":{"relay-model":{"reasoning":true,"canonical_model_id":"openai/a"}}}
+	}}`))
 	require.NoError(t, err)
 	index := modelcatalog.NewIndex(catalog)
 	service := &routing.ModelAttributeService{Catalog: routing.ModelAttributeCatalog{
@@ -136,4 +140,7 @@ func TestModelAttributeDefaultsUsePagedIndex(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `"total":2`)
 	require.Contains(t, recorder.Body.String(), `"version":"indexed"`)
 	require.NotContains(t, recorder.Body.String(), `"model":"b"`)
+	require.Contains(t, recorder.Body.String(), `"providers":["google-vertex","openai"]`)
+	require.NotContains(t, recorder.Body.String(), "openrouter")
+	require.NotContains(t, recorder.Body.String(), "relay-model")
 }

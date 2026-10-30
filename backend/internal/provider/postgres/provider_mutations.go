@@ -304,18 +304,18 @@ func DecodeProviderExtraJSON(raw []byte) (any, bool, error) {
 	return value, true, nil
 }
 
-// UpdateCredentials replaces the complete credential object and couples it to
-// a provider-change event through the selected Ent transaction client. Nil
+// UpdateCredentials replaces the complete credential object and couples it to a
+// provider-change event through the selected Ent transaction client. Nil
 // credentials become an empty object; no matching nondeleted row returns
 // ErrProviderNotFound.
 //
 // SQL compares existing identity before replacement: an Ollama API-key or
-// allowed-host change removes its managed session and observations, while CN
-// credential changes remove the monitor snapshot. Deprecated Extra keys are
-// removed on every write. A locally opened transaction commits before
-// immediate synchronization; a context transaction leaves commit and
-// publication to its caller, and a transaction-bound store without that
-// context still takes the immediate callback branch.
+// allowed-host change removes its managed session and observations, while Kimi,
+// Zhipu, and DeepSeek credential changes remove the monitor snapshot.
+// Deprecated Extra keys are removed on every write. A locally opened
+// transaction commits before immediate synchronization; a context transaction
+// leaves commit and publication to its caller, and a transaction-bound store
+// without that context still takes the immediate callback branch.
 func (r *ProviderStore) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
 	payload, err := json.Marshal(normalizeJSONMap(credentials))
 	if err != nil {

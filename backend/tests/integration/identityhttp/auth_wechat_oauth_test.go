@@ -3,7 +3,9 @@ package identityhttp_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -28,7 +30,8 @@ import (
 	testassert "github.com/TokenFlux/TokenRouter/internal/testutil/assertion"
 )
 
-// WeChat login uses unionid as its canonical subject when available and records
+// auth_wechat_oauth_test.go checks WeChat login, payment authorization, and identity
+// persistence through HTTP fixtures. Login uses unionid when available and records
 // each app/channel openid separately. Local provider replies and SQLite rows
 // exercise current-user binding, legacy identity repair, ownership conflicts
 // and pending signup choices. The open and mp table cases each build their own
@@ -36,6 +39,128 @@ import (
 // resume-token claims and signing-key selection. Endpoint overrides are
 // package-global and are restored by testing cleanup after deferred fixture
 // closes.
+
+// TestWeChatAuthorizationCallbacksPreserveBrowserCookies completes login and
+// payment callbacks with cookies selected by a browser jar. Site domains and
+// path prefixes cannot divert callbacks from their host-only state, while GET
+// and CAPTCHA POST login starts retain their pending browser/session proof.
+func TestWeChatAuthorizationCallbacksPreserveBrowserCookies(t *testing.T) {
+	originalAccessTokenURL := wechatOAuthAccessTokenURL
+	originalUserInfoURL := wechatOAuthUserInfoURL
+	// Restore the shared endpoint hooks after all sequential scenarios finish,
+	// so later provider fixtures cannot inherit this test's closed local server.
+	t.Cleanup(func() {
+		wechatOAuthAccessTokenURL = originalAccessTokenURL
+		wechatOAuthUserInfoURL = originalUserInfoURL
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Supply fixed upstream identity data only after the callback accepts its
+		// browser proof; response write errors are immaterial to these local assertions.
+		if strings.Contains(r.URL.Path, "/access_token") {
+			_, _ = w.Write([]byte(`{"access_token":"fixture-access","openid":"fixture-openid","unionid":"fixture-unionid","scope":"snsapi_userinfo"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"openid":"fixture-openid","unionid":"fixture-unionid","nickname":"Fixture User"}`))
+	}))
+	// Close the local provider after all callback requests return, before restoring
+	// the shared endpoint hooks through the test's registered cleanup.
+	defer upstream.Close()
+	wechatOAuthAccessTokenURL = upstream.URL + "/access_token"
+	wechatOAuthUserInfoURL = upstream.URL + "/userinfo"
+
+	for _, frontend := range []string{"https://console.example.com", "https://api.example.com/portal/", ""} {
+		for _, flow := range []struct {
+			name   string // named OAuth flow
+			mode   string // WeChat channel mode
+			method string // start HTTP method
+		}{
+			{name: "login GET", mode: "open", method: http.MethodGet},
+			{name: "login POST", mode: "open", method: http.MethodPost},
+			{name: "payment", mode: "mp", method: http.MethodGet},
+		} {
+			t.Run(flow.name+"/"+frontend, func(t *testing.T) {
+				values := wechatOAuthTestSettings(flow.mode, "wx-app", "wx-secret", "https://console.example.com/auth/wechat/callback")
+				values[identitycore.SettingKeyWeChatConnectRedirectURL] = ""
+				values["api_base_url"] = "https://models.example.com/v1"
+				values["frontend_url"] = frontend
+				handler, client := newWeChatOAuthTestHandlerWithSettings(t, false, values)
+				// This flow leaves no asynchronous profile task. Close its SQLite client
+				// before the next fixed-DSN scenario creates an independent pending session.
+				defer func() { require.NoError(t, client.Close()) }()
+				handler.cfg.Totp.EncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+				handler.cfg.Totp.EncryptionKeyConfigured = true
+				path := "/api/v1/auth/oauth/wechat"
+				if flow.mode == "mp" {
+					path += "/payment"
+				}
+				start, err := url.Parse("https://api.example.com" + path + "/start?mode=open&payment_type=wxpay&amount=12.5")
+				require.NoError(t, err)
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(flow.method, start.String(), strings.NewReader(`{}`))
+				c.Request.Header.Set("Content-Type", "application/json")
+				if flow.mode == "mp" {
+					handler.WeChatPaymentOAuthStart(c)
+				} else {
+					handler.WeChatOAuthStart(c)
+				}
+				authorizeURL := recorder.Header().Get("Location")
+				if flow.method == http.MethodPost {
+					require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+					var response struct {
+						Data identityhttp.OAuthStartResponse `json:"data"` // authorization response payload
+					}
+					require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+					authorizeURL = response.Data.AuthorizeURL
+				} else {
+					require.Equal(t, http.StatusFound, recorder.Code, recorder.Body.String())
+				}
+				authorize, err := url.Parse(authorizeURL)
+				require.NoError(t, err)
+				callback, err := url.Parse(authorize.Query().Get("redirect_uri"))
+				require.NoError(t, err)
+				require.Equal(t, "https://api.example.com"+path+"/callback", callback.String())
+				jar, err := cookiejar.New(nil)
+				require.NoError(t, err)
+				jar.SetCookies(start, recorder.Result().Cookies())
+				query := callback.Query()
+				query.Set("state", authorize.Query().Get("state"))
+				query.Set("code", "fixture-code")
+				callback.RawQuery = query.Encode()
+				callbackRecorder := httptest.NewRecorder()
+				callbackContext, _ := gin.CreateTestContext(callbackRecorder)
+				callbackContext.Request = httptest.NewRequest(http.MethodGet, callback.String(), nil)
+				for _, cookie := range jar.Cookies(callback) {
+					callbackContext.Request.AddCookie(cookie)
+				}
+				if flow.mode == "mp" {
+					handler.WeChatPaymentOAuthCallback(callbackContext)
+				} else {
+					handler.WeChatOAuthCallback(callbackContext)
+				}
+				require.Equal(t, http.StatusFound, callbackRecorder.Code, callbackRecorder.Body.String())
+				if flow.mode == "mp" {
+					location, err := url.Parse(callbackRecorder.Header().Get("Location"))
+					require.NoError(t, err)
+					fragment, err := url.ParseQuery(location.Fragment)
+					require.NoError(t, err)
+					claims, err := handler.paymentResume().ParseWeChatPaymentResumeToken(fragment.Get("wechat_resume_token"))
+					require.NoError(t, err)
+					require.Equal(t, "fixture-openid", claims.OpenID)
+					require.Equal(t, "12.5", claims.Amount)
+				} else {
+					require.Equal(t, "https://console.example.com/auth/wechat/callback", callbackRecorder.Header().Get("Location"))
+					jar.SetCookies(callback, callbackRecorder.Result().Cookies())
+					exchange, err := url.Parse("https://api.example.com/api/v1/auth/oauth/pending/exchange")
+					require.NoError(t, err)
+					require.NotNil(t, findCookie(jar.Cookies(exchange), identityhttp.OauthPendingSessionCookieName))
+					require.NotNil(t, findCookie(jar.Cookies(exchange), identityhttp.OauthPendingBrowserCookieName))
+				}
+			})
+		}
+	}
+}
 
 // TestWeChatOAuthStartRedirectsAndSetsPendingCookies starts open-mode login
 // with a local billing redirect. It checks the WeChat authorize host, app and

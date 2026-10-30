@@ -14,7 +14,8 @@
         "qoder",
         "kimi",
         "zhipu",
-        "deepseek"
+        "deepseek",
+        "opencode"
       ]
     },
     {
@@ -31,7 +32,8 @@
         "qoder",
         "kimi",
         "zhipu",
-        "deepseek"
+        "deepseek",
+        "opencode"
       ]
     },
     {
@@ -48,7 +50,8 @@
         "qoder",
         "kimi",
         "zhipu",
-        "deepseek"
+        "deepseek",
+        "opencode"
       ]
     },
     {
@@ -56,14 +59,14 @@
       "name": "Gemini GenerateContent",
       "endpoint": "POST /v1beta/models/{model}:generateContent / :streamGenerateContent",
       "upstream_only": false,
-      "platforms": ["gemini", "antigravity"]
+      "platforms": ["gemini", "antigravity", "opencode"]
     },
     {
       "id": "systemone",
       "name": "SystemOne",
       "endpoint": "POST /v1/systemone",
       "upstream_only": false,
-      "platforms": ["jev"]
+      "platforms": ["jev", "opencode"]
     },
     {
       "id": "openai_embeddings",
@@ -646,10 +649,66 @@
       "type": "cosy",
       "auth_mode": "",
       "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "oauth",
+      "auth_mode": "",
+      "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "setup-token",
+      "auth_mode": "",
+      "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "apikey",
+      "auth_mode": "",
+      "protocols": [
+        "anthropic_messages",
+        "openai_responses",
+        "openai_chat_completions",
+        "gemini_generate_content",
+        "systemone"
+      ]
+    },
+    {
+      "platform": "opencode",
+      "type": "upstream",
+      "auth_mode": "",
+      "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "bedrock",
+      "auth_mode": "",
+      "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "service_account",
+      "auth_mode": "",
+      "protocols": []
+    },
+    {
+      "platform": "opencode",
+      "type": "cosy",
+      "auth_mode": "",
+      "protocols": []
     }
   ],
   "groups": [
     {
+      "probe_protocols": [
+        "anthropic_messages",
+        "openai_responses",
+        "openai_chat_completions",
+        "gemini_generate_content",
+        "systemone",
+        "openai_images_generations"
+      ],
       "protocols": [
         "anthropic_messages",
         "openai_responses",
@@ -714,15 +773,7 @@
         "openai_responses_websocket": ["openai_responses"],
         "systemone": []
       },
-      "default_fallbacks": {},
-      "probe_protocols": [
-        "anthropic_messages",
-        "openai_responses",
-        "openai_chat_completions",
-        "gemini_generate_content",
-        "systemone",
-        "openai_images_generations"
-      ]
+      "default_fallbacks": {}
     }
   ],
   "auxiliary_operations": [

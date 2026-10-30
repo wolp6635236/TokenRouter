@@ -115,12 +115,13 @@ func PrepareNativeInputTokens(body []byte, provider *ExecutionProvider) (*InputT
 	}, nil
 }
 
-// EstimateInputTokensLocally selects local counting for absent, Grok, CN,
-// upstream-type, or custom API Key targets. Non-API-Key targets and API Keys
+// EstimateInputTokensLocally selects local counting for absent targets,
+// compatible platforms other than OpenAI, upstream-type targets, or custom API
+// Key targets. Non-API-Key targets and API Keys
 // with blank or official api.openai.com hosts use the upstream path; malformed
 // custom URLs choose local counting.
 func EstimateInputTokensLocally(provider *ExecutionProvider) bool {
-	if provider == nil || provider.View().IsGrok() || provider.View().IsCNProvider() || provider.Record.Type == capability.ProviderTypeUpstream {
+	if provider == nil || provider.View().IsOpenAICompatible() && !provider.View().IsOpenAI() || provider.Record.Type == capability.ProviderTypeUpstream {
 		return true
 	}
 	if provider.Record.Type != capability.ProviderTypeAPIKey {

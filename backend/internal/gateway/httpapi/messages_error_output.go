@@ -131,7 +131,7 @@ func ForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForward int
 	if err == nil || c == nil || c.Writer == nil {
 		return false
 	}
-	if c.Writer.Size() == writerSizeBeforeForward {
+	if HeartbeatAdjustedWrittenSize(c) == writerSizeBeforeForward {
 		return false
 	}
 
@@ -215,7 +215,7 @@ func (h MessagesErrorOutput) ResponsesExhausted(c *gin.Context, lastErr *forward
 		// Append a failure only for that empty/heartbeat state, preserving any
 		// semantic output already delivered by the Responses converter.
 		MarkOpsStreamError(c, code, message, status)
-		if c != nil && c.Writer != nil && (c.Writer.Size() <= 0 || StreamHasOnlyHeartbeats(c)) {
+		if c != nil && c.Writer != nil && HeartbeatAdjustedWrittenSize(c) <= 0 {
 			WriteResponsesFailedSSE(c, code, "", message, ErrorRequestID(c), ErrorRequestModel(c))
 		}
 		return
@@ -283,13 +283,14 @@ func (h MessagesErrorOutput) GeminiExhausted(c *gin.Context, failoverErr *forwar
 		return
 	}
 
+	CopyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 
 	// A matching Gemini rule owns final status and message selection; returning
 	// from this branch prevents default mapping from overwriting its chosen response.
 	if h.Rules != nil && len(responseBody) > 0 {
-		if rule := h.Rules.MatchRule(capability.PlatformGemini, statusCode, responseBody); rule != nil {
+		if rule := h.Rules.MatchRule(failoverErr.ProviderPlatform(capability.PlatformGemini), statusCode, responseBody); rule != nil {
 			respCode := statusCode
 			if !rule.PassthroughCode && rule.ResponseCode != nil {
 				respCode = *rule.ResponseCode

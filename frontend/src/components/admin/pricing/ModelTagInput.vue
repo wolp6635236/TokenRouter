@@ -37,7 +37,7 @@
         @paste="handlePaste"
       />
     </TransitionGroup>
-    <p class="mt-1 text-xs text-gray-400">
+    <p v-if="showHint !== false" class="mt-1 text-xs text-gray-400">
       {{
         t(
           'admin.pricing.form.modelInputHint',
@@ -68,6 +68,9 @@ const props = defineProps<{
   ariaLabel?: string // accessible input label
   placeholder?: string // empty input hint
   platform?: string // provider platform identifier
+  // showHint defaults to visible. Compact price cards suppress the instruction
+  // below the field while keeping tag entry and batch paste available.
+  showHint?: boolean
 }>()
 
 // emit forwards typed edits and actions to the parent that owns the displayed draft.

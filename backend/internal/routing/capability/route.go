@@ -39,7 +39,8 @@ type ProviderProtocols struct {
 // images select the supplied Gemini provider's dedicated batch protocol
 // regardless of fallback configuration. That branch checks platform and enabled
 // protocol; callers supply validated authentication/protocol configuration.
-// Client admission and model checks surround this pure protocol decision.
+// Callers narrow enabled protocols for their final model before invoking this
+// decision. Client admission and model whitelist checks surround this selection.
 func ResolveRoute(provider ProviderProtocols, source ProtocolID, fallbacks map[ProtocolID][]ProtocolID) (ProtocolID, bool) {
 	enabled := provider.Enabled
 	if slices.Contains(enabled, source) && slices.Contains(NativeProtocolOptions(provider.Platform, provider.Type, provider.AuthMode), source) {

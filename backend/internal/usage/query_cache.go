@@ -22,6 +22,7 @@ import (
 // usageStatsCacheKeyData identifies the filters for the 30-second admin usage
 // statistics cache.
 type usageStatsCacheKeyData struct {
+	RequestSource  string `json:"request_source"`  // requested customer or system source
 	RequestID      string `json:"request_id"`      // request lookup text selector
 	EndpointSource string `json:"endpoint_source"` // selected endpoint chart dimension
 	StartTime      string `json:"start_time"`      // UTC RFC3339 range start
@@ -64,6 +65,7 @@ func usageStatsCacheKey(filters UsageLogFilters) string {
 		end = filters.EndTime.UTC().Format(time.RFC3339)
 	}
 	return mustMarshalDashboardCacheKey(usageStatsCacheKeyData{
+		RequestSource:      filters.RequestSource,
 		RequestID:          filters.RequestID,
 		EndpointSource:     filters.EndpointSource,
 		StartTime:          start,

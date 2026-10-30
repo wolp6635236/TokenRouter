@@ -127,7 +127,6 @@ export default {
     apiKeys: 'API Keys',
     team: 'Team',
     teams: 'Teams',
-    batchImage: 'Batch Images',
     creative: 'Creative Studio',
     usage: 'Usage',
     redeem: 'Redeem',

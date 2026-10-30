@@ -13,8 +13,8 @@
 //
 // Request patching, model_input.go, and compact.go handle fields, replay, and
 // compaction. Cache, chat, and composer_images.go handle identities,
-// conversion, and image descriptions. Responses and sse_filter.go handle
-// execution and stream frames. Media, video_content.go, voice,
+// conversion, and image descriptions. Responses execution shares upstream
+// heartbeat filtering with the common OpenAI response readers. Media, video_content.go, voice,
 // audio_usage.go, and realtime handle generated content and audio quantities.
 // Models, observed_models.go, standalone_search.go, and search_count.go
 // handle names, search evidence, and search usage. CLI identity,

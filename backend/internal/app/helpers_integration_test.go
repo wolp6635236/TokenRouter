@@ -5,6 +5,10 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,12 +20,16 @@ import (
 	dbent "github.com/TokenFlux/TokenRouter/ent"
 	_ "github.com/TokenFlux/TokenRouter/ent/runtime"
 	"github.com/TokenFlux/TokenRouter/internal/app/bootstrap"
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient/tlsfingerprint"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
-// PostgreSQL integration fixtures share one pool between direct SQL and Ent
-// access. A container-backed fixture applies the embedded migrations before
-// exposing that pool, while constructor aliases let external integration
-// packages use the application bindings under the integration build tag.
+// helpers_integration_test.go supplies shared database and provider-probe fixtures.
+// PostgreSQL scenarios share one migrated pool between SQL and Ent operations;
+// the recording transport and attribute repository keep assembled native probes
+// independent of real upstream services while preserving their request and
+// model-policy observations for assertions.
 
 var (
 	// NewProviderTestsForTest exposes provider probe construction with application
@@ -48,6 +56,25 @@ type databaseFixture struct {
 	dsn    string        // fixture connection string
 	host   string        // mapped container hostname
 	port   int           // mapped PostgreSQL port
+}
+
+// nativeProviderTestTransport records platform test requests and serves a
+// configured stream body.
+type nativeProviderTestTransport struct {
+	body string // configured platform stream
+	// requests and ids are appended together for each Do invocation. Sequential
+	// subtests inspect the corresponding indexes after platform Test returns, retaining each supplied request pointer.
+	requests []*http.Request // captured upstream requests
+	ids      []int64         // captured provider identities
+}
+
+// probeAttributeRepository supplies group-specific profiles for assembled provider tests.
+type probeAttributeRepository struct {
+	routing.ModelAttributeRepository // unused profile management operations
+	// config changes between platform cases to restrict the same declaration to
+	// that platform's endpoint. Each resolution reads a detached profile copy.
+	config *routing.ModelAttributeConfig
+	groups []int64 // observed profile lookup identifiers
 }
 
 // newDatabaseFixture starts a PostgreSQL container, opens its shared SQL/Ent
@@ -90,4 +117,36 @@ func newDatabaseFixture(t *testing.T) *databaseFixture {
 	port, err := pg.MappedPort(ctx, "5432/tcp")
 	require.NoError(t, err)
 	return &databaseFixture{db: db, client: client, dsn: dsn, host: host, port: port.Int()}
+}
+
+// Do records the request and provider ID before returning the configured
+// stream. The caller closes the owned response body, while proxy and
+// concurrency inputs are ignored by this sequential platform-test fixture.
+func (f *nativeProviderTestTransport) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
+	f.requests = append(f.requests, req)
+	f.ids = append(f.ids, id)
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(f.body))}, nil
+}
+
+// DoWithTLS delegates the configured platform test exchange while ignoring TLS
+// profile.
+func (f *nativeProviderTestTransport) DoWithTLS(req *http.Request, proxy string, id int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return f.Do(req, proxy, id, concurrency)
+}
+
+// ForGroup supplies group 59's profile, fails group 61, and rejects output in 62.
+// Other groups inherit catalogue defaults, allowing each test to observe isolated overrides.
+func (r *probeAttributeRepository) ForGroup(_ context.Context, groupID int64) (*routing.ModelAttributeConfig, error) {
+	r.groups = append(r.groups, groupID)
+	if groupID == 61 {
+		return nil, errors.New("profile storage unavailable")
+	}
+	if groupID == 62 {
+		empty := []string{}
+		return &routing.ModelAttributeConfig{Status: "active", Rules: []routing.ModelAttributeRule{{Models: []string{"*"}, Attributes: modelcatalog.Attributes{OutputModalities: &empty}}}}, nil
+	}
+	if groupID == 59 {
+		return r.config, nil
+	}
+	return nil, nil
 }

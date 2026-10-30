@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import GrokFreeIcon from '../GrokFreeIcon.vue'
+import PlatformIcon from '../PlatformIcon.vue'
 import PlatformTypeBadge from '../PlatformTypeBadge.vue'
 
 /**
  * PlatformTypeBadge.spec.ts checks provider authentication and subscription tier
- * presentation through mounted badges. Qoder identity, OpenAI credential subtypes,
+ * presentation through mounted badges. Platform identity, OpenAI credential subtypes,
  * Grok free aliases, and paid tier changes exercise labels, graphics, palettes, and
  * expiration visibility using the component computed rules.
  */
@@ -22,6 +23,29 @@ vi.mock('vue-i18n', async () => {
 })
 
 describe('PlatformTypeBadge', () => {
+  /**
+   * An OpenCode API-key provider appears in the provider list and later changes to
+   * Gemini. Its label, icon identity, and both badge segments follow the platform.
+   */
+  it('renders OpenCode identity and updates the badge when the platform changes', async () => {
+    const wrapper = mount(PlatformTypeBadge, {
+      props: { platform: 'opencode', type: 'apikey' },
+    })
+
+    expect(wrapper.text()).toBe('OpenCodeKey')
+    expect(wrapper.findComponent(PlatformIcon).props('platform')).toBe('opencode')
+    expect(wrapper.findAll('span.bg-zinc-800\\/10')).toHaveLength(2)
+    expect(wrapper.findAll('span.dark\\:text-zinc-200')).toHaveLength(2)
+    expect(wrapper.html()).not.toContain('bg-blue-100')
+
+    await wrapper.setProps({ platform: 'gemini' })
+
+    expect(wrapper.text()).toBe('GeminiKey')
+    expect(wrapper.findComponent(PlatformIcon).props('platform')).toBe('gemini')
+    expect(wrapper.findAll('span.bg-blue-100')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
   /**
    * A Qoder provider uses the COSY credential type in the compact badge. The displayed
    * labels identify Qoder and COSY while excluding the default Gemini name.

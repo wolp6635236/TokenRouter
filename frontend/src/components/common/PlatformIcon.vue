@@ -1,5 +1,6 @@
 <template>
-  <ProviderIcon v-if="platform === 'jev'" brand="typesafe" :size="pixelSize" />
+  <ProviderIcon v-if="platform === 'opencode'" brand="opencode" :size="pixelSize" />
+  <ProviderIcon v-else-if="platform === 'jev'" brand="typesafe" :size="pixelSize" />
 
   <svg
     v-else-if="platform === 'anthropic'"

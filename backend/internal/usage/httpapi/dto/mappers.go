@@ -41,9 +41,9 @@ func usageLogFromServiceUser(l *usage.UsageLog, language ...string) UsageLog {
 	}
 	return UsageLog{
 		ID:                        l.ID,
-		UserID:                    l.UserID,
+		UserID:                    positiveUsageID(l.UserID),
 		TeamID:                    l.TeamID,
-		APIKeyID:                  l.APIKeyID,
+		APIKeyID:                  positiveUsageID(l.APIKeyID),
 		ProviderID:                l.ProviderID,
 		Platform:                  l.Platform,
 		RequestID:                 l.RequestID,
@@ -149,6 +149,8 @@ func FromUsageAdmin(l *usage.UsageLog) *AdminUsageLog {
 	usageLog := usageLogFromServiceUser(l)
 	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
 	return &AdminUsageLog{
+		RequestSource:          l.EffectiveRequestSource(),
+		SystemUsage:            l.SystemUsage,
 		UsageLog:               usageLog,
 		DetailedTiming:         TimingFromUsage(l),
 		UpstreamModel:          l.UpstreamModel,
@@ -176,16 +178,17 @@ func CleanupFromUsage(task *usage.UsageCleanupTask) *UsageCleanupTask {
 		ID:     task.ID,
 		Status: task.Status,
 		Filters: UsageCleanupFilters{
-			StartTime:   task.Filters.StartTime,
-			EndTime:     task.Filters.EndTime,
-			UserID:      task.Filters.UserID,
-			APIKeyID:    task.Filters.APIKeyID,
-			ProviderID:  task.Filters.ProviderID,
-			GroupID:     task.Filters.GroupID,
-			Model:       task.Filters.Model,
-			RequestType: RequestTypeStringPtr(task.Filters.RequestType),
-			Stream:      task.Filters.Stream,
-			BillingType: task.Filters.BillingType,
+			RequestSource: task.Filters.RequestSource,
+			StartTime:     task.Filters.StartTime,
+			EndTime:       task.Filters.EndTime,
+			UserID:        task.Filters.UserID,
+			APIKeyID:      task.Filters.APIKeyID,
+			ProviderID:    task.Filters.ProviderID,
+			GroupID:       task.Filters.GroupID,
+			Model:         task.Filters.Model,
+			RequestType:   RequestTypeStringPtr(task.Filters.RequestType),
+			Stream:        task.Filters.Stream,
+			BillingType:   task.Filters.BillingType,
 		},
 		CreatedBy:    task.CreatedBy,
 		DeletedRows:  task.DeletedRows,
@@ -274,4 +277,14 @@ func recordedTimingMode(log *usage.UsageLog) string {
 		return ""
 	}
 	return log.Timings.Mode
+}
+
+// positiveUsageID preserves real customer identities and exposes absent system
+// attribution as JSON null. Positive identifiers receive a new pointer, while
+// zero and negative values return nil instead of representing an account.
+func positiveUsageID(id int64) *int64 {
+	if id <= 0 {
+		return nil
+	}
+	return &id
 }

@@ -30,9 +30,9 @@ import (
 // HTTP failures are captured and closed before provider-local rejected-field,
 // agent-task, or Compact recovery selects another exchange. Reader Compact
 // signals delegate adopted-body cleanup to their recovery callback; other read
-// failures close the response before final presentation. Successful headers can
-// publish turn-state provenance before client delivery, while response
-// ownership and usage snapshots follow completed reading. Image observations
+// failures close the response before final presentation. The HTTP output sink
+// owns turn-state header provenance; response ownership and usage snapshots
+// follow completed reading. Image observations
 // attach image billing identity to the final result.
 
 // PassthroughInput carries prepared bytes, retained image intent, and response observations for one attempt.
@@ -358,10 +358,6 @@ func RunPassthrough(ctx context.Context, in PassthroughInput, p PassthroughPorts
 		}
 
 		p.WrapResponseBody(resp)
-		// Publish turn-state source from successful response headers before body
-		// reading; this header observation is separate from confirmed client delivery
-		// and final response-owner binding.
-		p.ObserveProvenance(resp.Header)
 
 		if reqStream {
 			result, handleErr := openai.ReadPassthroughStreaming(ctx, resp, upstream.NewOutputContext(p.Sink()), p.ResponseOptions(ctx), startTime, reqModel, upstreamPassthroughModel)

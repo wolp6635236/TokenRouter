@@ -409,6 +409,7 @@ const buildPayload = (): CreateUsageCleanupTaskRequest | null => {
   }
   // Canonical request type takes precedence over legacy stream; send both only when that
   // type has a compatible stream representation.
+  if (localFilters.value.request_source) payload.request_source = localFilters.value.request_source
   if (localFilters.value.request_type) {
     payload.request_type = localFilters.value.request_type
     const legacyStream = requestTypeToLegacyStream(localFilters.value.request_type)

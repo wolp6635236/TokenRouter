@@ -104,7 +104,7 @@ const (
 	OAuthDefaultGoogleOAuthToken                    = "https://oauth2.googleapis.com/token"
 	OAuthDefaultGoogleOAuthUserInfo                 = "https://openidconnect.googleapis.com/v1/userinfo"
 	OAuthDefaultWeChatConnectFrontend               = "/auth/wechat/callback"
-	OAuthDefaultWeChatConnectScopes                 = "snsapi_login"
+	OAuthDefaultWeChatConnectScopes                 = authconfig.DefaultWeChatConnectScopes
 )
 
 // OAuthSettingsDefaults carries the startup provider values snapshotted for
@@ -233,16 +233,7 @@ func SettingsCoerceDeprecatedDingTalkCorpPolicy(policy string) string {
 // empty text and other normalized modes use the open-platform login constant;
 // this choice does not check capability enablement.
 func SettingsDefaultWeChatConnectScopeForMode(mode string) string {
-	// Scope defaults follow the normalized channel used by authorization URLs,
-	// so official-account scope cannot become the default for mobile or
-	// open-platform ceremonies.
-	switch NormalizeWeChatConnectModeSetting(mode) {
-	case "mp":
-		return "snsapi_userinfo"
-	case "mobile":
-		return ""
-	}
-	return OAuthDefaultWeChatConnectScopes
+	return authconfig.DefaultWeChatConnectScopesForMode(mode)
 }
 
 // SettingsNormalizeWeChatConnectScopeSetting chooses compatible scope text
@@ -257,24 +248,7 @@ func SettingsDefaultWeChatConnectScopeForMode(mode string) string {
 // request or browser admission and can be used for disabled configuration
 // readback.
 func SettingsNormalizeWeChatConnectScopeSetting(raw, mode string) string {
-	// Interpret scope under the normalized channel, replacing incompatible text
-	// with that channel's accepted/default representation so mobile or
-	// open-platform cannot retain official-account-only scope.
-	switch NormalizeWeChatConnectModeSetting(mode) {
-	case "mp":
-		switch strings.TrimSpace(raw) {
-		case "snsapi_base":
-			return "snsapi_base"
-		case "snsapi_userinfo":
-			return "snsapi_userinfo"
-		default:
-			return SettingsDefaultWeChatConnectScopeForMode(mode)
-		}
-	case "mobile":
-		return ""
-	default:
-		return OAuthDefaultWeChatConnectScopes
-	}
+	return authconfig.NormalizeWeChatConnectScopes(raw, mode)
 }
 
 // SettingsNormalizeWeChatConnectStoredMode retains a normalized requested
@@ -288,34 +262,7 @@ func SettingsNormalizeWeChatConnectScopeSetting(raw, mode string) string {
 // mode follow usable configured capabilities while keeping an explicit
 // normalized mode available even when every capability is disabled.
 func SettingsNormalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled bool, mode string) string {
-	mode = NormalizeWeChatConnectModeSetting(mode)
-	switch mode {
-	case "open":
-		if openEnabled {
-			return "open"
-		}
-	case "mp":
-		if mpEnabled {
-			return "mp"
-		}
-	case "mobile":
-		if mobileEnabled {
-			return "mobile"
-		}
-	}
-	// The requested channel was not enabled; select the ordered enabled
-	// capability while leaving normalized mode available when the configured set
-	// has no enabled channel.
-	switch {
-	case openEnabled:
-		return "open"
-	case mpEnabled:
-		return "mp"
-	case mobileEnabled:
-		return "mobile"
-	default:
-		return mode
-	}
+	return authconfig.NormalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled, mode)
 }
 
 // SettingsMergeWeChatConnectCapabilitySettings merges channel switches with

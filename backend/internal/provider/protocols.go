@@ -127,6 +127,9 @@ func NormalizeProviderProtocols(provider *Record) error {
 	if provider == nil || provider.IsCredentialShadow() {
 		return nil
 	}
+	if err := ValidateOpenCodeCredentials(provider); err != nil {
+		return err
+	}
 	if err := ValidateJevCredentials(provider); err != nil {
 		return err
 	}

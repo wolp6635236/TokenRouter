@@ -28,6 +28,7 @@ import (
 	egressadapter "github.com/TokenFlux/TokenRouter/internal/egress/provider"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/compact"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
 	forwardcore "github.com/TokenFlux/TokenRouter/internal/gateway/forward"
 	httptestkit "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/media"
@@ -7294,5 +7295,117 @@ func TestSecondImageToolErrorPresentation(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 			require.Equal(t, "MODEL_CAPABILITY_UNKNOWN", gjson.GetBytes(w.Body.Bytes(), "error.code").String())
 		})
+	}
+}
+
+// TestOpenAIResponsesOAuthImageDriverOverride prepares an image-only Responses
+// request using a provider override. An explicit text model keeps its identity,
+// while automatic image adaptation selects the provider's configured driver.
+func TestOpenAIResponsesOAuthImageDriverOverride(t *testing.T) {
+	for _, model := range []string{"gpt-image-2", "gpt-6-luna"} {
+		upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_image\",\"status\":\"completed\",\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aW1hZ2U=\"}]}}\n\n")),
+		}}
+		svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+		provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+			ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth,
+			Credentials: map[string]any{"access_token": "test"},
+			Extra:       map[string]any{providercore.CodexImageResponsesModelKey: "gpt-6.1-sol"},
+		}}
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Set("api_key", &apikey.APIKey{Group: &routing.Group{AllowImageGeneration: true}})
+		SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+		body := []byte(fmt.Sprintf(`{"model":%q,"stream":false,"input":"draw a cat","tools":[{"type":"image_generation","model":"gpt-image-2"}]}`, model))
+		_, err := svc.Forward(context.Background(), c, provider, body)
+		require.NoError(t, err)
+		expected := model
+		if model == "gpt-image-2" {
+			expected = "gpt-6.1-sol"
+		}
+		require.Equal(t, expected, gjson.GetBytes(upstream.lastBody, "model").String())
+		require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "tools.0.model").String())
+	}
+}
+
+// TestOpenAIResponsesImageDriverRejection varies requested streaming, committed
+// output, and administrator error rules. Before commitment it returns JSON with
+// the selected status; committed streams receive one terminal with the selected
+// message, while the returned driver error retains its upstream classification.
+func TestOpenAIResponsesImageDriverRejection(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, committed := range []bool{false, true} {
+			if committed && !stream {
+				continue
+			}
+			for _, ruleMode := range []string{"none", "custom", "passthrough"} {
+				t.Run(fmt.Sprintf("stream=%t/committed=%t/rule=%s", stream, committed, ruleMode), func(t *testing.T) {
+					upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Header:     http.Header{},
+						Body:       io.NopCloser(strings.NewReader(`{"detail":"The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account. See https://example.com/?access_token=driver-review-secret"}`)),
+					}}
+					svc := newResponsesFixture(responsesFixtureInputs{transport: upstream})
+					provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+						ID: 1, Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeOAuth,
+						Credentials: map[string]any{"access_token": "test"},
+					}}
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+					c.Set("api_key", &apikey.APIKey{Group: &routing.Group{AllowImageGeneration: true}})
+					SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+					expectedStatus := http.StatusBadRequest
+					expectedMessage := "gpt-6-luna"
+					if ruleMode != "none" {
+						expectedStatus = http.StatusServiceUnavailable
+						expectedMessage = "Image service temporarily unavailable"
+						rule := gatewaytestkit.NonFailoverRule(http.StatusBadRequest, "not supported when using Codex", expectedStatus, expectedMessage)
+						if ruleMode == "passthrough" {
+							rule.PassthroughBody = true
+							expectedMessage = "gpt-6-luna"
+						}
+						rule.SkipMonitoring = true
+						BindErrorPassthroughService(c, gatewaytestkit.ErrorRules([]*errorpolicy.ErrorPassthroughRule{rule}))
+					}
+					if committed {
+						c.Header("Content-Type", "text/event-stream")
+						_, err := c.Writer.WriteString(": queued\n\n")
+						require.NoError(t, err)
+						c.Writer.Flush()
+					}
+					body := []byte(fmt.Sprintf(`{"model":"gpt-image-2","stream":%t,"input":"draw a cat"}`, stream))
+					_, err := svc.Forward(context.Background(), c, provider, body)
+					var driverErr *openaicore.OpenAIImagesUpstreamError
+					require.ErrorAs(t, err, &driverErr)
+					require.Equal(t, "image_main_model_unsupported", driverErr.Code)
+					require.Equal(t, http.StatusBadRequest, driverErr.StatusCode)
+					require.Equal(t, ruleMode != "none", c.GetBool(OpsSkipPassthroughKey))
+					require.Contains(t, rec.Body.String(), expectedMessage)
+					require.NotContains(t, rec.Body.String(), "driver-review-secret")
+					if committed {
+						require.Equal(t, http.StatusOK, rec.Code)
+						require.Equal(t, "text/event-stream", rec.Header().Get("Content-Type"))
+						require.Equal(t, 1, strings.Count(rec.Body.String(), "event: response.failed"))
+					} else {
+						require.Equal(t, expectedStatus, rec.Code)
+						require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+						require.Equal(t, "image_main_model_unsupported", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+					}
+					switch ruleMode {
+					case "custom":
+						require.NotContains(t, rec.Body.String(), "gpt-6-luna")
+					case "none":
+						require.Contains(t, rec.Body.String(), "gpt-image-2")
+					}
+					before := rec.Body.String()
+					require.False(t, DefaultOpenAIErrorOutput().EnsureResponse(c, stream, err))
+					require.Equal(t, before, rec.Body.String())
+				})
+			}
+		}
 	}
 }

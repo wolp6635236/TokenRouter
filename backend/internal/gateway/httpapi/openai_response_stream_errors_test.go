@@ -14,6 +14,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/ops"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
@@ -88,6 +89,113 @@ type rateLimit429ProviderRepoStub struct {
 	rateLimitCalls     int       // provider-rate persistence call count
 	lastRateLimitID    int64     // last rate-limited provider identifier
 	lastRateLimitReset time.Time // last provider-rate reset timestamp
+}
+
+// TestOpenAIStreamFailureAppliedEffects preserves already-applied health while
+// building terminal errors. It checks status fallback, credential evidence,
+// header ownership, Ops publication, and a later failure's independent effects.
+func TestOpenAIStreamFailureAppliedEffects(t *testing.T) {
+	for _, tt := range []struct {
+		name       string // applied evidence scenario name
+		applied    bool   // effects supplied before construction
+		status     int    // previously applied policy status
+		wantStatus int    // expected returned failure status
+	}{
+		{name: "no_evidence", wantStatus: http.StatusForbidden},
+		{name: "applied_status", applied: true, status: http.StatusForbidden, wantStatus: http.StatusForbidden},
+		{name: "applied_status_override", applied: true, status: http.StatusServiceUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "applied_status_fallback", applied: true, status: http.StatusOK, wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &openAIStream403ProviderRepo{}
+			svc := newWSFixture(wsFixtureInputs{health: newUpstreamHealthForTest(repo, nil, nil, providercore.HealthOptions{}, nil)})
+			provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+				LoadLocation: time.LoadLocation,
+				ID:           917,
+				Platform:     capability.PlatformOpenAI,
+				Type:         capability.ProviderTypeOAuth,
+			}}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			payload := []byte(`{"type":"error","error":{"type":"permission_error","code":"invalid_api_key","status_code":403,"message":"credential rejected"}}`)
+			headers := http.Header{"X-Request-Id": {"req-effects"}, "Retry-After": {"7"}}
+			var appliedEffects *AppliedOpenAIResponseEffects
+			if tt.applied {
+				_, disabled := svc.Output.TerminalProviderEffects(c, provider, payload, "credential rejected", headers)
+				require.Equal(t, 1, repo.setErrorCalls)
+				_, recorded := c.Get(OpsUpstreamErrorsKey)
+				require.False(t, recorded)
+				appliedEffects = &AppliedOpenAIResponseEffects{StatusCode: tt.status, StopScheduling: disabled}
+			}
+
+			failure := svc.Output.NewStreamPolicyFailureWithModel(c, provider, false, "req-effects", headers, payload, "credential rejected", appliedEffects, "gpt-5.4")
+
+			require.Equal(t, 1, repo.setErrorCalls)
+			require.Equal(t, tt.wantStatus, failure.StatusCode)
+			require.False(t, failure.RetryableOnSameProvider)
+			require.False(t, failure.IsCredentialFailure())
+			require.JSONEq(t, `{"error":{"type":"upstream_error","message":"credential rejected"}}`, string(failure.ResponseBody))
+			headers.Set("X-Request-Id", "changed-after-construction")
+			require.Equal(t, "req-effects", http.Header(failure.ResponseHeaders).Get("X-Request-Id"))
+			require.Equal(t, "7", http.Header(failure.ResponseHeaders).Get("Retry-After"))
+			value, _ := c.Get(OpsUpstreamErrorsKey)
+			events, ok := value.([]*ops.OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.Len(t, events, 1)
+			require.Equal(t, "failover", events[0].Kind)
+			require.Equal(t, http.StatusForbidden, events[0].UpstreamStatusCode)
+			require.False(t, c.Writer.Written())
+
+			// A second failure has no supplied observation. Its own health update must
+			// run even when the first construction reused effects for this same request.
+			nextFailure := svc.Output.NewStreamPolicyFailure(c, provider, false, "req-next", nil, payload, "credential rejected")
+			require.NotNil(t, nextFailure)
+			require.Equal(t, 2, repo.setErrorCalls)
+		})
+	}
+}
+
+// TestOpenAIStreamFailureAppliedSchedulingDecision supplies a previously
+// evaluated semantic 429 with exhausted establishment headers. It preserves the
+// scheduling decision, suppresses repeated health writes, and retains metadata.
+func TestOpenAIStreamFailureAppliedSchedulingDecision(t *testing.T) {
+	for _, tt := range []struct {
+		name     string // applied scheduling scenario name
+		disabled bool   // previous health scheduling decision
+	}{
+		{name: "retryable"},
+		{name: "disabled", disabled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &oauth429RateLimitRepo{}
+			svc := newWSFixture(wsFixtureInputs{health: newUpstreamHealthForTest(repo, nil, nil, providercore.HealthOptions{}, nil)})
+			provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+				LoadLocation: time.LoadLocation,
+				ID:           928,
+				Platform:     capability.PlatformOpenAI,
+				Type:         capability.ProviderTypeOAuth,
+			}}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			headers := http.Header{
+				"X-Request-Id":                        {"req-semantic-effects"},
+				"X-Codex-Primary-Used-Percent":        {"100"},
+				"X-Codex-Primary-Reset-After-Seconds": {"604800"},
+				"X-Codex-Primary-Window-Minutes":      {"10080"},
+			}
+			payload := []byte(`{"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow down"}}`)
+			appliedEffects := &AppliedOpenAIResponseEffects{StatusCode: http.StatusTooManyRequests, StopScheduling: tt.disabled}
+
+			failure := svc.Output.NewStreamPolicyFailureWithModel(c, provider, false, "req-semantic-effects", headers, payload, "slow down", appliedEffects, "gpt-5.4")
+
+			require.Equal(t, http.StatusTooManyRequests, failure.StatusCode)
+			require.Equal(t, !tt.disabled, failure.RetryableOnSameProvider)
+			require.Zero(t, repo.setRateLimitedCalls)
+			require.Zero(t, repo.setModelRateLimitCalls)
+			require.JSONEq(t, `{"error":{"type":"rate_limit_error","message":"slow down"}}`, string(failure.ResponseBody))
+			require.Equal(t, "100", http.Header(failure.ResponseHeaders).Get("X-Codex-Primary-Used-Percent"))
+		})
+	}
 }
 
 // TestOpenAIHandleErrorResponsePassthrough_InvalidRequest400PassesThrough

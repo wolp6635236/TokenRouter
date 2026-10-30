@@ -75,8 +75,8 @@ const (
 	// These values supply WeChat Open-mode and frontend callback defaults while
 	// normalization resolves omitted deployment text and maps supported legacy
 	// credentials.
-	defaultWeChatConnectMode             = "open"
-	defaultWeChatConnectScopes           = "snsapi_login"
+	defaultWeChatConnectMode             = authconfig.DefaultWeChatConnectMode
+	defaultWeChatConnectScopes           = authconfig.DefaultWeChatConnectScopes
 	defaultWeChatConnectFrontendRedirect = "/auth/wechat/callback"
 
 	// MaxForwardedClientIPHeaders shares the discovery-source limit with the policy
@@ -334,17 +334,11 @@ type IdempotencyConfig struct {
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
 }
 
-// BatchImageConfig holds deployment inputs for batch image access, storage,
+// BatchImageConfig holds deployment inputs for batch image limits, storage,
 // queueing, and cleanup.
 type BatchImageConfig struct {
-	// batch image API availability switch
-	Enabled bool `mapstructure:"enabled"`
 	// ordinary job item count limit
 	MaxItemsPerJobDefault int `mapstructure:"max_items_per_job_default"`
-	// MaxItemsPerJobTrial is parsed and defaulted by this loader. Current batch
-	// application construction does not pass this field to PublicOptions, so it
-	// has no named runtime reader there.
-	MaxItemsPerJobTrial int `mapstructure:"max_items_per_job_trial"`
 	// total output image count limit
 	MaxOutputImagesPerJob int `mapstructure:"max_output_images_per_job"`
 	// per-item output image count limit
@@ -373,16 +367,10 @@ type BatchImageConfig struct {
 	InputRetentionAfterTerminalHours int `mapstructure:"input_retention_after_terminal_hours"`
 	// terminal job output retention hours
 	OutputRetentionAfterTerminalHours int `mapstructure:"output_retention_after_terminal_hours"`
-	// OutputRetentionMaxDays is decoded and defaulted by this loader. Current
-	// batch application cleanup options do not reference this field, so its parsed
-	// day value does not control that cleanup.
-	OutputRetentionMaxDays int `mapstructure:"output_retention_max_days"`
 	// batch cleanup polling minutes
 	CleanupIntervalMinutes int `mapstructure:"cleanup_interval_minutes"`
 	// cleanup job batch size
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
-	// batch queue worker availability switch
-	QueueEnabled bool `mapstructure:"queue_enabled"`
 	// Redis ready-queue key name
 	QueueReadyKey string `mapstructure:"queue_ready_key"`
 	// Redis delayed-queue key name
@@ -393,8 +381,6 @@ type BatchImageConfig struct {
 	InflightKeyPrefix string `mapstructure:"inflight_key_prefix"`
 	// Redis job-lock key prefix
 	LockKeyPrefix string `mapstructure:"lock_key_prefix"`
-	// Redis submission idempotency prefix
-	IdempotencyKeyPrefix string `mapstructure:"idempotency_key_prefix"`
 	// active-task marker lifetime seconds
 	InflightTTLSeconds int `mapstructure:"inflight_ttl_seconds"`
 	// job-lock lifetime in seconds
@@ -415,8 +401,6 @@ type BatchImageConfig struct {
 	DelayedMoveLimit int `mapstructure:"delayed_move_limit"`
 	// active-task recovery batch count
 	RecoverLimit int `mapstructure:"recover_limit"`
-	// Vertex batch adapter availability switch
-	VertexEnabled bool `mapstructure:"vertex_enabled"`
 	// Vertex batch project identifier
 	VertexProjectID string `mapstructure:"vertex_project_id"`
 	// Vertex batch region identifier
@@ -429,10 +413,6 @@ type BatchImageConfig struct {
 	// {batch_id} while Vertex is enabled. That placeholder separates objects
 	// belonging to different batch jobs in the managed bucket.
 	VertexManagedGCSPrefix string `mapstructure:"vertex_managed_gcs_prefix"`
-	// managed input retention hours
-	VertexInputRetentionHours int `mapstructure:"vertex_input_retention_hours"`
-	// managed output retention hours
-	VertexOutputRetentionHours int `mapstructure:"vertex_output_retention_hours"`
 	// Vertex batch endpoint override URL
 	VertexBatchPredictionBaseURL string `mapstructure:"vertex_batch_prediction_base_url"`
 	// Cloud Storage endpoint override URL
@@ -908,7 +888,7 @@ type GatewayConfig struct {
 	// seconds. Zero disables the gap deadline; positive values reach the stream
 	// consumer separately from its keepalive interval.
 	StreamDataIntervalTimeout int `mapstructure:"stream_data_interval_timeout"`
-	// StreamKeepaliveInterval supplies ordinary streaming ping intervals in
+	// StreamKeepaliveInterval supplies downstream text SSE idle heartbeat intervals in
 	// seconds. Zero disables these keepalives, while the separate data-gap timeout
 	// can still bound an inactive upstream stream.
 	StreamKeepaliveInterval int `mapstructure:"stream_keepalive_interval"`
@@ -976,8 +956,10 @@ type GatewayConfig struct {
 	// Grok configures Grok/xAI scheduling and the free-tier quota gate.
 	Grok GatewayGrokConfig `mapstructure:"grok"`
 
-	// CNProviders configures usage monitoring for Chinese OpenAI-compatible suppliers.
-	CNProviders GatewayCNProvidersConfig `mapstructure:"cn_providers"`
+	// UsageMonitor configures balance and quota polling for Kimi, Zhipu, and
+	// DeepSeek. The mapstructure key keeps existing deployment configuration
+	// valid.
+	UsageMonitor GatewayUsageMonitorConfig `mapstructure:"cn_providers"`
 }
 
 // GatewayGrokConfig supplies Grok password authorization and its free-tier
@@ -1008,11 +990,10 @@ type GatewayGrokConfig struct {
 	FreeQuotaStatsCacheSeconds int `mapstructure:"free_quota_stats_cache_seconds"`
 }
 
-// GatewayCNProvidersConfig configures periodic balance and quota probes for
-// Chinese suppliers.
-// Disabled by default; when enabled it probes active API-key providers. Manual
-// queries run independently.
-type GatewayCNProvidersConfig struct {
+// GatewayUsageMonitorConfig configures periodic balance and quota probes for
+// Kimi, Zhipu, and DeepSeek API-key providers. Disabled by default; when
+// enabled it probes active API-key providers. Manual queries run independently.
+type GatewayUsageMonitorConfig struct {
 	// MonitorEnabled selects periodic supplier probes, while the deployment
 	// default leaves that monitor disabled. Administrator-initiated usage queries
 	// remain separate from this background availability choice.
@@ -1718,97 +1699,6 @@ func isGitHubRepositoryName(value string) bool {
 	return true
 }
 
-// normalizeWeChatConnectMode returns mp or mobile for trimmed case-insensitive
-// matches, otherwise the default open mode. Unknown and empty input share that
-// default before stored-mode availability is considered.
-func normalizeWeChatConnectMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "mp":
-		return "mp"
-	case "mobile":
-		return "mobile"
-	default:
-		return defaultWeChatConnectMode
-	}
-}
-
-// normalizeWeChatConnectStoredMode selects a display mode consistent with the
-// available WeChat mode flags. The normalized requested mode wins when its
-// corresponding flag is enabled.
-//
-// If that mode is disabled, available modes are tried in Open, MP, then Mobile
-// order. With no enabled mode the normalized request is returned, allowing
-// later validation and feature availability to handle the inactive
-// configuration. This keeps mode selection separate from the overall Enabled
-// value used by its caller.
-func normalizeWeChatConnectStoredMode(openEnabled, mpEnabled, mobileEnabled bool, mode string) string {
-	mode = normalizeWeChatConnectMode(mode)
-	switch mode {
-	case "open":
-		if openEnabled {
-			return "open"
-		}
-	case "mp":
-		if mpEnabled {
-			return "mp"
-		}
-	case "mobile":
-		if mobileEnabled {
-			return "mobile"
-		}
-	}
-	// The requested mode has no enabled path. Select an available login path in
-	// priority order so the stored display mode follows usable mode flags.
-	switch {
-	case openEnabled:
-		return "open"
-	case mpEnabled:
-		return "mp"
-	case mobileEnabled:
-		return "mobile"
-	default:
-		return mode
-	}
-}
-
-// defaultWeChatConnectScopesForMode returns the built-in scope text for the
-// normalized login mode. MP uses snsapi_userinfo, Mobile uses empty text, and
-// Open or unknown input uses snsapi_login.
-func defaultWeChatConnectScopesForMode(mode string) string {
-	switch normalizeWeChatConnectMode(mode) {
-	case "mp":
-		return "snsapi_userinfo"
-	case "mobile":
-		return ""
-	default:
-		return defaultWeChatConnectScopes
-	}
-}
-
-// normalizeWeChatConnectScopes selects scope text accepted for the normalized
-// mode. MP retains snsapi_base or snsapi_userinfo exactly after trimming and
-// otherwise uses its default; Mobile clears scopes and Open uses the fixed
-// login scope.
-func normalizeWeChatConnectScopes(raw, mode string) string {
-	switch normalizeWeChatConnectMode(mode) {
-	case "mp":
-		switch strings.TrimSpace(raw) {
-		case "snsapi_base":
-			return "snsapi_base"
-		case "snsapi_userinfo":
-			return "snsapi_userinfo"
-		default:
-			// MP accepts the two recognized consent scopes exactly. Replace unsupported
-			// scope text with the mode default before this value reaches login settings.
-			return defaultWeChatConnectScopesForMode(mode)
-		}
-	case "mobile":
-		return ""
-	default:
-		return defaultWeChatConnectScopes
-	}
-}
-
 // shouldApplyLegacyWeChatEnv reports whether a retired variable may supply this
 // current field. YAML presence blocks compatibility, and any current
 // environment presence also blocks it, including an explicitly empty variable.
@@ -1917,9 +1807,9 @@ func applyLegacyWeChatConnectEnvCompatibility(cfg *WeChatConnectConfig) {
 	if shouldApplyLegacyWeChatEnv("wechat_connect.scopes", "WECHAT_CONNECT_SCOPES") {
 		switch {
 		case hasLegacyMP && !hasLegacyOpen:
-			cfg.Scopes = defaultWeChatConnectScopesForMode("mp")
+			cfg.Scopes = authconfig.DefaultWeChatConnectScopesForMode("mp")
 		case hasLegacyOpen:
-			cfg.Scopes = defaultWeChatConnectScopesForMode("open")
+			cfg.Scopes = authconfig.DefaultWeChatConnectScopesForMode("open")
 		}
 	}
 }
@@ -1949,7 +1839,7 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 	cfg.MPAppSecret = strings.TrimSpace(cfg.MPAppSecret)
 	cfg.MobileAppID = strings.TrimSpace(cfg.MobileAppID)
 	cfg.MobileAppSecret = strings.TrimSpace(cfg.MobileAppSecret)
-	cfg.Mode = normalizeWeChatConnectMode(cfg.Mode)
+	cfg.Mode = authconfig.NormalizeWeChatConnectMode(cfg.Mode)
 	cfg.RedirectURL = strings.TrimSpace(cfg.RedirectURL)
 	cfg.FrontendRedirectURL = strings.TrimSpace(cfg.FrontendRedirectURL)
 
@@ -1978,8 +1868,8 @@ func normalizeWeChatConnectConfig(cfg *WeChatConnectConfig) {
 			cfg.OpenEnabled = true
 		}
 	}
-	cfg.Mode = normalizeWeChatConnectStoredMode(cfg.OpenEnabled, cfg.MPEnabled, cfg.MobileEnabled, cfg.Mode)
-	cfg.Scopes = normalizeWeChatConnectScopes(cfg.Scopes, cfg.Mode)
+	cfg.Mode = authconfig.NormalizeWeChatConnectStoredMode(cfg.OpenEnabled, cfg.MPEnabled, cfg.MobileEnabled, cfg.Mode)
+	cfg.Scopes = authconfig.NormalizeWeChatConnectScopes(cfg.Scopes, cfg.Mode)
 	if cfg.FrontendRedirectURL == "" {
 		cfg.FrontendRedirectURL = defaultWeChatConnectFrontendRedirect
 	}
@@ -2685,9 +2575,7 @@ func setDefaults() {
 	viper.SetDefault("redis.enable_tls", false)
 
 	// Batch Image queue
-	viper.SetDefault("batch_image.enabled", false)
 	viper.SetDefault("batch_image.max_items_per_job_default", 200)
-	viper.SetDefault("batch_image.max_items_per_job_trial", 50)
 	viper.SetDefault("batch_image.max_output_images_per_job", 200)
 	viper.SetDefault("batch_image.max_output_images_per_item", 4)
 	viper.SetDefault("batch_image.max_prompt_chars_per_item", 8000)
@@ -2701,16 +2589,13 @@ func setDefaults() {
 	viper.SetDefault("batch_image.max_download_concurrency_per_user", 1)
 	viper.SetDefault("batch_image.input_retention_after_terminal_hours", 24)
 	viper.SetDefault("batch_image.output_retention_after_terminal_hours", 72)
-	viper.SetDefault("batch_image.output_retention_max_days", 7)
 	viper.SetDefault("batch_image.cleanup_interval_minutes", 30)
 	viper.SetDefault("batch_image.cleanup_batch_size", 100)
-	viper.SetDefault("batch_image.queue_enabled", false)
 	viper.SetDefault("batch_image.queue_ready_key", "batch_image:queue:ready")
 	viper.SetDefault("batch_image.queue_delayed_key", "batch_image:queue:delayed")
 	viper.SetDefault("batch_image.queue_active_key", "batch_image:queue:active")
 	viper.SetDefault("batch_image.inflight_key_prefix", "batch_image:queue:inflight:")
 	viper.SetDefault("batch_image.lock_key_prefix", "batch_image:queue:lock:")
-	viper.SetDefault("batch_image.idempotency_key_prefix", "batch_image:queue:idem:")
 	viper.SetDefault("batch_image.inflight_ttl_seconds", 604800)
 	viper.SetDefault("batch_image.job_lock_ttl_seconds", 300)
 	viper.SetDefault("batch_image.default_requeue_delay_seconds", 30)
@@ -2721,13 +2606,10 @@ func setDefaults() {
 	viper.SetDefault("batch_image.recovery_interval_seconds", 300)
 	viper.SetDefault("batch_image.delayed_move_limit", 100)
 	viper.SetDefault("batch_image.recover_limit", 100)
-	viper.SetDefault("batch_image.vertex_enabled", false)
 	viper.SetDefault("batch_image.vertex_project_id", "")
 	viper.SetDefault("batch_image.vertex_location", "global")
 	viper.SetDefault("batch_image.vertex_managed_gcs_bucket", "")
 	viper.SetDefault("batch_image.vertex_managed_gcs_prefix", "batch-image/{env}/{batch_id}")
-	viper.SetDefault("batch_image.vertex_input_retention_hours", 24)
-	viper.SetDefault("batch_image.vertex_output_retention_hours", 72)
 	viper.SetDefault("batch_image.vertex_batch_prediction_base_url", "")
 	viper.SetDefault("batch_image.vertex_gcs_base_url", "")
 
@@ -3453,62 +3335,54 @@ func (c *Config) Validate() error {
 	if c.Redis.MinIdleConns > c.Redis.PoolSize {
 		return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
 	}
-	if c.BatchImage.QueueEnabled {
-		if strings.TrimSpace(c.BatchImage.QueueReadyKey) == "" {
-			return fmt.Errorf("batch_image.queue_ready_key must not be empty")
-		}
-		if strings.TrimSpace(c.BatchImage.QueueDelayedKey) == "" {
-			return fmt.Errorf("batch_image.queue_delayed_key must not be empty")
-		}
-		if strings.TrimSpace(c.BatchImage.QueueActiveKey) == "" {
-			return fmt.Errorf("batch_image.queue_active_key must not be empty")
-		}
-		if strings.TrimSpace(c.BatchImage.InflightKeyPrefix) == "" {
-			return fmt.Errorf("batch_image.inflight_key_prefix must not be empty")
-		}
-		if strings.TrimSpace(c.BatchImage.LockKeyPrefix) == "" {
-			return fmt.Errorf("batch_image.lock_key_prefix must not be empty")
-		}
-		if c.BatchImage.InflightTTLSeconds <= 0 {
-			return fmt.Errorf("batch_image.inflight_ttl_seconds must be positive")
-		}
-		if c.BatchImage.JobLockTTLSeconds <= 0 {
-			return fmt.Errorf("batch_image.job_lock_ttl_seconds must be positive")
-		}
-		if c.BatchImage.StaleActiveAfterSeconds <= 0 {
-			return fmt.Errorf("batch_image.stale_active_after_seconds must be positive")
-		}
-		if c.BatchImage.DelayedMoveLimit <= 0 {
-			return fmt.Errorf("batch_image.delayed_move_limit must be positive")
-		}
-		if c.BatchImage.RecoverLimit <= 0 {
-			return fmt.Errorf("batch_image.recover_limit must be positive")
-		}
+	// Batch workers start with the application, so queue settings must support
+	// processing and recovery even when every group currently closes new submissions.
+	if strings.TrimSpace(c.BatchImage.QueueReadyKey) == "" {
+		return fmt.Errorf("batch_image.queue_ready_key must not be empty")
 	}
+	if strings.TrimSpace(c.BatchImage.QueueDelayedKey) == "" {
+		return fmt.Errorf("batch_image.queue_delayed_key must not be empty")
+	}
+	if strings.TrimSpace(c.BatchImage.QueueActiveKey) == "" {
+		return fmt.Errorf("batch_image.queue_active_key must not be empty")
+	}
+	if strings.TrimSpace(c.BatchImage.InflightKeyPrefix) == "" {
+		return fmt.Errorf("batch_image.inflight_key_prefix must not be empty")
+	}
+	if strings.TrimSpace(c.BatchImage.LockKeyPrefix) == "" {
+		return fmt.Errorf("batch_image.lock_key_prefix must not be empty")
+	}
+	if c.BatchImage.InflightTTLSeconds <= 0 {
+		return fmt.Errorf("batch_image.inflight_ttl_seconds must be positive")
+	}
+	if c.BatchImage.JobLockTTLSeconds <= 0 {
+		return fmt.Errorf("batch_image.job_lock_ttl_seconds must be positive")
+	}
+	if c.BatchImage.StaleActiveAfterSeconds <= 0 {
+		return fmt.Errorf("batch_image.stale_active_after_seconds must be positive")
+	}
+	if c.BatchImage.DelayedMoveLimit <= 0 {
+		return fmt.Errorf("batch_image.delayed_move_limit must be positive")
+	}
+	if c.BatchImage.RecoverLimit <= 0 {
+		return fmt.Errorf("batch_image.recover_limit must be positive")
+	}
+
 	// Managed Vertex objects require a bucket name and a batch-specific prefix.
 	// Validate the per-batch identity placeholder before these settings are passed
 	// to the managed batch adapter.
-	if c.BatchImage.VertexEnabled {
-		if strings.TrimSpace(c.BatchImage.VertexManagedGCSBucket) == "" {
-			return fmt.Errorf("batch_image.vertex_managed_gcs_bucket must not be empty when vertex is enabled")
-		}
+	if strings.TrimSpace(c.BatchImage.VertexManagedGCSBucket) != "" {
 		if strings.Contains(c.BatchImage.VertexManagedGCSBucket, "://") {
 			return fmt.Errorf("batch_image.vertex_managed_gcs_bucket must be a bucket name, not a URI")
 		}
 		if strings.TrimSpace(c.BatchImage.VertexLocation) == "" {
-			return fmt.Errorf("batch_image.vertex_location must not be empty when vertex is enabled")
+			return fmt.Errorf("batch_image.vertex_location must not be empty when a Vertex bucket is configured")
 		}
 		if strings.TrimSpace(c.BatchImage.VertexManagedGCSPrefix) == "" {
-			return fmt.Errorf("batch_image.vertex_managed_gcs_prefix must not be empty when vertex is enabled")
+			return fmt.Errorf("batch_image.vertex_managed_gcs_prefix must not be empty when a Vertex bucket is configured")
 		}
 		if !strings.Contains(c.BatchImage.VertexManagedGCSPrefix, "{batch_id}") {
 			return fmt.Errorf("batch_image.vertex_managed_gcs_prefix must contain {batch_id}")
-		}
-		if c.BatchImage.VertexInputRetentionHours <= 0 {
-			return fmt.Errorf("batch_image.vertex_input_retention_hours must be positive")
-		}
-		if c.BatchImage.VertexOutputRetentionHours <= 0 {
-			return fmt.Errorf("batch_image.vertex_output_retention_hours must be positive")
 		}
 	}
 	// Creative input limits are checked when its API is enabled, while queue
@@ -3711,6 +3585,76 @@ func (c *Config) Validate() error {
 	if c.Idempotency.CleanupBatchSize <= 0 {
 		return fmt.Errorf("idempotency.cleanup_batch_size must be positive")
 	}
+	if err := c.validateGateway(); err != nil {
+		return err
+	}
+	if c.Ops.MetricsCollectorCache.TTL < 0 {
+		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")
+	}
+	if c.Ops.Cleanup.ErrorLogRetentionDays < 0 {
+		return fmt.Errorf("ops.cleanup.error_log_retention_days must be non-negative")
+	}
+	if c.Ops.Cleanup.SystemLogRetentionDays < 0 {
+		return fmt.Errorf("ops.cleanup.system_log_retention_days must be non-negative")
+	}
+	if c.Ops.Cleanup.MinuteMetricsRetentionDays < 0 {
+		return fmt.Errorf("ops.cleanup.minute_metrics_retention_days must be non-negative")
+	}
+	if c.Ops.Cleanup.HourlyMetricsRetentionDays < 0 {
+		return fmt.Errorf("ops.cleanup.hourly_metrics_retention_days must be non-negative")
+	}
+	if c.Ops.Cleanup.Enabled && strings.TrimSpace(c.Ops.Cleanup.Schedule) == "" {
+		return fmt.Errorf("ops.cleanup.schedule is required when ops.cleanup.enabled=true")
+	}
+	// Ops cleanup deletes bounded row batches when a dataset has a positive
+	// retention window.
+	if c.Ops.Cleanup.BatchSize < 100 || c.Ops.Cleanup.BatchSize > 5000 {
+		return fmt.Errorf("ops.cleanup.batch_size must be between 100 and 5000")
+	}
+	// The pause paces successive deletion batches in milliseconds during
+	// retained-data cleanup.
+	if c.Ops.Cleanup.BatchPauseMS < 1 || c.Ops.Cleanup.BatchPauseMS > 2000 {
+		return fmt.Errorf("ops.cleanup.batch_pause_ms must be between 1 and 2000")
+	}
+	// Concurrency waiting sends SSE keepalives at this cadence before a request
+	// obtains its slot.
+	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
+		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	if c.Gateway.Grok.FreeQuotaSoftGateEnabled {
+		if c.Gateway.Grok.FreeQuotaTokenLimit <= 0 {
+			return fmt.Errorf("gateway.grok.free_quota_token_limit must be positive")
+		}
+		// The soft gate compares rolling free-tier token usage with this fraction of
+		// the configured token limit.
+		if c.Gateway.Grok.FreeQuotaSoftGatePercent < 1 || c.Gateway.Grok.FreeQuotaSoftGatePercent > 100 {
+			return fmt.Errorf("gateway.grok.free_quota_soft_gate_percent must be between 1 and 100")
+		}
+		if c.Gateway.Grok.FreeQuotaWindowHours <= 0 {
+			return fmt.Errorf("gateway.grok.free_quota_window_hours must be positive")
+		}
+	}
+	if c.Gateway.Grok.FreeQuotaStatsCacheSeconds < 0 {
+		return fmt.Errorf("gateway.grok.free_quota_stats_cache_seconds must be non-negative")
+	}
+	if err := ValidateDingTalkConfig(c.DingTalk); err != nil {
+		return fmt.Errorf("dingtalk_connect: %w", err)
+	}
+	return nil
+}
+
+// validateGateway checks gateway transport, scheduler, and completion limits,
+// returning the first invalid setting. Validate calls it after idempotency and
+// before Ops; the later Grok quota checks remain after concurrency validation.
+// Callers serialize access because Live duration defaulting and retired
+// response-affinity TTL fallback mutate the receiver as their checks are reached.
+//
+// A later error retains those mutations and any earlier idle-lifetime warning.
+// Coupled pool bounds, finite scoring sums, and enabled autoscaling constraints
+// are checked together so their consumers receive consistent limits. Disabled
+// autoscaling skips only its scaling controls; ordinary completion limits still
+// apply.
+func (c *Config) validateGateway() error {
 	if c.Gateway.MaxBodySize <= 0 {
 		return fmt.Errorf("gateway.max_body_size must be positive")
 	}
@@ -4125,58 +4069,6 @@ func (c *Config) Validate() error {
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 &&
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds < c.Gateway.Scheduling.OutboxLagWarnSeconds {
 		return fmt.Errorf("gateway.scheduling.outbox_lag_rebuild_seconds must be >= outbox_lag_warn_seconds")
-	}
-	if c.Ops.MetricsCollectorCache.TTL < 0 {
-		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")
-	}
-	if c.Ops.Cleanup.ErrorLogRetentionDays < 0 {
-		return fmt.Errorf("ops.cleanup.error_log_retention_days must be non-negative")
-	}
-	if c.Ops.Cleanup.SystemLogRetentionDays < 0 {
-		return fmt.Errorf("ops.cleanup.system_log_retention_days must be non-negative")
-	}
-	if c.Ops.Cleanup.MinuteMetricsRetentionDays < 0 {
-		return fmt.Errorf("ops.cleanup.minute_metrics_retention_days must be non-negative")
-	}
-	if c.Ops.Cleanup.HourlyMetricsRetentionDays < 0 {
-		return fmt.Errorf("ops.cleanup.hourly_metrics_retention_days must be non-negative")
-	}
-	if c.Ops.Cleanup.Enabled && strings.TrimSpace(c.Ops.Cleanup.Schedule) == "" {
-		return fmt.Errorf("ops.cleanup.schedule is required when ops.cleanup.enabled=true")
-	}
-	// Ops cleanup deletes bounded row batches when a dataset has a positive
-	// retention window.
-	if c.Ops.Cleanup.BatchSize < 100 || c.Ops.Cleanup.BatchSize > 5000 {
-		return fmt.Errorf("ops.cleanup.batch_size must be between 100 and 5000")
-	}
-	// The pause paces successive deletion batches in milliseconds during
-	// retained-data cleanup.
-	if c.Ops.Cleanup.BatchPauseMS < 1 || c.Ops.Cleanup.BatchPauseMS > 2000 {
-		return fmt.Errorf("ops.cleanup.batch_pause_ms must be between 1 and 2000")
-	}
-	// Concurrency waiting sends SSE keepalives at this cadence before a request
-	// obtains its slot.
-	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
-		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
-	}
-	if c.Gateway.Grok.FreeQuotaSoftGateEnabled {
-		if c.Gateway.Grok.FreeQuotaTokenLimit <= 0 {
-			return fmt.Errorf("gateway.grok.free_quota_token_limit must be positive")
-		}
-		// The soft gate compares rolling free-tier token usage with this fraction of
-		// the configured token limit.
-		if c.Gateway.Grok.FreeQuotaSoftGatePercent < 1 || c.Gateway.Grok.FreeQuotaSoftGatePercent > 100 {
-			return fmt.Errorf("gateway.grok.free_quota_soft_gate_percent must be between 1 and 100")
-		}
-		if c.Gateway.Grok.FreeQuotaWindowHours <= 0 {
-			return fmt.Errorf("gateway.grok.free_quota_window_hours must be positive")
-		}
-	}
-	if c.Gateway.Grok.FreeQuotaStatsCacheSeconds < 0 {
-		return fmt.Errorf("gateway.grok.free_quota_stats_cache_seconds must be non-negative")
-	}
-	if err := ValidateDingTalkConfig(c.DingTalk); err != nil {
-		return fmt.Errorf("dingtalk_connect: %w", err)
 	}
 	return nil
 }

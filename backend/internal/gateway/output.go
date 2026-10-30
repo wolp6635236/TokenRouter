@@ -81,7 +81,8 @@ func (o *OutputTracker) Emit(e upstream.OutputEvent) error {
 // InitialOutput returns initial response evidence supplied by a supporting
 // sink. Other sinks receive a head containing the tracker's current HTTP
 // commitment; callers should treat sink-provided evidence as authoritative for
-// that query.
+// that query. The legacy fallback treats HTTP commitment as content commitment
+// because sinks without metadata cannot distinguish earlier heartbeat output.
 func (o *OutputTracker) InitialOutput() upstream.OutputHead {
 	if source, ok := o.Sink.(interface {
 		// InitialOutput reports commitment from output emitted before this tracker.
@@ -89,5 +90,19 @@ func (o *OutputTracker) InitialOutput() upstream.OutputHead {
 	}); ok {
 		return source.InitialOutput()
 	}
-	return upstream.OutputHead{Committed: o.HTTPCommitted}
+	return upstream.OutputHead{Committed: o.HTTPCommitted, ContentCommitted: o.HTTPCommitted}
+}
+
+// OutputState forwards live commitment without requesting a header snapshot.
+// Downstream heartbeats can commit between codec initialization and first output;
+// preserving this optional sink query prevents stale staged-header decisions.
+// Sinks without live observations retain the tracker's legacy commitment state.
+func (o *OutputTracker) OutputState() upstream.OutputHead {
+	if source, ok := o.Sink.(interface {
+		// OutputState reads live commitment without taking ownership of response metadata.
+		OutputState() upstream.OutputHead
+	}); ok {
+		return source.OutputState()
+	}
+	return upstream.OutputHead{Committed: o.HTTPCommitted, ContentCommitted: o.HTTPCommitted}
 }

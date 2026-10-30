@@ -94,6 +94,7 @@ import {
   protocolCatalog,
   protocolCatalogError,
   protocolCatalogLoading,
+  protocolName as catalogProtocolName,
 } from '@/api/admin/protocolCapabilities'
 
 // ProviderProtocolSelector.vue edits a provider native protocol set using the shared
@@ -205,9 +206,7 @@ watch(
 // label.
 function protocolName(id: ProtocolID) {
   if (id === 'openai_responses_websocket') return t('admin.protocols.responsesWebSocket')
-  // A missing catalog label falls back to the exact protocol identifier so the switch
-  // remains identifiable while catalog data is incomplete.
-  return protocolCatalog.value?.protocols.find((item) => item.id === id)?.name ?? id
+  return catalogProtocolName(id)
 }
 // protocolEndpoint returns the catalog endpoint associated with the supplied protocol
 // identifier. Missing entries return undefined so the template omits endpoint text while

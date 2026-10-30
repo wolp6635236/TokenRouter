@@ -28,9 +28,9 @@ import (
 
 // openai_images_responses_execution.go executes OAuth image requests through
 // Responses and classifies image delivery failures.
-// OAuth image generation uses a fixed Responses main model and a separately
-// resolved image-tool model. Native conversion carries parsed prompts and
-// image inputs into that tool request, then returns Images JSON or
+// OAuth image generation uses a provider-selected Responses main model and a
+// separately resolved image-tool model. Native conversion carries parsed
+// prompts and image inputs into that tool request, then returns Images JSON or
 // image-specific SSE events while preserving generation count, dimensions and
 // token observations.
 //
@@ -44,11 +44,11 @@ import (
 // retention.
 
 // buildOpenAIImagesResponsesRequest delegates parsed image input to native
-// Responses conversion with the supplied tool model. Missing parsed input,
-// prompt or required editing images returns the native validation error
-// before an upstream request is built.
-func buildOpenAIImagesResponsesRequest(parsed *gatewaymedia.ImageRequest, toolModel string) ([]byte, error) {
-	return openai.BuildOpenAIImagesResponsesRequest(gatewaymedia.NativeImageRequest(parsed), toolModel)
+// Responses conversion with the supplied tool and main models. Missing parsed
+// input, either prompt or main model, or required editing images returns a
+// validation error before an upstream request is built.
+func buildOpenAIImagesResponsesRequest(parsed *gatewaymedia.ImageRequest, toolModel, mainModel string) ([]byte, error) {
+	return openai.BuildOpenAIImagesResponsesRequest(gatewaymedia.NativeImageRequest(parsed), toolModel, mainModel)
 }
 
 // handleOpenAIImagesErrorResponse presents or classifies an HTTP image
@@ -217,7 +217,8 @@ func (s *OpenAIImagesExecutor) forwardOpenAIImagesOAuth(
 		return nil, err
 	}
 
-	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, upstreamModel)
+	mainModel := gatewayprovider.ExecutionProtocolRecord(provider).CodexImageResponsesModel()
+	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, upstreamModel, mainModel)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +284,24 @@ func (s *OpenAIImagesExecutor) forwardOpenAIImagesOAuth(
 
 		HTTPError: func(resp *http.Response, respBody []byte) error {
 			httpFailure = true
+			// A rejected driver is configuration failure before image execution. End this
+			// request without cooling the image model or repeating generation on another provider.
+			if driverErr := openai.OpenAIImagesMainModelError(resp.StatusCode, respBody, mainModel, upstreamModel); driverErr != nil {
+				driverErr.UpstreamRequestID = resp.Header.Get("x-request-id")
+				SetOpsUpstreamError(c, resp.StatusCode, driverErr.Message, "")
+				status, kind, message, _ := ApplyErrorPassthroughRule(
+					c, provider.Record.Platform, resp.StatusCode, respBody,
+					driverErr.StatusCode, driverErr.ErrorType, driverErr.Message,
+				)
+				// Rewrite a delivery copy so administrator status overrides cannot change
+				// the retry classification retained by the outer image attempt loop.
+				clientError := *driverErr
+				clientError.StatusCode = status
+				clientError.ErrorType = kind
+				clientError.Message = logredact.SanitizeUpstreamQueries(message)
+				WriteOpenAIImagesUpstreamErrorResponse(c, &clientError)
+				return driverErr
+			}
 			upstreamMsg := ""
 			var decision providercore.UpstreamErrorDecision
 			// Preserve HTTP rejection as its own outcome while the resolver first
@@ -414,7 +433,7 @@ func (s *OpenAIImagesExecutor) handleOpenAIImagesOAuthResponseError(
 	writerSizeBeforeResponse int,
 	err error,
 ) error {
-	responseWritten := c != nil && c.Writer != nil && OpenAIImagesAdjustedWrittenSize(c) != writerSizeBeforeResponse
+	responseWritten := c != nil && c.Writer != nil && HeartbeatAdjustedWrittenSize(c) != writerSizeBeforeResponse
 	if code, message, ok := openai.OpenAIUpstreamStreamReadErrorDetails(err); ok {
 		// A classified body failure supplies status-502 recovery evidence separately
 		// from HTTP success. Clone headers before response cleanup for later diagnostics.

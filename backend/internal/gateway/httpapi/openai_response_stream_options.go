@@ -44,8 +44,8 @@ import (
 //
 // Header preparation distinguishes pending and direct output. Pending filtered
 // headers include the turn-state value but defer ownership recording to
-// StagedHeadersCommitted. Direct headers are relayed immediately through
-// Turns. This lets the upstream reader discard a staged attempt while keeping
+// the HTTP sink's header-application observer. Direct output also prepares a
+// private header map. This lets the reader discard a staged attempt while keeping
 // quota, model and timing observations associated with the request that
 // eventually receives content.
 func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context, provider *gatewayprovider.ExecutionProvider, reasoningEffort string) openai.StreamOptions {
@@ -66,11 +66,11 @@ func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context
 		WriteLocalStreamError: func(frame []byte) (int, error) {
 			return c.Writer.Write(frame)
 		},
-		IsCommitted:            func() bool { return IsResponseCommitted(c) },
-		MarkCommitted:          func() { MarkResponseCommitted(c) },
-		ClientOutputStarted:    func(started bool) bool { return OpenAIStreamClientOutputStarted(c, started) },
-		StagedHeadersCommitted: func(headers http.Header) { p.Turns.Commit(c, provider, headers) },
-		ClearDisconnect:        func() { gatewayprovider.ClearProxyStreamDisconnect(p.ProxyCircuit, provider) },
+		IsCommitted:         func() bool { return IsResponseCommitted(c) },
+		MarkCommitted:       func() { MarkResponseCommitted(c) },
+		ClientOutputStarted: func(started bool) bool { return OpenAIStreamClientOutputStarted(c, started) },
+
+		ClearDisconnect: func() { gatewayprovider.ClearProxyStreamDisconnect(p.ProxyCircuit, provider) },
 		RecordDisconnect: func(err error, requestID string) {
 			gatewayprovider.RecordProxyStreamDisconnect(p.ProxyCircuit, provider, err, requestID)
 		},
@@ -134,7 +134,7 @@ func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context
 		FirstOutputError: func(start time.Time, model, effort string, timeout time.Duration, phase string, headers http.Header) error {
 			return p.FirstOutputFailure(ctx, c, provider, start, model, effort, timeout, phase, headers)
 		},
-		KeepaliveBytes:                      func(count int) { RecordOpenAIStreamKeepaliveBytes(c, count) },
+
 		BuildOpenAIResponseFailedSSE:        gatewayprovider.BuildOpenAIResponseFailedSSE,
 		WrapOpenAIUpstreamWarningIfCyber:    gatewayprovider.WrapOpenAIUpstreamWarningIfCyber,
 		TruncateString:                      logredact.TruncateUTF8,
@@ -153,10 +153,6 @@ func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context
 		if p.Options.StreamDataIntervalTimeout > 0 {
 			// Reader timer configuration stores whole seconds.
 			options.StreamInterval = time.Duration(p.Options.StreamDataIntervalTimeout) * time.Second
-		}
-		if p.Options.StreamKeepaliveInterval > 0 {
-			// Reader timer configuration stores whole seconds.
-			options.KeepaliveInterval = time.Duration(p.Options.StreamKeepaliveInterval) * time.Second
 		}
 	}
 	if options.GrokIdlePolicy {
@@ -182,11 +178,11 @@ func (p *OpenAIResponseOutput) StreamOptions(ctx context.Context, c *gin.Context
 			egressadapter.WriteFilteredHeaders(output, headers, p.Headers)
 		}
 		// Turn state follows the same pending/direct distinction as response headers,
-		// and ownership is recorded later only for the staged map chosen for output.
+		// and the HTTP sink records ownership only when those values can be applied.
 		if staged {
 			StageCodexTurnState(&pending, headers)
 		} else {
-			p.Turns.Relay(c, provider, headers)
+			StageCodexTurnState(&output, headers)
 		}
 		return pending
 	}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,7 +20,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// Model-query HTTP errors distinguish invalid local credentials from upstream
+// management_model_sync_test.go checks stored and preview model-query HTTP
+// responses. Errors distinguish invalid local credentials from upstream
 // failures and return safe messages. management_model_sync.go is tested through
 // the production model catalogue adapter with fixed consumable responses,
 // including preview parsing and duplicate-ID normalization.
@@ -30,8 +32,9 @@ type syncUpstreamHTTPUpstream struct {
 	// resp is returned by pointer when err is nil. Its body is consumed by the
 	// production query, so callers supply a fresh configured response for each
 	// request.
-	resp *http.Response // borrowed consumable upstream response
-	err  error          // injected upstream transport failure
+	resp     *http.Response  // borrowed consumable upstream response
+	err      error           // injected upstream transport failure
+	requests []*http.Request // captured upstream query requests
 }
 
 // TestProviderHandlerSyncUpstreamModels_ConfigErrorReturnsBadRequest loads an
@@ -151,6 +154,7 @@ func TestProviderHandlerSyncUpstreamModelsPreview_ConfigErrorReturnsBadRequest(t
 // model-query fixture. Response bodies are consumable and reused by pointer, so
 // each test supplies a fresh response for its request.
 func (u *syncUpstreamHTTPUpstream) Do(req *http.Request, proxyURL string, providerID int64, providerConcurrency int) (*http.Response, error) {
+	u.requests = append(u.requests, req)
 	if u.err != nil {
 		return nil, u.err
 	}
@@ -173,8 +177,172 @@ func setupSyncUpstreamModelsRouter(adminSvc ProviderManagement, upstream provide
 	modelPolicy := egress.OperatorURLPolicy{}
 	catalogue := &provideradapter.ModelCatalogue{Transport: upstream, Options: provideradapter.ModelCatalogueOptions{ValidateURL: modelPolicy.Validate, OperatorValidator: modelPolicy.Validate, BodyLimit: 8 * 1024 * 1024, CodexModelsURL: provideradapter.DefaultCodexModelsURL}}
 	models := providercore.NewModelSyncService(catalogue.FetchUpstreamSupportedModels)
+	models.Suggest = providercore.OpenCodeProtocolSuggestions(nil)
 	handler := NewManagementHandler(adminSvc, ManagementOptions{Models: models})
 	router.POST("/api/v1/admin/providers/:id/models/sync-upstream", handler.SyncUpstreamModels)
 	router.POST("/api/v1/admin/providers/models/sync-upstream-preview", handler.SyncUpstreamModelsPreview)
 	return router
+}
+
+// TestProviderHandlerSyncUpstreamModelsRejectsOverrides attempts to redirect a
+// saved OpenCode credential through the synchronization operation. Every override
+// body is rejected before transport, including unknown-length requests and suffixes.
+func TestProviderHandlerSyncUpstreamModelsRejectsOverrides(t *testing.T) {
+	for _, body := range []string{
+		`{"base_url":"https://collector.example"}`,
+		`{"provider_mode":"go"}`,
+		`{"api_key":"replacement"}`,
+		`{"base_url":""}`,
+		`{"provider_mode":""}`,
+		`{} {"base_url":"https://collector.example"}`,
+		`null`,
+		`[]`,
+	} {
+		for _, unknownLength := range []bool{false, true} {
+			t.Run(body+strconv.FormatBool(unknownLength), func(t *testing.T) {
+				svc := &availableModelsAdminService{
+					managementMutationFixture: newManagementMutationFixture(),
+					provider: providercore.Record{
+						ID: 44, Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey,
+						Credentials: map[string]any{"api_key": "saved-secret", "base_url": "https://saved.example"},
+					},
+				}
+				upstream := &syncUpstreamHTTPUpstream{}
+				router := setupSyncUpstreamModelsRouter(svc, upstream)
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/providers/44/models/sync-upstream", strings.NewReader(body))
+				if unknownLength {
+					req.ContentLength = -1
+				}
+				router.ServeHTTP(rec, req)
+				require.Equal(t, http.StatusBadRequest, rec.Code)
+				require.Empty(t, upstream.requests)
+				require.Equal(t, "https://saved.example", svc.provider.GetCredential("base_url"))
+			})
+		}
+	}
+}
+
+// TestProviderHandlerSyncUpstreamModelsUsesSavedSettings exercises both accepted
+// body forms through the real catalogue adapter. The saved root, mode, and normalized
+// credential determine transport, while protocol suggestions exclude saved overrides.
+func TestProviderHandlerSyncUpstreamModelsUsesSavedSettings(t *testing.T) {
+	for _, body := range []string{"", "{}"} {
+		t.Run(body, func(t *testing.T) {
+			svc := &availableModelsAdminService{
+				managementMutationFixture: newManagementMutationFixture(),
+				provider: providercore.Record{
+					ID: 44, Platform: capability.PlatformOpenCode, Type: capability.ProviderTypeAPIKey,
+					Credentials: map[string]any{
+						"api_key": " \nsaved-secret\r\n", "base_url": "https://saved.example", "provider_mode": "go",
+						providercore.OpenCodeModelProtocolsKey: map[string]any{"go": map[string]any{"minimax-m3": "systemone"}},
+					},
+				},
+			}
+			upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+				StatusCode: http.StatusOK, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"minimax-m3"}]}`)),
+			}}
+			router := setupSyncUpstreamModelsRouter(svc, upstream)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(
+				http.MethodPost, "/api/v1/admin/providers/44/models/sync-upstream", strings.NewReader(body),
+			)
+			router.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, "https://saved.example/v1/models", upstream.requests[0].URL.String())
+			require.Equal(t, "Bearer saved-secret", upstream.requests[0].Header.Get("Authorization"))
+			require.Contains(t, rec.Body.String(), `"minimax-m3":"anthropic_messages"`)
+			require.NotContains(t, rec.Body.String(), "saved-secret")
+		})
+	}
+}
+
+// TestProviderHandlerOpenCodePreviewUsesCallerCredentials previews the default
+// payg service and explicit Go service. Each request uses the supplied key and
+// temporary root, Go suggestions show that the mode reached the query record,
+// and neither preview requires reading a saved provider.
+func TestProviderHandlerOpenCodePreviewUsesCallerCredentials(t *testing.T) {
+	for _, mode := range []string{"", "go"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+				StatusCode: http.StatusOK, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"minimax-m3"}]}`)),
+			}}
+			router := setupSyncUpstreamModelsRouter(newManagementMutationFixture(), upstream)
+			body := map[string]any{"platform": "opencode", "type": "apikey", "api_key": "preview-key", "base_url": "https://preview.example"}
+			if mode != "" {
+				body["provider_mode"] = mode
+			}
+			encoded, err := json.Marshal(body)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(
+				http.MethodPost, "/api/v1/admin/providers/models/sync-upstream-preview", strings.NewReader(string(encoded)),
+			)
+			router.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, "https://preview.example/v1/models", upstream.requests[0].URL.String())
+			require.Equal(t, "Bearer preview-key", upstream.requests[0].Header.Get("Authorization"))
+			if mode == "go" {
+				require.Contains(t, rec.Body.String(), `"minimax-m3":"anthropic_messages"`)
+			}
+		})
+	}
+}
+
+// TestProviderHandlerSyncSerializesEmptyProtocolSuggestions queries an unknown
+// model through saved-provider and preview endpoints. OpenCode returns an empty
+// object so forms can clear stale routes; other platforms omit protocol suggestions.
+func TestProviderHandlerSyncSerializesEmptyProtocolSuggestions(t *testing.T) {
+	for _, platform := range []string{capability.PlatformOpenCode, capability.PlatformOpenAI} {
+		for _, preview := range []bool{false, true} {
+			t.Run(platform+"/preview="+strconv.FormatBool(preview), func(t *testing.T) {
+				svc := &availableModelsAdminService{
+					managementMutationFixture: newManagementMutationFixture(),
+					provider: providercore.Record{
+						ID: 44, Platform: platform, Type: capability.ProviderTypeAPIKey,
+						Credentials: map[string]any{
+							"api_key": "saved-secret", "base_url": "https://saved.example",
+							providercore.OpenCodeCatalogProtocolsKey: map[string]any{
+								"payg": map[string]any{"custom-model": "openai_responses"},
+							},
+						},
+					},
+				}
+				upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+					StatusCode: http.StatusOK, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"custom-model"}]}`)),
+				}}
+				router := setupSyncUpstreamModelsRouter(svc, upstream)
+				path := "/api/v1/admin/providers/44/models/sync-upstream"
+				body := "{}"
+				if preview {
+					path = "/api/v1/admin/providers/models/sync-upstream-preview"
+					encoded, err := json.Marshal(map[string]string{
+						"platform": platform, "type": "apikey", "api_key": "preview-key",
+						"base_url": "https://preview.example",
+					})
+					require.NoError(t, err)
+					body = string(encoded)
+				}
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				router.ServeHTTP(rec, req)
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				var response struct {
+					Data map[string]json.RawMessage `json:"data"` // serialized synchronization payload
+				}
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+				require.JSONEq(t, `["custom-model"]`, string(response.Data["models"]))
+				if platform == capability.PlatformOpenCode {
+					require.JSONEq(t, `{}`, string(response.Data["model_protocols"]))
+				} else {
+					require.NotContains(t, response.Data, "model_protocols")
+				}
+			})
+		}
+	}
 }

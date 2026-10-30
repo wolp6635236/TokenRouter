@@ -20,11 +20,11 @@ Responses WebSocket 的客户端许可在分组协议控制中设置，提供商
 
 | ID | 界面名称 | 主要入口 | 候选提供商的适配器范围 |
 | --- | --- | --- | --- |
-| `anthropic_messages` | Anthropic Messages | `POST /v1/messages` | 现有的九个平台 |
-| `openai_responses` | OpenAI Responses | `POST /v1/responses` | 现有的九个平台 |
-| `openai_chat_completions` | Chat Completions | `POST /v1/chat/completions` | 现有的九个平台 |
-| `gemini_generate_content` | Gemini GenerateContent | `POST /v1beta/models/{model}:generateContent`、`:streamGenerateContent` | Gemini、Antigravity |
-| `systemone` | SystemOne | `POST /v1/systemone` | Jev |
+| `anthropic_messages` | Anthropic Messages | `POST /v1/messages` | 现有的十个文本平台 |
+| `openai_responses` | OpenAI Responses | `POST /v1/responses` | 现有的十个文本平台 |
+| `openai_chat_completions` | Chat Completions | `POST /v1/chat/completions` | 现有的十个文本平台 |
+| `gemini_generate_content` | Gemini GenerateContent | `POST /v1beta/models/{model}:generateContent`、`:streamGenerateContent` | Gemini、Antigravity、OpenCode |
+| `systemone` | SystemOne | `POST /v1/systemone` | Jev、OpenCode |
 | `openai_embeddings` | Embeddings | `POST /v1/embeddings` | OpenAI |
 | `openai_images_generations` | Images 图片生成 | `POST /v1/images/generations` | OpenAI、Grok |
 | `openai_images_edits` | Images 图片编辑 | `POST /v1/images/edits` | OpenAI、Grok |
@@ -61,7 +61,7 @@ Responses WebSocket 的客户端许可在分组协议控制中设置，提供商
 
 这 3 个上游专用项加上 22 个客户端控制项，就是 25 项目录。
 
-批量图片是持久作业的入口：分组控制 `image_batches`，执行器检查提供商启用的是 Gemini Batch 还是 Vertex Batch 协议，并使用现有的 provider 选择和任务绑定。批量图片没有文本那样可以任选的转换目标。
+批量图片是持久作业的入口：分组控制 `image_batches`，执行器检查提供商启用的是 Gemini Batch 还是 Vertex Batch 协议，并使用现有的 provider 选择和任务绑定。批量图片没有文本那样可以任选的转换目标。目录与提交使用同一套候选资格，Vertex 新建作业还要求配置受管 GCS 存储桶。自动选择按提供商全局优先级数值升序、ID 升序处理 Gemini API 和 Vertex 候选。批量 API、worker 和清理不需要额外启用开关。
 
 Antigravity 对 Google 内部接口的封装，算作 `gemini_generate_content` 的一种平台适配，没有单独的协议复选框。Bedrock、Vertex Anthropic 等认证和端点的变体，同样归入对应的协议族。
 
@@ -70,7 +70,7 @@ Antigravity 对 Google 内部接口的封装，算作 `gemini_generate_content` 
 
 提供商历史字段、缺省值和错误 reason 的解析和保存校验在 `provider`，分组配置在 `routing`。提供商把自己的平台、类型、认证方式和启用的协议整理成 `capability.ProviderProtocols`；分组单独提供客户端准入和转换策略。实际选择候选时，提供商配置被整理成不含凭据的 `provider.ProviderSnapshot`，由 `routing.RoutePlan.ResolveCandidate` 用复制过的分组协议策略判断。
 
-这些判断是纯计算，不读取凭据、配置或请求 Context；每次判断候选都重新计算，明确设为空的集合不会被默认值补上。RoutePlan 负责候选协议这一部分，模型改写、最终的权限和资金检查、重试的时机，由调用链按既定顺序执行。
+这些判断是纯计算，不读取凭据、配置或请求 Context；每次判断候选都重新计算，明确设为空的集合不会被默认值补上。RoutePlan 从候选快照同时解析提供商的一跳模型映射和协议，保存在本次 attempt 中。模型各自声明协议的提供商（目前是 OpenCode）在快照里带有按模型的协议表，最终模型先收窄可用协议，再应用转换规则；其他提供商没有这张表，所有模型共用已启用的协议。Key 和分组映射先于该步骤，最终权限、资金检查和重试时机由调用链按既定顺序执行。
 
 `credentials.upstream_protocols` 是原生协议 ID 的数组，空数组表示这个提供商不再承接新的调用。创建、编辑、复制、导入和批量编辑使用同一套校验：不允许重复、未知，或者提供商认证方式不支持的项，出错时返回 HTTP 400 / `UPSTREAM_PROTOCOLS_INVALID`。批量更新先验证全部提供商，再用同一条 SQL 原子地写入每个提供商的协议补丁。显式协议集合在旧 WS 桥接配置转换之前完成类型、重复项和选项校验。连接方式的完整保存、批量更新和 Extra 按键更新共用枚举校验，非法值在写入前返回错误。
 
@@ -80,16 +80,17 @@ OpenAI API Key 提供商的 `credentials.images_generations_mode` 和 `credentia
 
 各平台的原生协议：
 
+- OpenCode API Key：按模型声明的 Messages、Responses、Chat、GenerateContent 或 SystemOne，细节见 [OpenCode 上游](opencode_upstream.md#opencode_routing)。
 - Jev API Key：SystemOne，支持同步决策请求。
 - OpenAI API Key：Responses、Chat、Embeddings、Images 生成和编辑、Responses WebSocket、Compact、Alpha Search。
 - OpenAI OAuth：Responses、WebSocket、Compact、Alpha Search、Live。PAT 没有 Alpha Search 和 Live，Agent Identity 没有 Live。OpenAI 没有 Messages 原生项。
 - Grok：HTTP Responses、Chat、Images、视频和 Voice 是原生项；WebSocket、搜索和 Compact 是转换入口。
-- CN API Key：Messages 和 Chat；DeepSeek 和 Kimi 另外有 Responses。
+- Kimi、Zhipu、DeepSeek API Key：Messages 和 Chat；DeepSeek 和 Kimi 另外有 Responses。
 - Gemini 和 Antigravity OAuth：GenerateContent。Antigravity 的 API Key 和历史 `upstream` 类型没有可用协议。
 - Qoder：专用的 Chat。
 - Gemini API Key 和 Vertex SA：各自的 Batch 协议。
 
-自定义的 `api_base_urls` 按协议分键：`chat_completions`、`anthropic`、`responses`。旧的 CN 固定协议的 `base_url` 迁到对应的地址槽里，原来的 `base_url` 继续用于模型同步和用量查询。新表单直接编辑地址和原生集合，两者互相独立。
+自定义的 `api_base_urls` 按协议分键：`chat_completions`、`anthropic`、`responses`；OpenCode 另有 `gemini`、`systemone`。Kimi、Zhipu、DeepSeek 旧配置中的固定协议 `base_url` 迁到对应的地址槽里，原来的 `base_url` 继续用于模型同步和用量查询。新表单直接编辑地址和原生集合，两者互相独立。
 
 <a id="group_protocol_routes"></a>
 ## 分组准入与转换
@@ -131,7 +132,7 @@ Qoder 当前的原始响应解析还没有确认模型声明的位置，转换�
 
 ## 旧字段输入与升级切换
 
-历史的 `api_protocol`、OpenAI 文本路由和工作负载字段，只在接收旧输入时转换，新的保存和导出使用原生集合。历史缺省的 `payg + chat_completions` 转成只有 Chat 一项；新的 CN 表单默认启用全部原生项。旧的 `allowed_client_protocols` 输入只修改文本部分，它没有表达的非文本入口保持原样；旧的媒体和 Live 开关仍可作为兼容输入，新的响应不再返回它们。数据库内部保留派生的布尔镜像，供现有的任务和计价代码使用，管理员看到的配置只有原生集合这一份。
+历史的 `api_protocol`、OpenAI 文本路由和工作负载字段，只在接收旧输入时转换，新的保存和导出使用原生集合。历史缺省的 `payg + chat_completions` 转成只有 Chat 一项；Kimi、Zhipu、DeepSeek 的新表单默认启用全部原生项。旧的 `allowed_client_protocols` 输入只修改文本部分，它没有表达的非文本入口保持原样；旧的媒体和 Live 开关仍可作为兼容输入，新的响应不再返回它们。数据库内部保留派生的布尔镜像，供现有的任务和计价代码使用，管理员看到的配置只有原生集合这一份。
 
 提供商的兼容转换在 `provider/protocol_legacy.go`，分组的兼容配置在 `routing/group_protocols.go`；提供商的规范化、分组策略和请求选路各自维护自己的规则。保存分组时，先校验一次原始的协议集合，再应用受支持的旧字段补丁，并校验转换目标和图片策略；集合非法时返回 HTTP 400 / `INVALID_ALLOWED_CLIENT_PROTOCOLS`，兼容转换掩盖不了重复或未知的协议。分组的默认准入和默认转换映射由 `routing/capability` 提供。
 

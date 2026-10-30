@@ -262,7 +262,7 @@ func (s *OpenAIProviderTest) Execute(c *TestRun, value *providercore.Record, mod
 		} else {
 			req.Header.Set("User-Agent", openai.CodexCanonicalUserAgent())
 		}
-		setTestChatGPTHeaders(req.Header, credentialProvider)
+		SetChatGPTAccountHeaders(req.Header, credentialProvider)
 	}
 	s.ApplyRouting(c, value, req, isOAuth)
 	if value.Type == capability.ProviderTypeOAuth {
@@ -275,7 +275,7 @@ func (s *OpenAIProviderTest) Execute(c *TestRun, value *providercore.Record, mod
 	// Routing has selected client identity before permitted provider overrides
 	// run. Apply the shared header filter here so blocked authentication and
 	// session headers cannot replace probe credentials.
-	applyGrokQuotaHeaders(credentialProvider, req.Header)
+	ApplyProviderHeaderOverrides(credentialProvider, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
@@ -376,7 +376,7 @@ func (s *OpenAIProviderTest) executeChat(
 	// Routing has selected client identity before permitted provider overrides
 	// run. Apply the shared header filter here so blocked authentication and
 	// session headers cannot replace probe credentials.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
@@ -509,7 +509,7 @@ func (s *OpenAIProviderTest) executeNativeCompaction(c *TestRun, value *provider
 
 	if isOAuth {
 		req.Host = "chatgpt.com"
-		setTestChatGPTHeaders(req.Header, credentialProvider)
+		SetChatGPTAccountHeaders(req.Header, credentialProvider)
 		if fingerprintIDs := testCodexFingerprint(value, req.Header); fingerprintIDs != nil {
 			openai.ApplyCodexFingerprintHeaders(req.Header, fingerprintIDs)
 		}
@@ -519,7 +519,7 @@ func (s *OpenAIProviderTest) executeNativeCompaction(c *TestRun, value *provider
 	// Permitted overrides can alter negotiation headers after initial
 	// construction. Restore remote-compaction V2 selection last so the probe still
 	// tests the intended endpoint capability.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 	openai.EnsureRemoteCompactionV2Header(req.Header)
 
 	proxyURL := ""
@@ -686,7 +686,7 @@ func (s *OpenAIProviderTest) executeLegacyCompact(c *TestRun, value *providercor
 
 	if isOAuth {
 		req.Host = "chatgpt.com"
-		setTestChatGPTHeaders(req.Header, credentialProvider)
+		SetChatGPTAccountHeaders(req.Header, credentialProvider)
 		// Automatic routing can replace the initially selected User-Agent. Rebuild
 		// its Codex companion headers before this compact request reaches transport.
 		openai.EnforceCodexIdentityHeaders(req.Header)
@@ -695,7 +695,7 @@ func (s *OpenAIProviderTest) executeLegacyCompact(c *TestRun, value *providercor
 	// Routing has selected client identity before permitted provider overrides
 	// run. Apply the shared header filter here so blocked authentication and
 	// session headers cannot replace probe credentials.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
@@ -875,7 +875,7 @@ func (s *OpenAIProviderTest) ExecuteImageAPIKey(c *TestRun, ctx context.Context,
 	// Routing has selected client identity before permitted provider overrides
 	// run. Apply the shared header filter here so blocked authentication and
 	// session headers cannot replace probe credentials.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {
@@ -968,7 +968,7 @@ func (s *OpenAIProviderTest) ExecuteImageAPIKey(c *TestRun, ctx context.Context,
 // concurrency, and TLS choices while account headers follow the credential
 // owner.
 //
-// The image builder supplies platform defaults and the outbound agent is paired
+// The selected provider supplies the image driver and the outbound agent is paired
 // with Codex identity before sending. Failed statuses return a redacted
 // diagnostic from a capped body; successful replies are collected into image
 // results before previews are emitted. No result is a probe failure, and this
@@ -991,9 +991,13 @@ func (s *OpenAIProviderTest) ExecuteImageOAuth(c *TestRun, ctx context.Context, 
 	}
 
 	c.Begin(true)
+	mainModel := value.CodexImageResponsesModel()
 
 	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "test_start", Model: modelID})
-	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{Type: "content", Text: "Calling Codex /responses image tool...\n"})
+	(TestStreamOutput{}).SendEvent(c, providercore.TestEvent{
+		Type: "content",
+		Text: fmt.Sprintf("Calling Codex /responses image tool (main model: %s, image model: %s)...\n", mainModel, modelID),
+	})
 
 	parsed := &upstream.ImageRequest{
 		Endpoint: upstream.OpenAIImagesGenerationsEndpoint,
@@ -1002,7 +1006,7 @@ func (s *OpenAIProviderTest) ExecuteImageOAuth(c *TestRun, ctx context.Context, 
 	}
 	upstream.ApplyOpenAIImagesDefaults(parsed)
 
-	responsesBody, err := openai.BuildOpenAIImagesResponsesRequest(parsed, parsed.Model)
+	responsesBody, err := openai.BuildOpenAIImagesResponsesRequest(parsed, parsed.Model, mainModel)
 	if err != nil {
 		return (TestStreamOutput{}).Error(c, fmt.Sprintf("Failed to build image request: %s", err.Error()))
 	}
@@ -1036,7 +1040,7 @@ func (s *OpenAIProviderTest) ExecuteImageOAuth(c *TestRun, ctx context.Context, 
 		req.Header.Set("User-Agent", openai.CodexCanonicalUserAgent())
 	}
 	s.ApplyRouting(c, value, req, true)
-	setTestChatGPTHeaders(req.Header, credentialProvider)
+	SetChatGPTAccountHeaders(req.Header, credentialProvider)
 	// Routing can replace the initial User-Agent. Pair its Codex companion
 	// headers with that final value before preparing transport for this image
 	// probe.
@@ -1061,6 +1065,9 @@ func (s *OpenAIProviderTest) ExecuteImageOAuth(c *TestRun, ctx context.Context, 
 		// the message.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		body = RedactAgentIdentityBody(ctx, s.read, credentialProvider, body)
+		if driverErr := openai.OpenAIImagesMainModelError(resp.StatusCode, body, mainModel, parsed.Model); driverErr != nil {
+			return (TestStreamOutput{}).Error(c, driverErr.Message)
+		}
 		message := strings.TrimSpace(upstream.ExtractErrorMessage(body))
 		if message == "" {
 			message = fmt.Sprintf("Responses API returned %d", resp.StatusCode)
@@ -1110,17 +1117,6 @@ func (s *OpenAIProviderTest) read(ctx context.Context, id int64) (*providercore.
 func (s *OpenAIProviderTest) agentHeaders(ctx context.Context, value *providercore.Record) (http.Header, error) {
 	headers, _, err := AgentIdentityHeaders(ctx, value, s.EnsureTask)
 	return headers, err
-}
-
-// setTestChatGPTHeaders applies account and FedRAMP headers for OpenAI
-// OAuth-like credentials. Nil maps, nil records, and unsupported authentication
-// leave headers untouched; callers pass the resolved credential owner for
-// shadow probes.
-func setTestChatGPTHeaders(headers http.Header, value *providercore.Record) {
-	if headers == nil || value == nil || !value.IsOpenAIOAuthLike() {
-		return
-	}
-	openai.SetChatGPTAccountHeaders(headers, value.GetChatGPTAccountID(), value.IsChatGPTAccountFedRAMP())
 }
 
 // mergeTestExtraUpdates returns a new shallow map combining both patches, with

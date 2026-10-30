@@ -63,9 +63,16 @@ func provideEmailChallenges(cache identity.EmailCache, mail *notification.Mailer
 // account-locale lookup. Positive IDs select user lookup; other recipients use
 // email lookup, and read failures or absent preferences yield an empty locale
 // for notification fallback. The mailer receives this same service before
-// assembly returns.
-func provideNotification(store *settings.Store, mail *notification.Mailer, users *identitypostgres.UserStore) *notification.NotificationEmailService {
+// assembly returns. Display settings resolve stored or deployment frontend
+// addresses when each optional email builds its unsubscribe link.
+func provideNotification(
+	store *settings.Store,
+	mail *notification.Mailer,
+	users *identitypostgres.UserStore,
+	display *site.DisplaySettings,
+) *notification.NotificationEmailService {
 	n := notification.NewNotificationEmailService(store, mail)
+	n.SetFrontendURLReader(display.GetFrontendURL)
 	n.SetRecipientLocaleReader(func(ctx context.Context, id int64, email string) string {
 		var user *identity.User
 		var err error

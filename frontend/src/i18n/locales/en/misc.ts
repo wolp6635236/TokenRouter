@@ -304,153 +304,153 @@ export default {
     // Admin tour steps
     admin: {
       welcome: {
-        title: '👋 Welcome to TokenRouter',
+        title: 'Welcome to TokenRouter',
         description:
-          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">TokenRouter is a powerful AI service gateway platform that helps you easily manage and distribute AI services.</p><p style="margin-bottom: 12px;"><b>🎯 Core Features:</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>📦 <b>Group Management</b> - Create service tiers (VIP, Free Trial, etc.)</li><li>🔗 <b>Provider Pool</b> - Connect multiple upstream AI providers</li><li>🔑 <b>Key Distribution</b> - Generate independent API Keys for users</li><li>💰 <b>Billing Control</b> - Flexible rate and quota management</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">Let\'s complete the initial setup in 3 minutes →</p></div>',
-        nextBtn: 'Start Setup 🚀',
+          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">TokenRouter routes AI requests through connected providers and manages API keys, billing, and quotas.</p><p style="margin-bottom: 12px;"><b>Core Features:</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li><b>Group Management</b> - Create service tiers (VIP, Free Trial, etc.)</li><li><b>Provider Pool</b> - Connect multiple upstream AI providers</li><li><b>Key Distribution</b> - Generate independent API Keys for users</li><li><b>Billing Control</b> - Flexible rate and quota management</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">Start by creating a group, connecting a provider, and generating an API key.</p></div>',
+        nextBtn: 'Start setup',
         prevBtn: 'Skip',
       },
       groupManage: {
-        title: '📦 Step 1: Group Management',
+        title: 'Step 1: Group management',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>What is a Group?</b></p><p style="margin-bottom: 12px;">Groups are the core concept of TokenRouter, like a "service package":</p><ul style="margin-left: 20px; margin-bottom: 12px; font-size: 13px;"><li>🎯 Each group can contain multiple upstream providers</li><li>💰 Each group has independent billing multiplier</li><li>👥 Can be set as public or exclusive</li></ul><p style="margin-top: 12px; padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Example:</b> You can create "VIP Premium" (high rate) and "Free Trial" (low rate) groups</p><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Group Management" on the left sidebar</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>What is a Group?</b></p><p style="margin-bottom: 12px;">Groups are the core concept of TokenRouter, like a "service package":</p><ul style="margin-left: 20px; margin-bottom: 12px; font-size: 13px;"><li>Each group can contain multiple upstream providers</li><li>Each group has independent billing multiplier</li><li>Can be set as public or exclusive</li></ul><p style="margin-top: 12px; font-size: 13px;"><b>Example:</b> You can create "VIP Premium" (high rate) and "Free Trial" (low rate) groups</p><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">Click "Group Management" on the left sidebar</p></div>',
       },
       createGroup: {
-        title: '➕ Create New Group',
+        title: 'Create a group',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Let\'s create your first group.</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📝 Tip:</b> Recommend creating a test group first to familiarize yourself with the process</p><p style="color: var(--tour-action-color); font-weight: 600;">👉 Click the "Create Group" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Create a group for your first provider.</p><p style="font-size: 13px; margin-bottom: 12px;"><b>Tip:</b> Recommend creating a test group first to familiarize yourself with the process</p><p style="color: var(--tour-action-color); font-weight: 600;">Click the "Create Group" button</p></div>',
       },
       groupName: {
-        title: '✏️ 1. Group Name',
+        title: 'Group name',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Give your group an easy-to-identify name.</p><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>💡 Naming Suggestions:</b><ul style="margin: 8px 0 0 16px;"><li>"Test Group" - For testing</li><li>"VIP Premium" - High-quality service</li><li>"Free Trial" - Trial version</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">Click "Next" when done</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Give your group an easy-to-identify name.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Naming Suggestions:</b><ul style="margin: 8px 0 0 16px;"><li>"Test Group" - For testing</li><li>"VIP Premium" - High-quality service</li><li>"Free Trial" - Trial version</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">Click "Next" when done</p></div>',
         nextBtn: 'Next',
       },
       groupMultiplier: {
-        title: '💰 3. Rate Multiplier',
+        title: 'Rate multiplier',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set the billing multiplier to control user charges.</p><div style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚙️ Billing Rules:</b><ul style="margin: 8px 0 0 16px;"><li><b>1.0</b> - Original price (cost price)</li><li><b>1.5</b> - Charge 1.5 times the base cost</li><li><b>2.0</b> - Charge 2 times the base cost</li><li><b>0.8</b> - Subsidy mode (loss-making)</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">Recommend setting test group to 1.0</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set the billing multiplier to control user charges.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Billing Rules:</b><ul style="margin: 8px 0 0 16px;"><li><b>1.0</b> - Original price (cost price)</li><li><b>1.5</b> - Charge 1.5 times the base cost</li><li><b>2.0</b> - Charge 2 times the base cost</li><li><b>0.8</b> - Subsidy mode (loss-making)</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">Recommend setting test group to 1.0</p></div>',
         nextBtn: 'Next',
       },
       groupExclusive: {
-        title: '🔒 4. Exclusive Group (Optional)',
+        title: 'Exclusive group (optional)',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Control group visibility and access permissions.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔐 Permission Guide:</b><ul style="margin: 8px 0 0 16px;"><li><b>Off</b> - Public group, visible to all users</li><li><b>On</b> - Exclusive group, only for specified users</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Use Cases:</b> VIP exclusive, internal testing, special customers</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Control group visibility and access permissions.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Permission Guide:</b><ul style="margin: 8px 0 0 16px;"><li><b>Off</b> - Public group, visible to all users</li><li><b>On</b> - Exclusive group, only for specified users</li></ul></div><p style="font-size: 13px;"><b>Use Cases:</b> VIP exclusive, internal testing, special customers</p></div>',
         nextBtn: 'Next',
       },
       groupSubmit: {
-        title: '✅ Save Group',
+        title: 'Save group',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Confirm the information and click create to save the group.</p><p style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ Note:</b> Platform type cannot be changed after creation, but other settings can be edited anytime</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>📌 Next Step:</b> After creation, we\'ll add upstream providers to this group</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Create" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Confirm the information and click create to save the group.</p><p style="font-size: 13px; margin-bottom: 12px;"><b>Note:</b> A group can contain providers from different platforms. You can edit its model and protocol policies later.</p><p style="font-size: 13px;"><b>Next Step:</b> After creation, we\'ll add upstream providers to this group</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Create" button</p></div>',
       },
       providerManage: {
-        title: '🔗 Step 2: Add Provider',
+        title: 'Step 2: Add a provider',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>Great! Group created successfully 🎉</b></p><p style="margin-bottom: 12px;">Now add upstream AI providers to enable actual service delivery.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔑 Provider Purpose:</b><ul style="margin: 8px 0 0 16px;"><li>Connect to upstream AI services (Claude, GPT, etc.)</li><li>One group can contain multiple providers (load balancing)</li><li>Supports OAuth and Session Key methods</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Provider Management" on the left sidebar</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>Group created.</b></p><p style="margin-bottom: 12px;">Now add upstream AI providers to enable actual service delivery.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Provider Purpose:</b><ul style="margin: 8px 0 0 16px;"><li>Connect to upstream AI services (Claude, GPT, etc.)</li><li>One group can contain multiple providers (load balancing)</li><li>Supports OAuth and Session Key methods</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">Click "Provider Management" on the left sidebar</p></div>',
       },
       createProvider: {
-        title: '➕ Add New Provider',
+        title: 'Add a provider',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to start adding your first upstream provider.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Tip:</b> Recommend using OAuth method - more secure and no manual key extraction needed</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Add Provider" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to start adding your first upstream provider.</p><p style="font-size: 13px;"><b>Tip:</b> Recommend using OAuth method - more secure and no manual key extraction needed</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Add Provider" button</p></div>',
       },
       providerName: {
-        title: '✏️ 1. Provider Name',
+        title: 'Provider name',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set an easy-to-identify name for the provider.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Naming Suggestions:</b> "Claude Main", "GPT Backup 1", "Test Provider", etc.</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set an easy-to-identify name for the provider.</p><p style="font-size: 13px;"><b>Naming Suggestions:</b> "Claude Main", "GPT Backup 1", "Test Provider", etc.</p></div>',
         nextBtn: 'Next',
       },
       providerPlatform: {
-        title: '🤖 2. Select Platform',
+        title: 'Select platform',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Choose the service provider platform for this provider.</p><p style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px;"><b>⚠️ Important:</b> Providers from different platforms can share the same group</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Choose the service provider platform for this provider.</p><p style="font-size: 13px;"><b>Important:</b> Providers from different platforms can share the same group</p></div>',
         nextBtn: 'Next',
       },
       providerType: {
-        title: '🔐 3. Authorization Method',
+        title: 'Authorization method',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Choose the provider authorization method.</p><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>✅ Recommended: OAuth Method</b><ul style="margin: 8px 0 0 16px;"><li>No manual key extraction needed</li><li>More secure with auto-refresh support</li><li>Works with Claude Code, ChatGPT OAuth</li></ul></div><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 Session Key Method</b><ul style="margin: 8px 0 0 16px;"><li>Requires manual extraction from browser</li><li>May need periodic updates</li><li>For platforms without OAuth support</li></ul></div></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Choose the provider authorization method.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Recommended: OAuth Method</b><ul style="margin: 8px 0 0 16px;"><li>No manual key extraction needed</li><li>More secure with auto-refresh support</li><li>Works with Claude Code, ChatGPT OAuth</li></ul></div><div style="font-size: 13px;"><b>Session Key Method</b><ul style="margin: 8px 0 0 16px;"><li>Requires manual extraction from browser</li><li>May need periodic updates</li><li>For platforms without OAuth support</li></ul></div></div>',
         nextBtn: 'Next',
       },
       providerPriority: {
-        title: '⚖️ 4. Priority (Optional)',
+        title: 'Priority (optional)',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set the provider call priority.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📊 Priority Rules:</b><ul style="margin: 8px 0 0 16px;"><li>Lower number = higher priority</li><li>System uses low-value providers first</li><li>Same priority = random selection</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Use Case:</b> Set main provider to lower value, backup providers to higher value</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set the provider call priority.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Priority Rules:</b><ul style="margin: 8px 0 0 16px;"><li>Lower number = higher priority</li><li>System uses low-value providers first</li><li>Same priority = random selection</li></ul></div><p style="font-size: 13px;"><b>Use Case:</b> Set main provider to lower value, backup providers to higher value</p></div>',
         nextBtn: 'Next',
       },
       providerGroups: {
-        title: '🎯 5. Assign Groups',
+        title: 'Assign groups',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>Key Step!</b> Assign the provider to the group you just created.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ Important Reminder:</b><ul style="margin: 8px 0 0 16px;"><li>Must select at least one group</li><li>Unassigned providers cannot be used</li><li>One provider can be assigned to multiple groups</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Tip:</b> Select the test group you just created</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Assign the provider to the group you just created.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>Important Reminder:</b><ul style="margin: 8px 0 0 16px;"><li>Must select at least one group</li><li>Unassigned providers cannot be used</li><li>One provider can be assigned to multiple groups</li></ul></div><p style="font-size: 13px;"><b>Tip:</b> Select the test group you just created</p></div>',
         nextBtn: 'Next',
       },
       providerSubmit: {
-        title: '✅ Save Provider',
+        title: 'Save provider',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Confirm the information and click save.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📌 OAuth Flow:</b><ul style="margin: 8px 0 0 16px;"><li>Will redirect to service provider page after clicking save</li><li>Complete login and authorization on provider page</li><li>Auto-return after successful authorization</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>📌 Next Step:</b> After adding provider, we\'ll create an API key</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Save" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Confirm the information and click save.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>OAuth Flow:</b><ul style="margin: 8px 0 0 16px;"><li>Will redirect to service provider page after clicking save</li><li>Complete login and authorization on provider page</li><li>Auto-return after successful authorization</li></ul></div><p style="font-size: 13px;"><b>Next Step:</b> After adding provider, we\'ll create an API key</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Save" button</p></div>',
       },
       keyManage: {
-        title: '🔑 Step 3: Generate Key',
+        title: 'Step 3: Generate an API key',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>Congratulations! Provider setup complete 🎉</b></p><p style="margin-bottom: 12px;">Final step: generate an API Key to test if the service works properly.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔑 API Key Purpose:</b><ul style="margin: 8px 0 0 16px;"><li>Credential for calling AI services</li><li>Each key is bound to one group</li><li>Can set quota and expiration</li><li>Supports independent usage statistics</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 Click "API Keys" on the left sidebar</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>Provider setup is complete.</b></p><p style="margin-bottom: 12px;">Final step: generate an API Key to test if the service works properly.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>API Key Purpose:</b><ul style="margin: 8px 0 0 16px;"><li>Credential for calling AI services</li><li>Each key is bound to one group</li><li>Can set quota and expiration</li><li>Supports independent usage statistics</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">Click "API Keys" on the left sidebar</p></div>',
       },
       createKey: {
-        title: '➕ Create Key',
+        title: 'Create a key',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to create your first API Key.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Tip:</b> Copy and save immediately after creation - key is only shown once</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Create Key" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to create your first API Key.</p><p style="font-size: 13px;"><b>Tip:</b> Copy the key after creation and store it securely. You can copy it again from the key list.</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Create Key" button</p></div>',
       },
       keyName: {
-        title: '✏️ 1. Key Name',
+        title: 'Key name',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set an easy-to-manage name for the key.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Naming Suggestions:</b> "Test Key", "Production", "Mobile", etc.</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Set an easy-to-manage name for the key.</p><p style="font-size: 13px;"><b>Naming Suggestions:</b> "Test Key", "Production", "Mobile", etc.</p></div>',
         nextBtn: 'Next',
       },
       keyGroup: {
-        title: '🎯 2. Select Group',
+        title: 'Select group',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Select the group you just configured.</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📌 Group Determines:</b><ul style="margin: 8px 0 0 16px;"><li>Which providers this key can use</li><li>What billing multiplier applies</li><li>Whether it\'s an exclusive key</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Tip:</b> Select the test group you just created</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Select the group you just configured.</p><div style="font-size: 13px; margin-bottom: 12px;"><b>Group Determines:</b><ul style="margin: 8px 0 0 16px;"><li>Which providers this key can use</li><li>What billing multiplier applies</li><li>Whether it\'s an exclusive key</li></ul></div><p style="font-size: 13px;"><b>Tip:</b> Select the test group you just created</p></div>',
         nextBtn: 'Next',
       },
       keySubmit: {
-        title: '🎉 Generate and Copy',
+        title: 'Generate and copy',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">System will generate a complete API Key after clicking create.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ Important Reminder:</b><ul style="margin: 8px 0 0 16px;"><li>Key is only shown once, copy immediately</li><li>Need to regenerate if lost</li><li>Keep it safe, don\'t share with others</li></ul></div><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🚀 Next Steps:</b><ul style="margin: 8px 0 0 16px;"><li>Copy the generated sk-xxx key</li><li>Use in any OpenAI-compatible client</li><li>Start experiencing AI services!</li></ul></div><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Create" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">System will generate a complete API Key after clicking create.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>Important Reminder:</b><ul style="margin: 8px 0 0 16px;"><li>Copy the key after creation and store it securely.</li><li>You can copy it again from the key list.</li><li>Keep it safe, don\'t share with others</li></ul></div><div style="font-size: 13px; margin-bottom: 12px;"><b>Next Steps:</b><ul style="margin: 8px 0 0 16px;"><li>Copy the generated sk-xxx key</li><li>Use in any OpenAI-compatible client</li><li>Send a request to test the connection.</li></ul></div><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Create" button</p></div>',
       },
     },
     // User tour steps
     user: {
       welcome: {
-        title: '👋 Welcome to TokenRouter',
+        title: 'Welcome to TokenRouter',
         description:
-          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">Hello! Welcome to the TokenRouter AI service platform.</p><p style="margin-bottom: 12px;"><b>🎯 Quick Start:</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>🔑 Create API Key</li><li>📋 Copy key to your application</li><li>🚀 Start using AI services</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">Just 1 minute, let\'s get started →</p></div>',
-        nextBtn: 'Start 🚀',
+          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">Use an API key to connect your application to the available AI models.</p><p style="margin-bottom: 12px;"><b>Quick Start:</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>Create API Key</li><li>Copy key to your application</li><li>Start using AI services</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">Open API Keys to create your first key.</p></div>',
+        nextBtn: 'Start',
         prevBtn: 'Skip',
       },
       keyManage: {
-        title: '🔑 API Key Management',
+        title: 'API key management',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Manage all your API access keys here.</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 What is an API Key?</b><br/>An API key is your credential for accessing AI services, like a key that allows your application to call AI capabilities.</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click to enter key page</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Manage all your API access keys here.</p><p style="font-size: 13px;"><b>What is an API Key?</b><br/>An API key is your credential for accessing AI services, like a key that allows your application to call AI capabilities.</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click to enter key page</p></div>',
       },
       createKey: {
-        title: '➕ Create New Key',
+        title: 'Create a key',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to create your first API key.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Tip:</b> Key is only shown once after creation, make sure to copy and save</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Create Key"</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click the button to create your first API key.</p><p style="font-size: 13px;"><b>Tip:</b> Copy the key after creation and store it securely. You can copy it again from the key list.</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Create Key"</p></div>',
       },
       keyName: {
-        title: '✏️ Key Name',
+        title: 'Key name',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Give your key an easy-to-identify name.</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 Examples:</b> "My First Key", "For Testing", etc.</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Give your key an easy-to-identify name.</p><p style="font-size: 13px;"><b>Examples:</b> "My First Key", "For Testing", etc.</p></div>',
         nextBtn: 'Next',
       },
       keyGroup: {
-        title: '🎯 Select Group',
+        title: 'Select group',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Select the service group assigned by the administrator.</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 Group Info:</b><br/>Different groups may have different service quality and billing rates, choose according to your needs.</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Select the service group assigned by the administrator.</p><p style="font-size: 13px;"><b>Group Info:</b><br/>Different groups may have different service quality and billing rates, choose according to your needs.</p></div>',
         nextBtn: 'Next',
       },
       keySubmit: {
-        title: '🎉 Complete Creation',
+        title: 'Create and copy',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click to confirm and create your API key.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ Important:</b><ul style="margin: 8px 0 0 16px;"><li>Copy the key (sk-xxx) immediately after creation</li><li>Key is only shown once, need to regenerate if lost</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>🚀 How to Use:</b><br/>Configure the key in any OpenAI-compatible client (like ChatBox, OpenCat, etc.) and start using!</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 Click "Create" button</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">Click to confirm and create your API key.</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>Important:</b><ul style="margin: 8px 0 0 16px;"><li>Copy the key (sk-xxx) immediately after creation</li><li>You can copy it again from the key list.</li></ul></div><p style="font-size: 13px;"><b>How to Use:</b><br/>Configure the key in any OpenAI-compatible client (like ChatBox, OpenCat, etc.) to send requests.</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">Click "Create" button</p></div>',
       },
     },
     // Team onboarding steps
@@ -738,6 +738,10 @@ export default {
       INVALID_STATUS: 'The current order status does not allow this operation.',
       BALANCE_NOT_ENOUGH: 'Refund amount exceeds balance.',
       REFUND_AMOUNT_EXCEEDED: 'Refund amount exceeds the recharge amount.',
+      REFUND_RECOVERY_REQUIRED:
+        'The refund result is unconfirmed. Verify it with the payment provider before taking further action. Do not submit another refund.',
+      REFUND_QUERY_UNSUPPORTED:
+        'This payment provider does not support refund status queries. Verify the refund in the provider console.',
       REFUND_FAILED: 'Refund failed.',
       BILLING_INFO_REQUIRED: 'Billing information is required.',
       BILLING_NAME_REQUIRED: 'Billing name is required.',
@@ -902,6 +906,8 @@ export default {
       groupId: 'Group ID',
       planGroups: 'Plan Groups',
       planGroupsGlobalHint: 'Leave empty to make the plan available to all groups',
+      planGroupsRemoved:
+        '{count} deleted group(s) were removed from this plan. Saving applies the change.',
       subscriptionRateMultiplier: 'Subscription Rate',
       subscriptionRateMultiplierRequired:
         'Subscription rate for selected groups must be greater than 0',

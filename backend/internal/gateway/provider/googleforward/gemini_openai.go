@@ -18,7 +18,6 @@ import (
 	protocolbridge "github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
-	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	gemininative "github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
@@ -35,9 +34,9 @@ import (
 // Chat carries its include_usage stream choice into the response target.
 // Project-bearing OAuth can read an upstream stream into a buffered client
 // response. HTTP failure policy runs before response adaptation, using the
-// selected client envelope. Successful compatibility image metadata currently
-// uses the original client model-name estimate, while native and Messages
-// execution consult their own attempt image counter.
+// selected client envelope. Successful completion combines response-observed
+// image counts with image-size hints from the prepared Gemini request, keeping
+// those observations separate from logical and upstream model names.
 
 // ForwardAsResponses converts one OpenAI Responses body through Anthropic into
 // a selected Gemini attempt. It validates input and retains client tool
@@ -167,8 +166,8 @@ func (s *Gemini) ForwardAsChatCompletions(
 // Provider policy classifies HTTP failures before output adaptation, and a
 // successful result retains separate client and upstream models. Upstream
 // streaming can differ from client mode for project-bearing OAuth. Image
-// metadata uses the original client model-name estimate on this path,
-// independently of the per-attempt counter used by other Gemini entries.
+// metadata combines response-observed counts with size hints from the prepared
+// Gemini request, without deriving image presence from either model name.
 func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 	ctx context.Context,
 	c *attempt,
@@ -196,7 +195,7 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 	// Resolve the provider wire model before capability filtering so OpenAI
 	// controls from the original body are applied to the same Gemini target
 	// sent upstream.
-	mappedModel := providercore.ResolveForwardMappedModel(gatewayprovider.ExecutionRecord(provider), req.Model, provideradapter.ModelDefaults())
+	mappedModel := gatewayprovider.ExecutionModelPolicy(provider).UpstreamModel(ctx, req.Model)
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
 	if err != nil {
@@ -228,6 +227,7 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 		geminiReq,
 		clientStream,
 		useUpstreamStream,
+		c.GetHeader,
 	)
 
 	options := s.geminiExchangeOptions(c, ctx, provider, mappedModel, geminiExchangeOpenAI, protocol)
@@ -265,43 +265,30 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 			if requestID == "" {
 				requestID = resp.Header.Get("x-goog-request-id")
 			}
-			if requestID != "" {
-				c.Header("x-request-id", requestID)
-			}
 
 			if protocol == gemininative.OpenAICompatResponses {
 				reasoningEffort = protocolforward.ExtractEffort(originalBody, false, capability.NormalizeRecordedOpenAIEffortForModel, mappedModel)
 			} else {
 				reasoningEffort = protocolforward.ExtractEffort(originalBody, true, capability.NormalizeRecordedOpenAIEffortForModel, mappedModel)
 			}
-			// Supply a display effort when a CN model enables
-			// thinking without an explicit effort.
+			// Supply a display effort when a Kimi, Zhipu, or DeepSeek model
+			// enables thinking without an explicit effort.
 			reasoningEffort = gatewayprovider.ApplyThinkingEnabledFallback(reasoningEffort, originalBody, mappedModel)
 
 			if resp.StatusCode >= 400 {
 				respBody := s.readUpstreamErrorBody(resp)
-				decision := s.applyGeminiUpstreamErrorPolicy(ctx, provider, resp.StatusCode, resp.Header, respBody, mappedModel)
+				outcome := s.buildGeminiFailureOutcome(ctx, provider, resp, respBody, mappedModel)
 				evBody := gemininative.UnwrapIfNeeded(provider.Record.Type == capability.ProviderTypeOAuth, respBody)
-				if decision.Policy == providercore.ErrorPolicyCustomSkipped || decision.Policy == providercore.ErrorPolicyPoolBypassed {
-					if failoverErr := s.skippedErrorPolicyFailoverError(c, provider, resp.StatusCode, respBody, requestID); failoverErr != nil {
-						return nil, failoverErr
+				if outcome.failover != nil {
+					// OpenAI ordinary failures use the OAuth response object without body
+					// detail; skipped policy retains raw bytes and configured diagnostics.
+					upstreamDetail := ""
+					if outcome.policy == providercore.ErrorPolicyCustomSkipped || outcome.policy == providercore.ErrorPolicyPoolBypassed {
+						upstreamDetail = s.upstreamErrorDetail(respBody)
+					} else {
+						outcome.failover.ResponseBody = evBody
 					}
-					if decision.Policy == providercore.ErrorPolicyCustomSkipped {
-						return nil, c.GeminiCustomCodeSkippedError(provider, resp.StatusCode, requestID, respBody, func() {
-							_ = c.ChatError(http.StatusInternalServerError, "api_error", geminiCustomCodeSkippedClientMessage)
-						})
-					}
-					return nil, c.GeminiOpenAICompatMappedError(provider, resp.StatusCode, requestID, evBody, protocol)
-				}
-				if decision.ShouldReturnGenericError() {
-					genericBody := []byte(`{"error":{"message":"Upstream gateway error"}}`)
-					return nil, c.GeminiOpenAICompatMappedError(provider, http.StatusInternalServerError, requestID, genericBody, protocol)
-				}
-
-				msg400 := strings.ToLower(strings.TrimSpace(upstream.ExtractErrorMessage(respBody)))
-				googleConfigError := resp.StatusCode == http.StatusBadRequest && upstream.IsGoogleProjectConfigError(msg400)
-				if decision.ShouldFailover(gatewayprovider.ExecutionErrorPolicy(provider), resp.StatusCode, googleConfigError || s.shouldFailoverGeminiUpstreamError(resp.StatusCode)) {
-					upstreamMsg := logredact.SanitizeUpstreamQueries(strings.TrimSpace(upstream.ExtractErrorMessage(evBody)))
+					upstreamMsg := logredact.SanitizeUpstreamQueries(strings.TrimSpace(upstream.ExtractErrorMessage(outcome.failover.ResponseBody)))
 					c.Observe(ops.OpsUpstreamErrorEvent{
 						Platform:           provider.Record.Platform,
 						ProviderID:         provider.Record.ID,
@@ -310,16 +297,15 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 						UpstreamRequestID:  requestID,
 						Kind:               "failover",
 						Message:            upstreamMsg,
+						Detail:             upstreamDetail,
 					})
-					return nil, &protocolforward.UpstreamFailoverError{
-						StatusCode: resp.StatusCode,
-
-						ResponseBody: evBody,
-
-						RetryableOnSameProvider: decision.RetryableOnSameProvider(gatewayprovider.ExecutionErrorPolicy(provider), resp.StatusCode),
-					}
+					return nil, outcome.failover
 				}
-
+				if outcome.policy == providercore.ErrorPolicyCustomSkipped {
+					return nil, c.GeminiCustomCodeSkippedError(provider, resp.StatusCode, requestID, respBody, func() {
+						_ = c.ChatError(http.StatusInternalServerError, "api_error", geminiCustomCodeSkippedClientMessage)
+					})
+				}
 				return nil, c.GeminiOpenAICompatMappedError(provider, resp.StatusCode, requestID, evBody, protocol)
 			}
 
@@ -333,7 +319,12 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 		return compatibilityResult, executeErr
 	}
 	if executeErr != nil {
-		return nil, executeErr
+		executeErr = s.streamFailure(ctx, c, provider, result, executeErr, func(status int, body []byte) error {
+			return c.GeminiOpenAICompatMappedError(provider, status, result.RequestID, body, protocol)
+		})
+		if !result.HasUsage && !result.Served {
+			return nil, executeErr
+		}
 	}
 	requestID = result.RequestID
 	usage := &result.Usage
@@ -356,8 +347,8 @@ func (s *Gemini) forwardClaudeBodyAsOpenAICompat(
 		ImageCount:            imageCount,
 		ImageSize:             imageSize,
 		ImageInputSize:        imageInputSize,
-		ClientDisconnect:      false,
-	}, nil
+		ClientDisconnect:      result.ClientDisconnect,
+	}, executeErr
 }
 
 // buildGeminiChatCompletionsUpstreamRequestFunc retains the prepared bytes and
@@ -370,8 +361,9 @@ func (s *Gemini) buildGeminiChatCompletionsUpstreamRequestFunc(
 	geminiReq []byte,
 	clientStream bool,
 	useUpstreamStream bool,
+	read func(string) string,
 ) (func(context.Context) (*http.Request, string, error), string) {
-	plan := s.geminiRequestPlan(provider, mappedModel, "", false, clientStream, useUpstreamStream, false)
+	plan := s.geminiRequestPlan(provider, mappedModel, "", false, clientStream, useUpstreamStream, false, read)
 	return func(ctx context.Context) (*http.Request, string, error) {
 		return gemininative.BuildRequest(ctx, geminiReq, plan)
 	}, "x-request-id"

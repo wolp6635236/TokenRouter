@@ -414,3 +414,15 @@ func headerOverrideTestProvider(platform, providerType string, credentials map[s
 		Credentials: credentials,
 	}
 }
+
+// TestOpenCodeHeaderOverridesDoNotInstallIdentity exercises the override helper
+// with no configured replacements. Authentication, agent and session fields must
+// remain untouched until the request builder performs final provider preparation.
+func TestOpenCodeHeaderOverridesDoNotInstallIdentity(t *testing.T) {
+	value := &provider.Record{Platform: provider.PlatformOpenCode, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "key"}}
+	headers := http.Header{"X-Api-Key": {"wire-key"}, "User-Agent": {"caller"}}
+	before := headers.Clone()
+	ApplyProviderHeaderOverrides(value, headers)
+	require.Equal(t, before, headers)
+	require.Empty(t, headers.Get("Authorization"))
+}

@@ -3,7 +3,6 @@ package gemini
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -21,8 +20,9 @@ import (
 // Each attempt rebuilds the request and selects its request-ID header. Error
 // bodies are captured and closed before retry, then rebuilt when retries end.
 // Throttling observations reach caller state before sleeping; transport errors
-// consume the same total attempt budget. The caller closes the selected final
-// body and performs protocol conversion after this exchange returns.
+// consume the same total attempt budget. ExternalRetry delegates both failure
+// classes to the caller after one dispatch. The caller closes the selected
+// final body and performs protocol conversion after this exchange returns.
 
 // ExchangeOpenAI returns the selected upstream response and request-ID header
 // after its total attempt budget. Callers supply callbacks for the selected
@@ -30,27 +30,44 @@ import (
 //
 // Policy matches stop before status retry, scope-rejected 403 responses are
 // rebuilt and returned, and 429 invokes caller observation before waiting.
-// Transport retries use the same attempt count and an uninterruptible backoff
-// sleep. Final transport failure returns the caller-mapped error, while final
-// HTTP failure retains captured bytes for protocol error mapping.
+// Transport retries use the same attempt count and a cancellable backoff
+// wait. Final transport failure returns the caller-mapped error, while final
+// HTTP failure retains captured bytes for protocol error mapping. ExternalRetry
+// delegates retry decisions to the caller after a single dispatch.
 func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResult, error) {
+	maxAttempts := options.MaxRetries
+	// External retry ownership leaves failed exchanges for the outer provider
+	// budget, before response conversion can commit any output to the client.
+	if options.ExternalRetry {
+		maxAttempts = 1
+	}
 	requestIDHeader := options.RequestIDHeader
 	var resp *http.Response
+	candidateCount := 1
 	// Rebuild the request and its ID-header selection for every attempt,
 	// including after caller body replacement. Captured HTTP error bytes survive
 	// stream closing before another request or final error mapping.
-	for attempt := 1; attempt <= options.MaxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ExchangeResult{}, err
+		}
 		upstreamReq, idHeader, err := options.Build(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return ExchangeResult{}, err
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
 			}
 			return ExchangeResult{}, options.BuildError(err)
 		}
 		requestIDHeader = idHeader
+		candidateCount = requestCandidateCount(upstreamReq)
 
 		resp, err = options.Do(upstreamReq)
 		if err != nil {
+			// Caller cancellation ends the exchange. Transport-local deadlines leave
+			// the caller alive and must reach retry or final-error classification.
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
+			}
 			safeErr := options.Sanitize(err.Error())
 			options.Observe(ExchangeNotice{
 				Platform:           options.Platform,
@@ -63,9 +80,11 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			// Transport failures share the total attempt budget with HTTP retries;
 			// wait before rebuilding so repeated failures cannot form an immediate
 			// dispatch loop.
-			if attempt < options.MaxRetries {
-				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, options.MaxRetries, err)
-				SleepGeminiBackoff(attempt)
+			if attempt < maxAttempts {
+				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, maxAttempts, err)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			options.SetError(0, safeErr, "")
@@ -81,7 +100,7 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			break
 		}
 
-		if resp.StatusCode >= 400 && options.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && !options.ExternalRetry && options.ShouldRetry(resp.StatusCode) {
 			respBody := options.ReadError(resp)
 			_ = resp.Body.Close()
 			// Rebuild the consumed scope-rejection body and return it because another
@@ -103,7 +122,7 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 			// Retry this classified HTTP failure while attempt slots remain; its body
 			// is already captured and closed before waiting and constructing another
 			// request.
-			if attempt < options.MaxRetries {
+			if attempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -119,8 +138,10 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 					Kind:               "retry",
 					Message:            upstreamMsg,
 				})
-				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, options.MaxRetries)
-				SleepGeminiBackoff(attempt)
+				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, maxAttempts)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			// Reconstruct the final captured error body because classification consumed
@@ -137,5 +158,5 @@ func ExchangeOpenAI(ctx context.Context, options ExchangeOptions) (ExchangeResul
 		break
 	}
 
-	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader}, nil
+	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader, CandidateCount: candidateCount}, nil
 }

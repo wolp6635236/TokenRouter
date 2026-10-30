@@ -427,6 +427,13 @@ func (r *fakeBatchImageProviderResolver) GetByID(context.Context, int64) (*provi
 // Name returns the fixed backend label used by processor-only fixtures.
 func (p *fakeProcessorProvider) Name() string { return "fake" }
 
+// SupportsSubmission reuses the fixture credential rules for new jobs.
+// Tests inject provider protocol selections through candidate preparation, while
+// this adapter supplies deterministic local execution without deployment storage.
+func (p *fakeProcessorProvider) SupportsSubmission(provider *providercore.Record) bool {
+	return p.SupportsProvider(provider)
+}
+
 // SupportsProvider accepts each supplied record for the processor backend
 // fixture.
 func (p *fakeProcessorProvider) SupportsProvider(*providercore.Record) bool {
@@ -563,7 +570,17 @@ func newBatchPublicFixture(repo batchimage.BatchImageRepository, providers batch
 	}
 	if cfg != nil {
 		c := cfg.BatchImage
-		core.Options = batchimage.PublicOptions{Enabled: c.Enabled, StaleActiveAfterSeconds: c.StaleActiveAfterSeconds, MaxItemsPerJobDefault: c.MaxItemsPerJobDefault, MaxOutputImagesPerJob: c.MaxOutputImagesPerJob, MaxOutputImagesPerItem: c.MaxOutputImagesPerItem, MaxPromptCharsPerItem: c.MaxPromptCharsPerItem, MaxReferenceImagesPerJob: c.MaxReferenceImagesPerJob, MaxReferenceInlineBytesPerJob: c.MaxReferenceInlineBytesPerJob, DefaultResponseMimeType: c.DefaultResponseMimeType, DefaultImageSize: c.DefaultImageSize}
+		core.Options = batchimage.PublicOptions{
+			StaleActiveAfterSeconds:       c.StaleActiveAfterSeconds,
+			MaxItemsPerJobDefault:         c.MaxItemsPerJobDefault,
+			MaxOutputImagesPerJob:         c.MaxOutputImagesPerJob,
+			MaxOutputImagesPerItem:        c.MaxOutputImagesPerItem,
+			MaxPromptCharsPerItem:         c.MaxPromptCharsPerItem,
+			MaxReferenceImagesPerJob:      c.MaxReferenceImagesPerJob,
+			MaxReferenceInlineBytesPerJob: c.MaxReferenceInlineBytesPerJob,
+			DefaultResponseMimeType:       c.DefaultResponseMimeType,
+			DefaultImageSize:              c.DefaultImageSize,
+		}
 	}
 	core.ProviderExists = func(name string) bool {
 		value, ok := registry.Get(name)
@@ -743,6 +760,16 @@ func (r *publicBatchImageUserGroupRateRepo) GetByUserAndGroup(_ context.Context,
 
 // Name returns the configured registry label of the public provider fixture.
 func (p *publicBatchImageProvider) Name() string { return p.name }
+
+// SupportsSubmission matches fixture backends to their supported authentication
+// types. Production candidate preparation checks protocol selections before this
+// fake admits locally recorded submissions, allowing tests to compare both backends.
+func (p *publicBatchImageProvider) SupportsSubmission(provider *providercore.Record) bool {
+	if p.name == batchimage.BatchImageProviderVertex {
+		return provider.Type == capability.ProviderTypeServiceAccount
+	}
+	return provider.Type == capability.ProviderTypeAPIKey
+}
 
 // SupportsProvider accepts all records for the public submission backend
 // fixture.

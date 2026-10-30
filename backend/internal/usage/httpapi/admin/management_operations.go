@@ -54,7 +54,7 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/dashboard",
-		Input:       adminapi.Arguments("/api/v1/admin/dashboard/groups", []string{"api_key_id", "billing_type", "end_date", "group_id", "provider_id", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/dashboard/groups", []string{"api_key_id", "billing_type", "end_date", "group_id", "provider_id", "request_source", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
 	}),
 	"dashboard.models.list": adminapi.Define(adminapi.Operation{
 		ID:     "dashboard.models.list",
@@ -69,7 +69,7 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/dashboard",
-		Input:       adminapi.Arguments("/api/v1/admin/dashboard/models", []string{"api_key_id", "billing_type", "end_date", "group_id", "model_source", "provider_id", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/dashboard/models", []string{"api_key_id", "billing_type", "end_date", "group_id", "model_source", "provider_id", "request_source", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
 	}),
 	"dashboard.realtime.list": adminapi.Define(adminapi.Operation{
 		ID:     "dashboard.realtime.list",
@@ -103,7 +103,7 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/dashboard",
-		Input:       adminapi.Arguments("/api/v1/admin/dashboard/snapshot-v2", []string{"api_key_id", "billing_type", "end_date", "granularity", "group_id", "include_group_stats", "include_model_stats", "include_stats", "include_trend", "include_users_trend", "model", "provider_id", "request_type", "start_date", "stream", "team_id", "timezone", "user_id", "users_trend_limit"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/dashboard/snapshot-v2", []string{"api_key_id", "billing_type", "end_date", "granularity", "group_id", "include_group_stats", "include_model_stats", "include_stats", "include_trend", "include_users_trend", "model", "provider_id", "request_source", "request_type", "start_date", "stream", "team_id", "timezone", "user_id", "users_trend_limit"}, nil),
 	}),
 	"dashboard.stats.list": adminapi.Define(adminapi.Operation{
 		ID:     "dashboard.stats.list",
@@ -133,7 +133,7 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/dashboard",
-		Input:       adminapi.Arguments("/api/v1/admin/dashboard/trend", []string{"api_key_id", "billing_type", "end_date", "granularity", "group_id", "model", "provider_id", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/dashboard/trend", []string{"api_key_id", "billing_type", "end_date", "granularity", "group_id", "model", "provider_id", "request_source", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
 	}),
 	"dashboard.user_breakdown.list": adminapi.Define(adminapi.Operation{
 		ID:     "dashboard.user_breakdown.list",
@@ -247,13 +247,13 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		Description: "List returns an administrator usage page under validated scalar selectors and optional " +
 			"independent time bounds. Request category takes precedence over stream, date-only ends " +
 			"advance by calendar day, and exact_total requests the repository's full count. This " +
-			"operation is available through read_operation.",
+			"operation is available through read_operation. request_source selects user, system, or an individual system source; omission includes all sources.",
 		Method:      "GET",
 		Path:        "/api/v1/admin/usage",
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/usage",
-		Input:       adminapi.Arguments("/api/v1/admin/usage", []string{"api_key_id", "billing_mode", "billing_type", "end_date", "exact_total", "group_id", "model", "native_compaction_v2", "page", "page_size", "provider_id", "request_id", "request_type", "sort_by", "sort_order", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/usage", []string{"api_key_id", "billing_mode", "billing_type", "end_date", "exact_total", "group_id", "model", "native_compaction_v2", "page", "page_size", "provider_id", "request_id", "request_source", "request_type", "sort_by", "sort_order", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
 	}),
 	"usage.search_api_keys.list": adminapi.Define(adminapi.Operation{
 		ID:     "usage.search_api_keys.list",
@@ -294,12 +294,12 @@ var ManagementOperations = map[string]*adminapi.Operation{
 			"Endpoint-source validation selects all or one chart, and request category takes precedence " +
 			"over legacy stream. nocache bypasses lookup and insertion for this response; it leaves " +
 			"existing entries available to later cached requests. This operation is available through " +
-			"read_operation.",
+			"read_operation. request_source applies to all totals and endpoint charts; incomplete_cost_requests counts partial and unknown expenses.",
 		Method:      "GET",
 		Path:        "/api/v1/admin/usage/stats",
 		ReadOnly:    true,
 		Response:    "json",
 		BrowserPath: "/admin/usage",
-		Input:       adminapi.Arguments("/api/v1/admin/usage/stats", []string{"api_key_id", "billing_mode", "billing_type", "end_date", "endpoint_source", "group_id", "model", "native_compaction_v2", "nocache", "period", "provider_id", "request_id", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
+		Input:       adminapi.Arguments("/api/v1/admin/usage/stats", []string{"api_key_id", "billing_mode", "billing_type", "end_date", "endpoint_source", "group_id", "model", "native_compaction_v2", "nocache", "period", "provider_id", "request_id", "request_source", "request_type", "start_date", "stream", "team_id", "timezone", "user_id"}, nil),
 	}),
 }

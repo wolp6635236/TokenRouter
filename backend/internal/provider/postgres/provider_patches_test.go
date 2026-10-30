@@ -8,7 +8,7 @@ import (
 
 // Usage display observations and route configuration have different
 // scheduling-event requirements. These cases cover provider_patches.go's key
-// classification: billing, reset credits, CN and Qoder usage remain neutral,
+// classification: billing, reset credits, monitored and Qoder usage remain neutral,
 // while OpenAI compaction and text-route settings request the durable
 // scheduler notification.
 
@@ -37,11 +37,11 @@ func TestOpenAIResetCreditSnapshotIsSchedulerNeutral(t *testing.T) {
 	}))
 }
 
-// TestCNUsageMonitorSnapshotIsSchedulerNeutralForGenericUpdates classifies a
+// TestUsageMonitorSnapshotIsSchedulerNeutralForGenericUpdates classifies a
 // monitor snapshot through generic Extra updates. Its key remains neutral
 // there, while the dedicated version-checked monitor write owns scheduling
 // notification elsewhere.
-func TestCNUsageMonitorSnapshotIsSchedulerNeutralForGenericUpdates(t *testing.T) {
+func TestUsageMonitorSnapshotIsSchedulerNeutralForGenericUpdates(t *testing.T) {
 	t.Parallel()
 	require.True(t, IsSchedulerNeutralExtraKey("cn_usage_monitor_snapshot"))
 	require.False(t, ShouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{

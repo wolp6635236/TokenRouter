@@ -5,12 +5,12 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
 )
 
-// model_attributes.go builds model catalogue targets from provider identity
-// and the selected upstream protocol.
-// Model attributes depend on the serving provider identity as well as the model
-// name. A CN provider's protocol-specific endpoint, an enabled Anthropic relay
-// URL, and Qoder's default site can each select a different catalogue identity
-// for the same requested model.
+// model_attributes.go builds model catalogue targets from provider identity and
+// the selected upstream protocol. Model attributes depend on the serving
+// provider identity as well as the model name. A Kimi, Zhipu, and DeepSeek
+// provider's protocol-specific endpoint, an enabled Anthropic relay URL, and
+// Qoder's default site can each select a different catalogue identity for the
+// same requested model.
 //
 // The record is translated into a modelcatalog.Target for the actual upstream
 // protocol, then WithServiceIdentity resolves its service and endpoint context.
@@ -24,12 +24,12 @@ import (
 // upstream protocol. Nil records retain just those supplied route fields;
 // nonnil records add platform, authentication type, endpoint, and site.
 //
-// CN endpoint selection follows the upstream protocol and provider mode, while
-// an enabled Anthropic custom URL replaces its normal endpoint. Qoder defaults
-// an empty site to global. OpenAI API Key Chat routes recognize Ollama by
-// endpoint or saved usage markers and attach its output cap; with no supplied
-// protocol, the legacy text-route selection determines whether this Chat
-// handling applies.
+// Kimi, Zhipu, and DeepSeek endpoint selection follows the upstream protocol
+// and provider mode, while an enabled Anthropic custom URL replaces its normal
+// endpoint. Qoder defaults an empty site to global. OpenAI API Key Chat routes
+// recognize Ollama by endpoint or saved usage markers and attach its output
+// cap; with no supplied protocol, the legacy text-route selection determines
+// whether this Chat handling applies.
 //
 // WithServiceIdentity normalizes the resulting catalogue service context. The
 // helper performs no lookup or persistence and callers keep the input record
@@ -45,7 +45,7 @@ func (r *Record) ModelAttributeTarget(model, upstreamProtocol string) modelcatal
 	// Catalogue identity must follow the endpoint used by this protocol. A
 	// provider can configure separate Chat, Messages, and Responses addresses
 	// whose service identities cannot be inferred from base_url alone.
-	if r.IsCNProvider() {
+	if r.HasProtocolEndpointDefaults() {
 		target.ProviderMode = r.GetProviderMode()
 		protocol := APIProtocolChatCompletions
 		switch upstreamProtocol {
@@ -54,7 +54,7 @@ func (r *Record) ModelAttributeTarget(model, upstreamProtocol string) modelcatal
 		case "openai_responses":
 			protocol = APIProtocolResponses
 		}
-		target.BaseURL = (ProtocolTarget{Record: r}).GetCNProtocolBaseURL(protocol)
+		target.BaseURL = (ProtocolTarget{Record: r}).GetTextAPIKeyProtocolBaseURL(protocol)
 	}
 	if r.Platform == "anthropic" && r.IsCustomBaseURLEnabled() && r.GetCustomBaseURL() != "" {
 		target.BaseURL = r.GetCustomBaseURL()

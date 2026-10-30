@@ -98,5 +98,5 @@ func (s *Compatible) shadowProtocolsAllowed(ctx context.Context, provider *gatew
 		return true
 	}
 	parent := s.parentProviderLookup(ctx)(*provider.Record.ParentProviderID)
-	return parent != nil && gatewayprovider.ExecutionModelPolicy(parent).AllowsProtocol(ctx)
+	return parent != nil && gatewayprovider.ExecutionModelPolicy(parent).AllowsProtocol(ctx, "")
 }

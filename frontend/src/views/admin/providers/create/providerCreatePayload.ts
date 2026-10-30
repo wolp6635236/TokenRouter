@@ -13,6 +13,7 @@ import {
   type ResponsesWSConnectionMode,
 } from '@/utils/responsesWsConnection'
 import { normalizeLegacyOpenAIExtra } from '@/utils/openaiLegacyConfiguration'
+import { applyCodexImageResponsesModel } from '@/utils/codexImageToolMode'
 
 // providerCreatePayload.ts translates platform policy drafts into provider Extra
 // fields for creation. Builders preserve omission of default settings, explicit
@@ -56,6 +57,8 @@ export interface OpenAICreateExtraDraft {
   // codexFingerprintMode is serialized only for OAuth drafts with a non-off
   // value; off removes inherited convergence policy and preserves backend defaults.
   codexFingerprintMode: CodexFingerprintMode
+  // Missing or blank values select the backend default for OAuth image requests.
+  codexImageResponsesModel?: string
   openAICompactMode: OpenAICompactMode // first-generation compaction mode
   openAINativeCompactionV2Mode: OpenAICompactMode // second-generation compaction mode
   // openAIImagesURLToB64JSON is an opt-in API Key policy; disabled or OAuth
@@ -83,6 +86,9 @@ export const buildOpenAICreateExtra = (
   }
 
   const extra: Record<string, unknown> = { ...base }
+  if (draft.type === 'oauth') {
+    applyCodexImageResponsesModel(extra, draft.codexImageResponsesModel || '')
+  }
   extra.responses_ws_connection_mode = draft.responsesWSConnectionMode
   // Remove obsolete connection controls before normalization so stored legacy
   // flags cannot override the selected unified WebSocket connection policy.

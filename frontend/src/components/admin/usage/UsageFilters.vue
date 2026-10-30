@@ -25,6 +25,15 @@
             />
           </FilterField>
 
+          <FilterField v-if="mode === 'usage'" :label="t('admin.usage.requestSource')">
+            <Select
+              :model-value="filters.request_source ?? null"
+              :options="requestSourceOptions"
+              @update:model-value="filters.request_source = $event"
+              @change="emitChange"
+            />
+          </FilterField>
+
           <!-- User search -->
           <FilterField
             :label="t('admin.usage.userFilter')"
@@ -409,11 +418,24 @@ const activeFilterCount = computed(
       ([key, value]) =>
         !['start_date', 'end_date'].includes(key) &&
         !(key === 'request_id' && props.mode === 'ranking') &&
+        !(key === 'request_source' && props.mode !== 'usage') &&
         value !== null &&
         value !== undefined &&
         String(value) !== '',
     ).length,
 )
+
+// requestSourceOptions separates customer usage from the internal model work recorded
+// by probes and tests. The empty option retains the administrator's complete view.
+const requestSourceOptions = computed(() => [
+  { value: null, label: t('admin.usage.sourcesAll') },
+  ...['user', 'system', 'group_probe', 'provider_test', 'scheduled_test', 'quota_probe'].map(
+    (value) => ({
+      value,
+      label: t(`admin.usage.requestSources.${value}`),
+    }),
+  ),
+])
 
 // requestTypeOptions supplies the canonical request modes accepted by usage filtering and
 // their translated display labels.

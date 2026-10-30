@@ -25,6 +25,8 @@ import (
 // UsageLog is the completed-request analysis row with attribution, measured
 // usage, cost and loaded display relations.
 type UsageLog struct {
+	RequestSource string       // customer or system request source
+	SystemUsage   *SystemUsage // optional internal execution evidence
 	// Timings owns the frozen observations of the exchange producing this usage.
 	// Completion clones it before asynchronous processing and never mutates its values.
 	Timings *timing.Performance
@@ -33,13 +35,14 @@ type UsageLog struct {
 	// UserID records the acting member, BillingUserID the payer and TeamID
 	// team-key attribution. User visibility selects acting records, while
 	// PostgreSQL spending rankings group recorded charges by payer.
-	UserID int64 // acting user identifier
+	UserID int64 // acting user or zero for system
 	// BillingUserID supplies payer attribution. PostgreSQL insertion substitutes
-	// UserID when this value is nonpositive, and query reads coalesce absent
+	// UserID for customer rows when this value is nonpositive. System rows
+	// persist a null payer; query reads use zero for that absence and coalesce absent
 	// historical payer identity to the acting user.
 	BillingUserID int64  // paying user identifier
 	TeamID        *int64 // optional team identifier
-	APIKeyID      int64  // used key identifier
+	APIKeyID      int64  // used key or zero for system
 	ProviderID    int64  // execution provider identifier
 	// Platform retains the execution platform recorded at completion; reports
 	// use this stored value after provider or group configuration changes.

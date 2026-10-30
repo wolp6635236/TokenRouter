@@ -1,0 +1,237 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="400" viewBox="0 0 1200 400"
+     role="img" aria-labelledby="title desc">
+  <!--
+    banner.svg renders the English README hero for TokenRouter, and
+    banner-zh.svg carries the same drawing with Chinese copy for README_ZH.md;
+    edit both files together. The left column names the project and its
+    promise; the right column draws the gateway itself: client protocols enter
+    on the left, the brand mark acts as the router, and upstream platforms
+    leave on the right in their platformColors.ts hues.
+
+    One 7-second CSS loop replays a single request. A Messages call reaches the
+    router, the first upstream answers 429, and the router fails over to the
+    next upstream, which answers 200. The settled route then holds still so
+    the finished picture is readable before everything fades and the loop
+    restarts. Viewers that ask for reduced motion see that settled state
+    without animation.
+  -->
+  <title id="title">TokenRouter</title>
+  <desc id="desc">TokenRouter is an open source LLM gateway. Client protocols such as Messages, Responses, Chat Completions, and Gemini enter one router, which sends each request to an upstream platform such as Anthropic, OpenAI, Gemini, Grok, Kimi, or DeepSeek and fails over when an upstream returns 429.</desc>
+
+  <style>
+    .sans {
+      font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    .mono {
+      font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+        Consolas, monospace;
+    }
+
+    /*
+      Lit routes use pathLength="100" with a 100-unit dash and gap, so a
+      dashoffset of 100 hides the stroke and 0 draws it in full from the
+      route's start.
+    */
+    .lit {
+      fill: none;
+      stroke: #00D2FF;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-dasharray: 100 100;
+      stroke-dashoffset: 100;
+    }
+
+    /*
+      Every animation shares the 7s loop so the keyframe percentages below form
+      one timeline: 0.2-1.0s request in, 1.2-2.0s first attempt, 2.0s 429,
+      2.5-3.3s failover, 3.3s 200, 3.5-6.3s hold, 6.3-6.8s fade out.
+    */
+    .route-in { animation: route-in 7s infinite; }
+    .route-fail { animation: route-fail 7s infinite; }
+    .route-ok { animation: route-ok 7s infinite; }
+    .hub-frame { animation: hub-frame 7s infinite; }
+    .port-in { animation: port-in 7s infinite; }
+    .port-fail { animation: port-fail 7s infinite; }
+    .port-ok { animation: port-ok 7s infinite; }
+    .badge-fail { opacity: 0; animation: badge-fail 7s infinite; }
+    .badge-ok { opacity: 0; animation: badge-ok 7s infinite; }
+
+    @keyframes route-in {
+      0%, 3% {
+        stroke-dashoffset: 100;
+        opacity: 1;
+        animation-timing-function: cubic-bezier(0.25, 0.8, 0.25, 1);
+      }
+      14%, 90% { stroke-dashoffset: 0; opacity: 1; }
+      96%, 100% { stroke-dashoffset: 0; opacity: 0; }
+    }
+    @keyframes route-fail {
+      0%, 17% {
+        stroke-dashoffset: 100;
+        stroke: #00D2FF;
+        opacity: 1;
+        animation-timing-function: cubic-bezier(0.25, 0.8, 0.25, 1);
+      }
+      28% { stroke-dashoffset: 0; stroke: #00D2FF; opacity: 1; }
+      31%, 90% { stroke-dashoffset: 0; stroke: #F87171; opacity: 1; }
+      96%, 100% { stroke-dashoffset: 0; stroke: #F87171; opacity: 0; }
+    }
+    @keyframes route-ok {
+      0%, 36% {
+        stroke-dashoffset: 100;
+        opacity: 1;
+        animation-timing-function: cubic-bezier(0.25, 0.8, 0.25, 1);
+      }
+      47%, 90% { stroke-dashoffset: 0; opacity: 1; }
+      96%, 100% { stroke-dashoffset: 0; opacity: 0; }
+    }
+    @keyframes hub-frame {
+      0%, 13% { stroke: #3D3D42; }
+      16%, 90% { stroke: #00D2FF; }
+      96%, 100% { stroke: #3D3D42; }
+    }
+    @keyframes port-in {
+      0%, 2% { fill: #0A0A0B; stroke: #52525B; }
+      4%, 90% { fill: #00D2FF; stroke: #00D2FF; }
+      96%, 100% { fill: #0A0A0B; stroke: #52525B; }
+    }
+    @keyframes port-fail {
+      0%, 27% { fill: #0A0A0B; stroke: #52525B; }
+      30%, 90% { fill: #F87171; stroke: #F87171; }
+      96%, 100% { fill: #0A0A0B; stroke: #52525B; }
+    }
+    @keyframes port-ok {
+      0%, 46% { fill: #0A0A0B; stroke: #52525B; }
+      48%, 90% { fill: #00D2FF; stroke: #00D2FF; }
+      96%, 100% { fill: #0A0A0B; stroke: #52525B; }
+    }
+    @keyframes badge-fail {
+      0%, 28% { opacity: 0; }
+      31%, 90% { opacity: 1; }
+      96%, 100% { opacity: 0; }
+    }
+    @keyframes badge-ok {
+      0%, 47% { opacity: 0; }
+      50%, 90% { opacity: 1; }
+      96%, 100% { opacity: 0; }
+    }
+
+    /* Reduced motion pins every animated element to its settled hold frame. */
+    @media (prefers-reduced-motion: reduce) {
+      .route-in, .route-fail, .route-ok, .hub-frame,
+      .port-in, .port-fail, .port-ok, .badge-fail, .badge-ok {
+        animation: none;
+      }
+      .lit { stroke-dashoffset: 0; }
+      .route-fail { stroke: #F87171; }
+      .hub-frame { stroke: #00D2FF; }
+      .port-in, .port-ok { fill: #00D2FF; stroke: #00D2FF; }
+      .port-fail { fill: #F87171; stroke: #F87171; }
+      .badge-fail, .badge-ok { opacity: 1; }
+    }
+  </style>
+
+  <!-- The canvas carries its own near-black surface so it reads the same on light and dark GitHub themes. -->
+  <rect x="0.5" y="0.5" width="1199" height="399" rx="24"
+        fill="#0A0A0B" stroke="#27272A"/>
+
+  <g id="title-block" transform="translate(64 0)">
+    <text class="mono" x="0" y="120" font-size="17" letter-spacing="2.4"
+          fill="#8B8B94">OPEN SOURCE LLM GATEWAY</text>
+    <text class="sans" x="-3" y="192" font-size="66" font-weight="700"
+          letter-spacing="-1.5" fill="#FAFAFA">TokenRouter</text>
+    <text class="sans" x="0" y="244" font-size="24" fill="#A1A1AA">Call models from many vendors</text>
+    <text class="sans" x="0" y="278" font-size="24" fill="#A1A1AA">through one endpoint and one API key.</text>
+    <text class="mono" x="0" y="334" font-size="17" fill="#71717A">Self-hosted · Go + Vue · LGPL-3.0</text>
+  </g>
+
+  <g id="router-diagram">
+    <!-- Base routes stay dim so the lit request path is the only moving cue. -->
+    <g fill="none" stroke="#3D3D42" stroke-width="2">
+      <path d="M690 128 C724 128 718 200 752 200"/>
+      <path d="M690 176 C724 176 718 200 752 200"/>
+      <path d="M690 224 C724 224 718 200 752 200"/>
+      <path d="M690 272 C724 272 718 200 752 200"/>
+      <path d="M848 200 C892 200 892 90 936 90"/>
+      <path d="M848 200 C892 200 892 134 936 134"/>
+      <path d="M848 200 C892 200 892 178 936 178"/>
+      <path d="M848 200 C892 200 892 222 936 222"/>
+      <path d="M848 200 C892 200 892 266 936 266"/>
+      <path d="M848 200 C892 200 892 310 936 310"/>
+    </g>
+
+    <g id="lit-routes">
+      <path class="lit route-in" pathLength="100" d="M690 128 C724 128 718 200 752 200"/>
+      <path class="lit route-fail" pathLength="100" d="M848 200 C892 200 892 90 936 90"/>
+      <path class="lit route-ok" pathLength="100" d="M848 200 C892 200 892 134 936 134"/>
+    </g>
+
+    <g id="client-protocols" class="sans" font-size="20" fill="#D4D4D8" text-anchor="end">
+      <text x="674" y="135">Messages</text>
+      <text x="674" y="183">Responses</text>
+      <text x="674" y="231">Chat Completions</text>
+      <text x="674" y="279">Gemini</text>
+    </g>
+    <g id="client-ports" fill="#0A0A0B" stroke="#52525B" stroke-width="2">
+      <circle class="port-in" cx="688" cy="128" r="5"/>
+      <circle cx="688" cy="176" r="5"/>
+      <circle cx="688" cy="224" r="5"/>
+      <circle cx="688" cy="272" r="5"/>
+    </g>
+
+    <!-- The router card is 96 units with 16 units of padding, so its 30-unit radius stays concentric with the scaled 14-unit logo radius. -->
+    <g id="router">
+      <rect class="hub-frame" x="752" y="152" width="96" height="96" rx="30"
+            fill="#0F0F10" stroke="#3D3D42" stroke-width="2"/>
+      <g transform="translate(768 168) scale(2)">
+        <rect width="32" height="32" rx="7" fill="#0B1220"/>
+        <g fill="#00D2FF">
+          <path d="M7 2 H25 A5 5 0 0 1 30 7 H25.727922 A12 12 0 0 0 17.242641 10.514719 L10.514719 17.242641 A6 6 0 0 1 6.272078 19 H2 V7 A5 5 0 0 1 7 2 Z"/>
+          <path transform="rotate(180 16 16)" d="M7 2 H25 A5 5 0 0 1 30 7 H25.727922 A12 12 0 0 0 17.242641 10.514719 L10.514719 17.242641 A6 6 0 0 1 6.272078 19 H2 V7 A5 5 0 0 1 7 2 Z"/>
+        </g>
+      </g>
+    </g>
+
+    <g id="upstream-ports" fill="#0A0A0B" stroke="#52525B" stroke-width="2">
+      <circle class="port-fail" cx="938" cy="90" r="5"/>
+      <circle class="port-ok" cx="938" cy="134" r="5"/>
+      <circle cx="938" cy="178" r="5"/>
+      <circle cx="938" cy="222" r="5"/>
+      <circle cx="938" cy="266" r="5"/>
+      <circle cx="938" cy="310" r="5"/>
+    </g>
+
+    <!-- Marker hues follow the dark-theme ICON classes in frontend/src/utils/platformColors.ts. -->
+    <g id="upstream-markers">
+      <rect x="956" y="84" width="12" height="12" rx="3" fill="#FB923C"/>
+      <rect x="956" y="128" width="12" height="12" rx="3" fill="#34D399"/>
+      <rect x="956" y="172" width="12" height="12" rx="3" fill="#60A5FA"/>
+      <rect x="956" y="216" width="12" height="12" rx="3" fill="#E4E4E7"/>
+      <rect x="956" y="260" width="12" height="12" rx="3" fill="#F472B6"/>
+      <rect x="956" y="304" width="12" height="12" rx="3" fill="#2DD4BF"/>
+    </g>
+    <g id="upstream-names" class="sans" font-size="20" fill="#D4D4D8">
+      <text x="980" y="97">Anthropic</text>
+      <text x="980" y="141">OpenAI</text>
+      <text x="980" y="185">Gemini</text>
+      <text x="980" y="229">Grok</text>
+      <text x="980" y="273">Kimi</text>
+      <text x="980" y="317">DeepSeek</text>
+    </g>
+
+    <g id="status-badges" class="mono" font-size="16" font-weight="600" text-anchor="middle">
+      <g class="badge-fail">
+        <rect x="1086" y="77" width="54" height="26" rx="13"
+              fill="#1F1113" stroke="#F87171"/>
+        <text x="1113" y="96" fill="#F87171">429</text>
+      </g>
+      <g class="badge-ok">
+        <rect x="1086" y="121" width="54" height="26" rx="13"
+              fill="#0A1A1F" stroke="#00D2FF"/>
+        <text x="1113" y="140" fill="#00D2FF">200</text>
+      </g>
+    </g>
+  </g>
+</svg>

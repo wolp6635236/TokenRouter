@@ -57,11 +57,11 @@ type lifecycleRefreshRepository struct {
 	writes atomic.Int32 // atomic credential write count
 }
 
-// attachCNMonitorLimits installs a CN limit snapshot matching the provider's
-// current usage identity. It retains the supplied limits slice, copies the
-// observation time value, and panics when fixture query configuration is
-// invalid.
-func attachCNMonitorLimits(provider *Record, observedAt time.Time, limits []UpstreamUsageLimit) {
+// attachUsageMonitorLimits installs a Kimi, Zhipu, or DeepSeek limit snapshot
+// matching the provider's current usage identity. It retains the supplied
+// limits slice, copies the observation time value, and panics when fixture
+// query configuration is invalid.
+func attachUsageMonitorLimits(provider *Record, observedAt time.Time, limits []UpstreamUsageLimit) {
 	if provider.Extra == nil {
 		provider.Extra = make(map[string]any)
 	}
@@ -69,11 +69,10 @@ func attachCNMonitorLimits(provider *Record, observedAt time.Time, limits []Upst
 	if err != nil {
 		panic(err)
 	}
-	queryConfig.Adapter = CNUpstreamUsageAdapterName(provider)
-	provider.Extra[CNUsageMonitorSnapshotExtraKey] = &CNUsageMonitorSnapshot{
-		Version:       CNUsageMonitorSnapshotVersion,
+	provider.Extra[UsageMonitorSnapshotExtraKey] = &UsageMonitorSnapshot{
+		Version:       UsageMonitorSnapshotVersion,
 		Adapter:       queryConfig.Adapter,
-		IdentityHash:  CNUsageMonitorIdentityFingerprint(provider),
+		IdentityHash:  UsageMonitorIdentityFingerprint(provider),
 		Provider:      provider.Platform,
 		Mode:          "limits",
 		Unit:          "PERCENT",
@@ -83,9 +82,9 @@ func attachCNMonitorLimits(provider *Record, observedAt time.Time, limits []Upst
 	}
 }
 
-// cnCodingTestProvider creates an active API Key fixture using the selected CN
-// coding platform.
-func cnCodingTestProvider(platform string) *Record {
+// codingPlanTestProvider creates an active API Key fixture using the selected
+// Kimi, Zhipu, and DeepSeek coding platform.
+func codingPlanTestProvider(platform string) *Record {
 	return &Record{
 		ID:       1,
 		Platform: platform,

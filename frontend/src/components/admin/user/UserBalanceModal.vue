@@ -3,6 +3,7 @@
     :show="show"
     :title="operation === 'add' ? t('admin.users.deposit') : t('admin.users.withdraw')"
     width="narrow"
+    :z-index="zIndex"
     @close="$emit('close')"
   >
     <form v-if="user" id="balance-form" @submit.prevent="handleBalanceSubmit" class="space-y-5">
@@ -88,6 +89,7 @@ import type { AdminUser } from '@/api/admin/users.types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import UserAvatar from '@/components/common/UserAvatar.vue'
 import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
+import { Z_INDEX } from '@/constants/overlay'
 
 // UserBalanceModal.vue adds or subtracts a selected user's balance with an
 // administrator note. The preview combines the selected operation, account balance,
@@ -97,19 +99,34 @@ import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 //
 // Opening the dialog resets the amount and note for the next adjustment. Submission
 // requires a positive amount and rejects a withdrawal greater than the displayed
-// balance. The endpoint completes before success and close events ask the parent to
-// refresh its account data; failed requests keep the draft available.
+// balance. The endpoint completes before the success event, which carries the updated
+// account to the parent, and close events ask it to dismiss the dialog; failed requests
+// keep the draft available.
 
 // props and emit connect the selected user and balance operation to parent refresh and
-// close events after a successful adjustment.
-const props = defineProps<{
-  show: boolean // Parent-controlled dialog visibility.
-  // user supplies the selected account; null leaves identity-dependent operations
-  // waiting until the parent chooses an account.
-  user: AdminUser | null
-  operation: 'add' | 'subtract' // Balance adjustment direction.
+// close events after a successful adjustment, plus the layer used when a parent dialog
+// opens this editor on top of itself.
+const props = withDefaults(
+  defineProps<{
+    show: boolean // Parent-controlled dialog visibility.
+    // user supplies the selected account; null leaves identity-dependent operations
+    // waiting until the parent chooses an account.
+    user: AdminUser | null
+    operation: 'add' | 'subtract' // Balance adjustment direction.
+    // zIndex overrides the shared modal layer when the balance history dialog opens this
+    // editor above itself.
+    zIndex?: number
+  }>(),
+  {
+    zIndex: Z_INDEX.MODAL,
+  },
+)
+const emit = defineEmits<{
+  // Requests parent dismissal.
+  (e: 'close'): void
+  // Reports the server-updated account after a successful adjustment.
+  (e: 'success', user: AdminUser): void
 }>()
-const emit = defineEmits(['close', 'success'])
 // The translation, notification, and balance-display services provide amount labels,
 // validation feedback, and monetary previews in the configured balance unit.
 const { t } = useI18n()
@@ -174,7 +191,8 @@ const calculateNewBalance = () => {
 }
 // handleBalanceSubmit validates a positive adjustment and prevents withdrawals above
 // the selected user's displayed balance. It awaits the balance endpoint before emitting
-// success and close; server details or a common error are shown on failure.
+// success with the updated account and close; server details or a common error are shown
+// on failure.
 const handleBalanceSubmit = async () => {
   if (!props.user) return
   if (!form.amount || form.amount <= 0) {
@@ -189,10 +207,15 @@ const handleBalanceSubmit = async () => {
   submitting.value = true
   try {
     // Wait for the balance adjustment before success and close events so the parent can
-    // reload the balance after persistence has completed.
-    await adminAPI.users.updateBalance(props.user.id, form.amount, props.operation, form.notes)
+    // publish the updated balance after persistence has completed.
+    const updatedUser = await adminAPI.users.updateBalance(
+      props.user.id,
+      form.amount,
+      props.operation,
+      form.notes,
+    )
     appStore.showSuccess(t('common.success'))
-    emit('success')
+    emit('success', updatedUser)
     emit('close')
   } catch (e: any) {
     console.error('Failed to update balance:', e)

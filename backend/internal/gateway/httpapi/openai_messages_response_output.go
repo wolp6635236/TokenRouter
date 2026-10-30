@@ -34,8 +34,8 @@ import (
 // health classification runs before the corresponding event predicate is
 // evaluated.
 //
-// A pre-output retryable decision returns a failover error after marking
-// request failure effects. Once output has begun, the result describes an
+// A pre-output retryable decision passes applied effects into the failover
+// builder. Once output has begun, the result describes an
 // error for the current stream. Generic rejection keeps its own message; other
 // decisions may use configured event-derived status and message overrides
 // after Ops recording.
@@ -53,9 +53,9 @@ func (p *OpenAIResponseOutput) messagesStreamFailure(c *gin.Context, provider *g
 	// The reader permits provider switching only before business content starts;
 	// subsequent failures must end this Messages stream to keep one response identity.
 	if !clientOutputStarted && decision.ShouldFailover(gatewayprovider.ExecutionErrorPolicy(provider), policyStatus, shouldFailoverSignal) {
-		MarkOpenAIResponseFailureEffects(c, policyStatus, decision.StopScheduling)
 		failure := p.NewStreamPolicyFailureWithModel(
-			c, provider, false, requestID, resp.Header, payloadBytes, message, upstreamModel,
+			c, provider, false, requestID, resp.Header, payloadBytes, message,
+			&AppliedOpenAIResponseEffects{StatusCode: policyStatus, StopScheduling: decision.StopScheduling}, upstreamModel,
 		)
 		return openai.ChatFailure{Failover: failure}
 	}

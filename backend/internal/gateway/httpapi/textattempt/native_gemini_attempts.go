@@ -240,6 +240,9 @@ func (b *nativeGeminiAttemptBridge) Forward(state textflow.AttemptState) textflo
 			return textflow.Outcome{Err: err, Stop: true}
 		}
 	}
+	// Capture after admission and pricing so queue heartbeats cannot become real
+	// output attributed to this forwarding attempt when deciding whether to retry.
+	before := gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	var err error
 	sessionGroupID := derefGroupID(b.apiKey.GroupID)
 	if b.provider.Record.Platform == capability.PlatformAntigravity {
@@ -258,8 +261,9 @@ func (b *nativeGeminiAttemptBridge) Forward(state textflow.AttemptState) textflo
 		b.result, err = b.binding().forwardGeminiNative(requestCtx, b.c, b.provider, b.modelName, b.action, b.stream, b.body)
 	}
 	b.binding().reportSchedule(b.selection, b.provider.Record.ID, err == nil, b.result)
-	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil}
+	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != before}
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
+	out.Attempt.RetryCommitted = out.OutputChanged
 	if retry, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		out.Failure = &textflow.AttemptFailure{Cause: err, Policy: retry.RetryFailure()}
 	}

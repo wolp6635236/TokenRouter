@@ -544,6 +544,23 @@
             </BulkApplyField>
           </template>
 
+          <BulkApplyField
+            v-if="allOpenAIOAuth"
+            id="bulk-edit-image-responses-model"
+            v-model="enableCodexImageResponsesModel"
+            :label="t('admin.providers.openai.imageResponsesModel')"
+            :hint="t('admin.providers.openai.imageResponsesModelDesc')"
+          >
+            <input
+              v-model="codexImageResponsesModel"
+              data-testid="bulk-edit-image-responses-model-input"
+              aria-labelledby="bulk-edit-image-responses-model-label"
+              type="text"
+              class="input"
+              :placeholder="t('admin.providers.openai.imageResponsesModelDefault')"
+            />
+          </BulkApplyField>
+
           <template v-if="allOpenAIPassthroughCapable">
             <BulkApplyField
               id="bulk-edit-codex-image-tool"
@@ -756,7 +773,11 @@ import {
 import GrokBaseUrlPresets from '@/components/provider/GrokBaseUrlPresets.vue'
 import { RESPONSES_WS_POOLED, responsesWSConnectionHint } from '@/utils/responsesWsConnection'
 import type { ResponsesWSConnectionMode } from '@/utils/responsesWsConnection'
-import { applyCodexImageToolMode, type CodexImageToolMode } from '@/utils/codexImageToolMode'
+import {
+  applyCodexImageToolMode,
+  applyCodexImageResponsesModel,
+  type CodexImageToolMode,
+} from '@/utils/codexImageToolMode'
 
 /**
  * BulkEditProviderModal.vue constructs opt-in patches for explicitly selected providers or a
@@ -1042,6 +1063,9 @@ const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
 const enableOpenAIFlattenNamespaces = ref(false)
 const enableCodexImageToolMode = ref(false)
+// These drafts apply an image driver only when selected OAuth targets opt into the patch.
+const enableCodexImageResponsesModel = ref(false)
+const codexImageResponsesModel = ref('')
 const enableUpstreamProtocols = ref(false)
 const upstreamProtocols = ref<ProtocolID[] | undefined>(undefined)
 // Image modes and their application flags are independent per endpoint. Selection
@@ -1552,6 +1576,10 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_responses_flatten_namespaces = openaiFlattenNamespacesEnabled.value
   }
 
+  if (enableCodexImageResponsesModel.value && allOpenAIOAuth.value) {
+    applyCodexImageResponsesModel(ensureExtra(), codexImageResponsesModel.value)
+  }
+
   if (enableCodexImageToolMode.value) {
     const extra = ensureExtra()
     applyCodexImageToolMode(extra, codexImageToolMode.value, 'null')
@@ -1763,6 +1791,7 @@ const handleSubmit = async () => {
     enableOpenAIPassthrough.value ||
     enableOpenAIFlattenNamespaces.value ||
     enableCodexImageToolMode.value ||
+    (enableCodexImageResponsesModel.value && allOpenAIOAuth.value) ||
     enableOpenAIResponsesContinuationSupported.value ||
     enableModelRestriction.value ||
     enableCustomErrorCodes.value ||
@@ -1890,6 +1919,8 @@ const resetBulkEditFormState = () => {
   enableOpenAIPassthrough.value = false
   enableOpenAIFlattenNamespaces.value = false
   enableCodexImageToolMode.value = false
+  enableCodexImageResponsesModel.value = false
+  codexImageResponsesModel.value = ''
   enableUpstreamProtocols.value = false
   upstreamProtocols.value = undefined
   imageModes.value = readImageStreamModes()

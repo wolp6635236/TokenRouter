@@ -12,6 +12,7 @@
 //   - calculator.go, price_resolver.go, default_catalog.go: resolve configured and catalog prices and calculate
 //     charges.
 //   - public_quote.go, media_pricing.go: build public quotes and resolve image unit prices.
+//   - system_usage.go: defines provider-only expense commands and committed quota results.
 //   - settlement*.go, funds.go, allocation.go: allocate subscription and balance charges, settle usage, and update
 //     caches.
 //   - eligibility*.go, cache.go, key_rate_limits.go, member_quota.go: check balances, API Key limits, and member

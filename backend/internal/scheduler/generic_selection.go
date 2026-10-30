@@ -31,9 +31,24 @@ import (
 // effective feedback settings, while several basic paths write stickiness
 // before result hydration.
 
-// stickySessionTTL sets the lifetime requested when generic selection creates
-// or refreshes a session's provider binding.
-const stickySessionTTL = time.Hour
+const (
+	// Generic pool outcomes identify the first failed gate so routed callers can
+	// retain their existing diagnostic counters without repeating eligibility.
+	genericCandidateAccepted      genericCandidateRejection = iota // all pool checks passed
+	genericCandidateUnschedulable                                  // general eligibility rejected
+	genericCandidatePrivacy                                        // required privacy missing
+	genericCandidatePlatform                                       // forced platform rejected
+	genericCandidateModelMapping                                   // requested model unsupported
+	genericCandidateUpstream                                       // upstream model restricted
+	genericCandidateModelScope                                     // runtime model unavailable
+	genericCandidateQuota                                          // provider quota unavailable
+	genericCandidateWindowCost                                     // window cost limit reached
+	genericCandidateRPM                                            // request rate limit reached
+
+	// stickySessionTTL sets the lifetime requested when generic selection creates
+	// or refreshes a session's provider binding.
+	stickySessionTTL = time.Hour
+)
 
 // ErrNoAvailableProviders identifies selection exhaustion and is wrapped with
 // model or group rejection details for gateway callers.
@@ -273,6 +288,10 @@ type GenericSelector struct {
 	now func() time.Time // ordering and scoring clock
 }
 
+// genericCandidateRejection identifies a pool candidate's first failed
+// eligibility check, with genericCandidateAccepted representing no rejection.
+type genericCandidateRejection uint8
+
 // IsPrivacySet reports the provider metadata's resolved privacy qualification
 // flag.
 func (a *FlowProvider) IsPrivacySet() bool { return a.PrivacySet }
@@ -494,6 +513,50 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 	isUpstreamAllowed := func(provider *FlowProvider) bool {
 		return !needsUpstreamCheck || !s.ports.IsUpstreamModelRestrictedByGroup(ctx, *groupID, provider, requestedModel)
 	}
+	// Routed and ordinary pools stop at the first failed gate, preserving callback and
+	// privacy-write order. Their callers own exclusions, missing routed IDs, and
+	// diagnostic counters; hard affinity retains its separate checks and capacity
+	// policy. The same weighted-affinity decision reaches window cost and RPM,
+	// allowing a bound candidate's sticky-only interval in either pool. An empty
+	// requested model skips support lookup while runtime model eligibility still
+	// runs with that empty value.
+	candidateRejection := func(provider *FlowProvider) genericCandidateRejection {
+		if !s.ports.IsProviderSchedulableForSelection(provider) {
+			return genericCandidateUnschedulable
+		}
+		if group != nil && group.RequirePrivacySet && !provider.IsPrivacySet() {
+			// Privacy rejection is effective for this request even if recording the
+			// provider's administrative error fails; that write does not admit the
+			// candidate.
+			_ = s.ports.SetProviderError(ctx, provider.ID,
+				fmt.Sprintf("Privacy not set, required by group [%s]", group.Name))
+			return genericCandidatePrivacy
+		}
+		if !s.ports.IsProviderAllowedForPlatform(provider, platform, useMixed) {
+			return genericCandidatePlatform
+		}
+		if requestedModel != "" && !s.ports.IsModelSupportedByProviderWithContext(ctx, provider, requestedModel) {
+			return genericCandidateModelMapping
+		}
+		if !isUpstreamAllowed(provider) {
+			return genericCandidateUpstream
+		}
+		if !s.ports.IsProviderSchedulableForModelSelection(ctx, provider, requestedModel) {
+			return genericCandidateModelScope
+		}
+		if !s.ports.IsProviderSchedulableForQuota(provider) {
+			return genericCandidateQuota
+		}
+
+		weightedSticky := advancedStickyWeighted && provider.ID == stickyProviderID
+		if !s.ports.IsProviderSchedulableForWindowCost(ctx, provider, weightedSticky) {
+			return genericCandidateWindowCost
+		}
+		if !s.ports.IsProviderSchedulableForRPM(ctx, provider, weightedSticky) {
+			return genericCandidateRPM
+		}
+		return genericCandidateAccepted
+	}
 
 	var routingProviderIDs []int64
 	if group != nil && requestedModel != "" {
@@ -528,53 +591,27 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 				continue
 			}
 			provider, ok := providerByID[routingProviderID]
-			if !ok || !s.ports.IsProviderSchedulableForSelection(provider) {
-				if !ok {
-					filteredMissing++
-				} else {
-					filteredUnsched++
-				}
+			if !ok {
+				filteredMissing++
 				continue
 			}
-			if group != nil && group.RequirePrivacySet && !provider.IsPrivacySet() {
-				// Privacy rejection is effective for this request even if recording the
-				// provider's administrative error fails; that write does not admit the
-				// candidate.
-				_ = s.ports.SetProviderError(ctx, provider.ID,
-					fmt.Sprintf("Privacy not set, required by group [%s]", group.Name))
-				continue
-			}
-			if !s.ports.IsProviderAllowedForPlatform(provider, platform, useMixed) {
+			// Keep the routed summary's existing categories; privacy, upstream, quota,
+			// and RPM rejection omit a candidate without incrementing a summary counter.
+			switch candidateRejection(provider) {
+			case genericCandidateAccepted:
+				routingCandidates = append(routingCandidates, provider)
+			case genericCandidateUnschedulable:
+				filteredUnsched++
+			case genericCandidatePlatform:
 				filteredPlatform++
-				continue
-			}
-			if requestedModel != "" && !s.ports.IsModelSupportedByProviderWithContext(ctx, provider, requestedModel) {
+			case genericCandidateModelMapping:
 				filteredModelMapping++
-				continue
-			}
-			if !isUpstreamAllowed(provider) {
-				continue
-			}
-			if !s.ports.IsProviderSchedulableForModelSelection(ctx, provider, requestedModel) {
+			case genericCandidateModelScope:
 				filteredModelScope++
 				modelScopeSkippedIDs = append(modelScopeSkippedIDs, provider.ID)
-				continue
-			}
-
-			if !s.ports.IsProviderSchedulableForQuota(provider) {
-				continue
-			}
-
-			weightedSticky := advancedStickyWeighted && provider.ID == stickyProviderID
-			if !s.ports.IsProviderSchedulableForWindowCost(ctx, provider, weightedSticky) {
+			case genericCandidateWindowCost:
 				filteredWindowCost++
-				continue
 			}
-
-			if !s.ports.IsProviderSchedulableForRPM(ctx, provider, weightedSticky) {
-				continue
-			}
-			routingCandidates = append(routingCandidates, provider)
 		}
 
 		if s.ports.DebugModelRoutingEnabled() {
@@ -939,40 +976,7 @@ func (s *GenericSelector) Select(ctx context.Context, input SelectionInput) (*Fl
 			continue
 		}
 
-		if !s.ports.IsProviderSchedulableForSelection(acc) {
-			continue
-		}
-		if group != nil && group.RequirePrivacySet && !acc.IsPrivacySet() {
-			// Persisting the privacy diagnostic is best effort. The request rejects
-			// this provider on the resolved group's requirement regardless of the write
-			// outcome.
-			_ = s.ports.SetProviderError(ctx, acc.ID,
-				fmt.Sprintf("Privacy not set, required by group [%s]", group.Name))
-			continue
-		}
-		if !s.ports.IsProviderAllowedForPlatform(acc, platform, useMixed) {
-			continue
-		}
-		if requestedModel != "" && !s.ports.IsModelSupportedByProviderWithContext(ctx, acc, requestedModel) {
-			continue
-		}
-		if !isUpstreamAllowed(acc) {
-			continue
-		}
-		if !s.ports.IsProviderSchedulableForModelSelection(ctx, acc, requestedModel) {
-			continue
-		}
-
-		if !s.ports.IsProviderSchedulableForQuota(acc) {
-			continue
-		}
-
-		weightedSticky := advancedStickyWeighted && acc.ID == stickyProviderID
-		if !s.ports.IsProviderSchedulableForWindowCost(ctx, acc, weightedSticky) {
-			continue
-		}
-
-		if !s.ports.IsProviderSchedulableForRPM(ctx, acc, weightedSticky) {
+		if candidateRejection(acc) != genericCandidateAccepted {
 			continue
 		}
 		candidates = append(candidates, acc)

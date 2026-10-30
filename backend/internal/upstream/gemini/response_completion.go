@@ -42,14 +42,14 @@ func (s *ResponseAdapter) CompleteMessages(c *upstream.OutputContext, resp *http
 	if stream {
 		streamRes, err := s.HandleStreamingResponse(c, resp, startTime, originalModel)
 		if err != nil {
-			return nil, err
+			return streamRes.Usage, err
 		}
 		usage = streamRes.Usage
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := CollectGeminiSSE(resp.Body, true, s.Options.ObserveRaw)
+			collected, usageObj, err := s.collectSSE(resp, true)
 			if err != nil {
-				return nil, s.Options.ClaudeError(http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
+				return usageObj, err
 			}
 			// Collected maps contain decoded JSON values. Their encoding has no custom
 			// marshaler or reference cycle; optional raw observers already received each
@@ -100,14 +100,14 @@ func (s *ResponseAdapter) CompleteNative(c *upstream.OutputContext, resp *http.R
 	if stream {
 		streamRes, err := s.HandleNativeStreamingResponse(c, resp, startTime, isOAuth)
 		if err != nil {
-			return nil, err
+			return streamRes.Usage, err
 		}
 		usage = streamRes.Usage
 	} else {
 		if useUpstreamStream {
-			collected, usageObj, err := CollectGeminiSSE(resp.Body, isOAuth, s.Options.ObserveRaw)
+			collected, usageObj, err := s.collectSSE(resp, isOAuth)
 			if err != nil {
-				return nil, s.Options.GoogleError(http.StatusBadGateway, "Failed to read upstream stream")
+				return usageObj, err
 			}
 			// Collection supplies ordinary JSON-decoded maps, so serialization errors
 			// are discarded on this combined native path; raw observers have already
@@ -151,13 +151,13 @@ func (s *ResponseAdapter) CompleteOpenAI(c *upstream.OutputContext, resp *http.R
 	if clientStream {
 		streamRes, err := s.HandleOpenAICompatStreamingResponseFromGemini(c, resp, startTime, originalModel, isOAuth, includeUsage, protocol, clientToolMapping)
 		if err != nil {
-			return nil, err
+			return streamRes.Usage, err
 		}
 		usage = streamRes.Usage
 	} else if useUpstreamStream {
-		collected, usageObj, err := CollectGeminiSSE(resp.Body, isOAuth, s.Options.ObserveRaw)
+		collected, usageObj, err := s.collectSSE(resp, isOAuth)
 		if err != nil {
-			return nil, s.Options.CompatError(protocol, http.StatusBadGateway, "upstream_error", "Failed to read upstream stream")
+			return usageObj, err
 		}
 		// Collected maps contain decoded JSON values. Encoding them has no custom
 		// marshaler or reference cycle; optional raw observers already received the

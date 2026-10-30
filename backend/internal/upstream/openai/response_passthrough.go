@@ -25,20 +25,21 @@ import (
 // Passthrough Responses streams keep provider framing while normalizing
 // lifecycle payloads, tool identity, model spelling, and reconstructed terminal
 // output. Preamble lines wait until content or a selected failure starts
-// delivery. Headers are copied at entry, and the gateway heartbeat binding can
-// commit them before content; client-output policy separately excludes
-// configured heartbeat bytes from its recovery decision.
+// delivery. Headers are staged at entry, while the HTTP boundary can commit
+// downstream heartbeats before content. Client-output policy excludes recorded
+// heartbeat bytes from its recovery decision; failure callbacks receive upstream
+// headers directly so retry metadata does not depend on early client exposure.
 //
 // NativeOpenAI selects this reader's bare-error terminal mode. Error evidence
 // is observed before client trimming, and a missing response.failed can be
-// synthesized after a retained bare error. Ordinary content takeover stops
-// active heartbeat writes before the loop writes pending lines; synthetic EOF
-// and deferred flush paths still precede deferred heartbeat cleanup. Returned
+// synthesized after a retained bare error. Ordinary content delivery releases
+// pending lines through the HTTP output boundary; synthetic EOF and deferred
+// flush paths retain their own terminal and usage decisions. Returned
 // streaming results contain usage/timing/ID/image observations, while the
 // shared delivery/commit flags remain their zero values.
 
 // PassthroughOptions binds passthrough readers to model observation, output,
-// keepalive, and failure policy.
+// upstream observation and failure policy.
 type PassthroughOptions struct {
 	// ObserveModel optionally sees streaming upstream payload/model evidence before
 	// lifecycle normalization and client model replacement; buffered readers use
@@ -46,19 +47,15 @@ type PassthroughOptions struct {
 	ObserveModel func([]byte, string)
 	// StreamOptions supplies selected observation/restoration/failure hooks;
 	// passthrough uses NativeOpenAI for terminal mode and retains its separate
-	// heartbeat mechanism instead of the standard reader's timeout/staging execution.
+	// preamble staging instead of the standard reader's timeout execution.
 	StreamOptions
 	// NonStream supplies buffered body reading, terminal failure, restoration, and
 	// Compact delivery policy; the passthrough reader keeps the executor's
 	// response-body ownership.
 	NonStream NonStreamOptions
-	// Headers copies approved provider headers into output at entry; the gateway
-	// heartbeat binding copies them to its live writer before a beat can commit.
+	// Headers copies approved provider metadata into the codec's private map.
+	// The output sink applies it at delivery only if HTTP remains uncommitted.
 	Headers func(http.Header, http.Header)
-	// StartKeepalive returns a usable idempotent stop callback, including when
-	// disabled; gateway stopping waits for an active beat write before ordinary
-	// content takeover.
-	StartKeepalive func(http.Header) func()
 	// MissingUsage observes retained usage with response, terminal label, and
 	// disconnect evidence on normal return; early failed paths return before this
 	// callback.
@@ -68,9 +65,9 @@ type PassthroughOptions struct {
 	// output-specific failure policy.
 	MissingTerminal func(string)
 	// PassthroughFailoverWithModel proposes pre-output recovery using upstream
-	// request ID, failure bytes/message, and mapped model; caller policy decides
-	// the actual retry.
-	PassthroughFailoverWithModel func(string, []byte, string, string) error
+	// request ID, failure bytes/message, mapped model, and original response headers.
+	// Caller policy decides retry and retains headers for final error presentation.
+	PassthroughFailoverWithModel func(string, []byte, string, string, http.Header) error
 }
 
 // ReadPassthroughStreaming normalizes and forwards Responses SSE while
@@ -81,10 +78,10 @@ type PassthroughOptions struct {
 //
 // Raw model observation precedes lifecycle normalization and client
 // restoration. Preamble remains buffered until output policy permits delivery,
-// and ordinary content takeover stops the heartbeat callback before writes. The
+// and ordinary content delivery passes through the shared HTTP writer. The
 // result populates usage, ResponseID, and image fields, leaving
 // other StreamingResult flags zero. Synthetic EOF writes and the final deferred
-// flush occur before deferred heartbeat cleanup; callers use the request
+// flush retain their existing terminal ordering; callers use the request
 // writer's own observations for commitment and output state.
 func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstream.OutputContext, options PassthroughOptions, startTime time.Time, originalModel, mappedModel string) (*StreamingResult, error) {
 	options.Headers(c.Writer.Header(), resp.Header)
@@ -132,13 +129,6 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 	// empty terminal failure while semantic delivery remains eligible for request recovery.
 	pendingLines := make([]string, 0, 8)
 
-	// Prepared headers are already copied above. The gateway heartbeat binding
-	// can commit them during a reasoning wait and excludes its recorded comment
-	// bytes from client-output recovery policy; preamble body lines remain here.
-	stopKeepalive := options.StartKeepalive(c.Writer.Header())
-	// Deferred cleanup stops active heartbeat writes, but executes after the
-	// later-registered pending flush; ordinary content takeover calls stop sooner below.
-	defer stopKeepalive()
 	// Retain the pending flush decision across lines until an event separator
 	// or return; disconnected sinks skip that delivery while usage observations remain available.
 	flushPending := false
@@ -163,7 +153,7 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 		return true
 	}
 	// A retained bare error can end without response.failed; settle pending
-	// provider effects and emit a failed terminal before deferred heartbeat cleanup runs.
+	// provider effects and emit a failed terminal before final stream flushing.
 	ensureResponseFailedTerminal := func() {
 		if !sawBareError || sawResponseFailed || failureDelivered {
 			return
@@ -210,256 +200,265 @@ func ReadPassthroughStreaming(ctx context.Context, resp *http.Response, c *upstr
 
 	var lifecycleNormalizer wire.ResponseLifecycleNormalizer
 	pendingLifecycleHeader := ""
-	for documentScanner.Scan() {
-		line := documentScanner.Text()
-		if eventType, ok := wire.ExtractSSEEventLine(line); ok {
-			pendingSSEEventType = eventType
-			eventType = strings.TrimSpace(eventType)
-			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
-			if wire.IsResponseLifecycleEvent(eventType) {
-				// Retain lifecycle headers with their data until normalization decides
-				// type and duplication, preventing an orphaned header when its terminal
-				// payload is suppressed.
-				pendingLifecycleHeader = line
-				continue
-			}
+	var heartbeatFilter upstream.SSEHeartbeatLineFilter
+	// Preserve incomplete candidates at EOF, while complete heartbeat frames never
+	// enter protocol output or establish the reader's client-content commitment.
+	for {
+		more := documentScanner.Scan()
+		var lines [][]byte
+		if more {
+			lines = heartbeatFilter.Push([]byte(documentScanner.Text() + "\n"))
+		} else {
+			lines = heartbeatFilter.Flush()
 		}
-		lineStartsClientOutput := false
-		forceFlushFailedEvent := false
-		if data, ok := wire.ExtractSSEDataLine(line); ok {
-			dataBytes := []byte(data)
-			trimmedData := strings.TrimSpace(data)
-			rawEventType := wire.EffectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
-			if options.ObserveModel != nil {
-				options.ObserveModel(dataBytes, rawEventType)
-			}
-			normalizedData, normalizedType, duplicateTerminal := lifecycleNormalizer.Normalize(dataBytes, rawEventType)
-			if !bytes.Equal(normalizedData, dataBytes) {
-				dataBytes = normalizedData
-				data = string(dataBytes)
-				trimmedData = strings.TrimSpace(data)
-				line = "data: " + data
-			}
-			rawEventType = normalizedType
-			if needModelReplace && strings.Contains(data, mappedModel) {
-				line = wire.ReplaceModelInSSELine(line, mappedModel, originalModel)
-				if replacedData, replaced := wire.ExtractSSEDataLine(line); replaced {
-					dataBytes = []byte(replacedData)
-					trimmedData = strings.TrimSpace(replacedData)
-				}
-			}
-			if normalizedData, normalized := wire.NormalizeOpenAIResponsesFunctionCallArguments(dataBytes); normalized {
-				dataBytes = normalizedData
-				trimmedData = strings.TrimSpace(string(normalizedData))
-				line = "data: " + string(normalizedData)
-			}
-			if normalizedData, normalized := wire.NormalizeCompletedImageGenerationStatus(dataBytes); normalized {
-				dataBytes = normalizedData
-				trimmedData = strings.TrimSpace(string(normalizedData))
-				line = "data: " + string(normalizedData)
-			}
-			if trimmedData != "[DONE]" {
-				restoredData, restoreErr := options.RestoreNamespace(dataBytes)
-				if restoreErr != nil {
-					return resultWithUsage(), fmt.Errorf("restore OpenAI passthrough namespace response: %w", restoreErr)
-				}
-				restoredData = options.RestoreToolNames(restoredData, rawEventType)
-				if !bytes.Equal(restoredData, dataBytes) {
-					dataBytes = restoredData
-					trimmedData = strings.TrimSpace(string(restoredData))
-					line = "data: " + string(restoredData)
-				}
-			}
-			eventType := wire.EffectiveOpenAISSEEventType(dataBytes, rawEventType)
-			// Lifecycle normalization can turn done into failed; recompute suppression
-			// using that terminal identity so a stale event-line decision cannot hide the failure.
-			suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
-			if !capacityFailoverSuppressedLogged && options.NativeOpenAI &&
-				(eventType == "error" || eventType == "response.failed") &&
-				options.ClientOutputStarted(clientOutputStarted) &&
-				IsOpenAIUpstreamCapacityShedEvent(dataBytes) {
-				options.CapacitySuppressed(upstreamRequestID, eventType)
-				capacityFailoverSuppressedLogged = true
-			}
-			cyberHit := false
-			if eventType == "response.failed" || eventType == "error" {
-				if codexFailureTerminal && eventType == "error" {
-					sawBareError = true
-					bareErrorPayload = append(bareErrorPayload[:0], dataBytes...)
-					suppressCurrentEvent = true
-				} else if codexFailureTerminal && eventType == "response.failed" {
-					sawResponseFailed = true
-				}
-				responseFailedPending = !codexFailureTerminal || eventType == "response.failed"
-				failedMessage = ExtractOpenAISSEErrorMessage(dataBytes)
-				if failedMessage == "" {
-					failedMessage = "Upstream response failed"
-				}
-				// Observe terminal usage before policy recording and client trimming,
-				// retaining consumed-token evidence even when the failure copy later loses its usage field.
-				wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
-				if hit, code, msg := DetectOpenAICyberPolicy(dataBytes); hit {
-					cyberHit = true
-					options.MarkCyber(CyberObservation{
-						Code:           code,
-						Message:        msg,
-						Body:           options.TruncateString(string(dataBytes), 4096),
-						UpstreamStatus: http.StatusOK,
-						UpstreamInTok:  usage.InputTokens,
-						UpstreamOutTok: usage.OutputTokens,
-					})
-				}
-				outputStarted := options.ClientOutputStarted(clientOutputStarted)
-				if !outputStarted && !cyberHit {
-					if compactErr := options.CompactFallback(dataBytes, failedMessage); compactErr != nil {
-						return resultWithUsage(), compactErr
-					}
-				}
-				if outputStarted && !cyberHit {
-					if codexFailureTerminal && eventType == "error" {
-						// Retain provider effects until the authoritative failed terminal
-						// arrives, or apply them during bare-error EOF synthesis if no such terminal follows.
-						bareErrorProviderSideEffectsPending = true
-					} else {
-						options.TerminalSideEffects(dataBytes, failedMessage, resp.Header, mappedModel)
-						bareErrorProviderSideEffectsPending = false
-					}
-				}
-				if !outputStarted {
-					shouldFailover := false
-					if !cyberHit {
-						if eventType == "error" {
-							shouldFailover = OpenAIStreamErrorEventShouldFailover(dataBytes, failedMessage)
-						} else {
-							shouldFailover = OpenAIStreamFailedEventShouldFailover(dataBytes, failedMessage)
-						}
-					}
-					if shouldFailover {
-						return resultWithUsage(),
-							options.PassthroughFailoverWithModel(upstreamRequestID, dataBytes, failedMessage, mappedModel)
-					}
-					if !cyberHit && !sawBareError {
-						if status, errType, errMsg, matched := options.ErrorRule(dataBytes, failedMessage); matched {
-							// A matched rule commits its JSON client error after recording
-							// upstream evidence, keeping observation available despite customized
-							// status/type/message presentation.
-							options.RecordError(upstreamRequestID, "http_error", dataBytes, failedMessage)
-							options.MarkCommitted()
-							c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-							c.JSON(status, map[string]any{
-								"error": map[string]any{
-									"type":    errType,
-									"message": errMsg,
-								},
-							})
-							return resultWithUsage(), fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
-						}
-					}
-				}
-				forceFlushFailedEvent = true
-				sawFailedEvent = true
-			}
-			if trimmedData == "[DONE]" {
-				sawDone = true
-				terminalEventType = "[DONE]"
-			}
-			if options.OpenAIStreamEventIsTerminalWithType(trimmedData, eventType) {
-				sawTerminalEvent = true
-				if trimmedData != "[DONE]" {
-					terminalEventType = eventType
-				}
-			}
-			if responseID == "" {
-				responseID = wire.ExtractOpenAIResponseIDFromJSONBytes(dataBytes)
-			}
-			var responseEvent wire.ResponsesStreamEvent
-			if err := json.Unmarshal(dataBytes, &responseEvent); err == nil {
-				responseAccumulator.ProcessEvent(&responseEvent)
-			}
-			if imageOutput, ok := wire.ExtractImageGenerationOutputFromSSEData(dataBytes, streamSeenImages); ok {
-				streamImageOutputs = append(streamImageOutputs, imageOutput)
-			}
-			streamDoneItems.Observe(dataBytes)
-			if normalizedData, normalized := bridge.NormalizeResponsesStreamingTerminalOutput(dataBytes, responseAccumulator, streamDoneItems, streamImageOutputs); normalized {
-				dataBytes = normalizedData
-				data = string(normalizedData)
-				trimmedData = strings.TrimSpace(data)
-				line = "data: " + data
-				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
-			}
-			imageCounter.AddSSEData(dataBytes)
-			if sanitizedData, sanitized := SanitizeOpenAIResponseFailedEventForClient(
-				dataBytes,
-				eventType,
-				options.ClientOutputStarted(clientOutputStarted),
-			); sanitized {
-				dataBytes = sanitizedData
-				trimmedData = strings.TrimSpace(string(sanitizedData))
-				line = "data: " + string(sanitizedData)
-			}
-			lineStartsClientOutput = forceFlushFailedEvent || OpenAIStreamDataStartsClientOutput(trimmedData, eventType)
-			if lineStartsClientOutput && trimmedData != "[DONE]" && !wire.OpenAIStreamEventTypeIsTerminal(eventType) {
-				semanticOutputSeen = true
-			}
-			// This emptiness check applies to passthrough providers generally, before
-			// content commitment, so a lifecycle-only empty completion cannot settle as
-			// an ordinary success.
-			if (eventType == "response.completed" || eventType == "response.done") &&
-				!sawFailedEvent && !semanticOutputSeen && !clientOutputStarted &&
-				wire.OpenAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
-				return resultWithUsage(), options.EmptyCompleted(upstreamRequestID)
-			}
-			wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
-			if pendingLifecycleHeader != "" {
-				header := pendingLifecycleHeader
-				if eventType != strings.TrimSpace(pendingSSEEventType) {
-					header = "event: " + eventType
-				}
-				line = header + "\n" + line
-				pendingLifecycleHeader = ""
-			}
-			suppressCurrentEvent = suppressCurrentEvent || duplicateTerminal
-		}
-		if line == "" {
-			pendingLifecycleHeader = ""
-			pendingSSEEventType = ""
-			if suppressCurrentEvent {
-				suppressCurrentEvent = false
-				responseFailedPending = false
-				continue
-			}
-		}
-
-		if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
-			if !clientOutputStarted && !lineStartsClientOutput {
-				pendingLines = append(pendingLines, line)
-				continue
-			}
-			// Stop the controller and wait for an active beat before ordinary
-			// content writes take over; this callback is repeatable and does not join
-			// the worker goroutine.
-			if !clientOutputStarted {
-				stopKeepalive()
-			}
-			if !clientOutputStarted && len(pendingLines) > 0 {
-				if !writePendingLines() {
+		for _, rawLine := range lines {
+			line := strings.TrimSuffix(string(rawLine), "\n")
+			if eventType, ok := wire.ExtractSSEEventLine(line); ok {
+				pendingSSEEventType = eventType
+				eventType = strings.TrimSpace(eventType)
+				suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
+				if wire.IsResponseLifecycleEvent(eventType) {
+					// Retain lifecycle headers with their data until normalization decides
+					// type and duplication, preventing an orphaned header when its terminal
+					// payload is suppressed.
+					pendingLifecycleHeader = line
 					continue
 				}
 			}
-			if _, err := fmt.Fprintln(w, line); err != nil {
-				clientDisconnected = true
-				options.Logf("[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
-			} else {
-				clientOutputStarted = true
-				flushPending = true
-				if line == "" {
-					flushPendingOutput()
+			lineStartsClientOutput := false
+			forceFlushFailedEvent := false
+			if data, ok := wire.ExtractSSEDataLine(line); ok {
+				dataBytes := []byte(data)
+				trimmedData := strings.TrimSpace(data)
+				rawEventType := wire.EffectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+				if options.ObserveModel != nil {
+					options.ObserveModel(dataBytes, rawEventType)
+				}
+				normalizedData, normalizedType, duplicateTerminal := lifecycleNormalizer.Normalize(dataBytes, rawEventType)
+				if !bytes.Equal(normalizedData, dataBytes) {
+					dataBytes = normalizedData
+					data = string(dataBytes)
+					trimmedData = strings.TrimSpace(data)
+					line = "data: " + data
+				}
+				rawEventType = normalizedType
+				if needModelReplace && strings.Contains(data, mappedModel) {
+					line = wire.ReplaceModelInSSELine(line, mappedModel, originalModel)
+					if replacedData, replaced := wire.ExtractSSEDataLine(line); replaced {
+						dataBytes = []byte(replacedData)
+						trimmedData = strings.TrimSpace(replacedData)
+					}
+				}
+				if normalizedData, normalized := wire.NormalizeOpenAIResponsesFunctionCallArguments(dataBytes); normalized {
+					dataBytes = normalizedData
+					trimmedData = strings.TrimSpace(string(normalizedData))
+					line = "data: " + string(normalizedData)
+				}
+				if normalizedData, normalized := wire.NormalizeCompletedImageGenerationStatus(dataBytes); normalized {
+					dataBytes = normalizedData
+					trimmedData = strings.TrimSpace(string(normalizedData))
+					line = "data: " + string(normalizedData)
+				}
+				if trimmedData != "[DONE]" {
+					restoredData, restoreErr := options.RestoreNamespace(dataBytes)
+					if restoreErr != nil {
+						return resultWithUsage(), fmt.Errorf("restore OpenAI passthrough namespace response: %w", restoreErr)
+					}
+					restoredData = options.RestoreToolNames(restoredData, rawEventType)
+					if !bytes.Equal(restoredData, dataBytes) {
+						dataBytes = restoredData
+						trimmedData = strings.TrimSpace(string(restoredData))
+						line = "data: " + string(restoredData)
+					}
+				}
+				eventType := wire.EffectiveOpenAISSEEventType(dataBytes, rawEventType)
+				// Lifecycle normalization can turn done into failed; recompute suppression
+				// using that terminal identity so a stale event-line decision cannot hide the failure.
+				suppressCurrentEvent = codexFailureTerminal && (eventType == "error" || (sawBareError && !sawResponseFailed && eventType != "response.failed"))
+				if !capacityFailoverSuppressedLogged && options.NativeOpenAI &&
+					(eventType == "error" || eventType == "response.failed") &&
+					options.ClientOutputStarted(clientOutputStarted) &&
+					IsOpenAIUpstreamCapacityShedEvent(dataBytes) {
+					options.CapacitySuppressed(upstreamRequestID, eventType)
+					capacityFailoverSuppressedLogged = true
+				}
+				cyberHit := false
+				if eventType == "response.failed" || eventType == "error" {
+					if codexFailureTerminal && eventType == "error" {
+						sawBareError = true
+						bareErrorPayload = append(bareErrorPayload[:0], dataBytes...)
+						suppressCurrentEvent = true
+					} else if codexFailureTerminal && eventType == "response.failed" {
+						sawResponseFailed = true
+					}
+					responseFailedPending = !codexFailureTerminal || eventType == "response.failed"
+					failedMessage = ExtractOpenAISSEErrorMessage(dataBytes)
+					if failedMessage == "" {
+						failedMessage = "Upstream response failed"
+					}
+					// Observe terminal usage before policy recording and client trimming,
+					// retaining consumed-token evidence even when the failure copy later loses its usage field.
+					wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
+					if hit, code, msg := DetectOpenAICyberPolicy(dataBytes); hit {
+						cyberHit = true
+						options.MarkCyber(CyberObservation{
+							Code:           code,
+							Message:        msg,
+							Body:           options.TruncateString(string(dataBytes), 4096),
+							UpstreamStatus: http.StatusOK,
+							UpstreamInTok:  usage.InputTokens,
+							UpstreamOutTok: usage.OutputTokens,
+						})
+					}
+					outputStarted := options.ClientOutputStarted(clientOutputStarted)
+					if !outputStarted && !cyberHit {
+						if compactErr := options.CompactFallback(dataBytes, failedMessage); compactErr != nil {
+							return resultWithUsage(), compactErr
+						}
+					}
+					if outputStarted && !cyberHit {
+						if codexFailureTerminal && eventType == "error" {
+							// Retain provider effects until the authoritative failed terminal
+							// arrives, or apply them during bare-error EOF synthesis if no such terminal follows.
+							bareErrorProviderSideEffectsPending = true
+						} else {
+							options.TerminalSideEffects(dataBytes, failedMessage, resp.Header, mappedModel)
+							bareErrorProviderSideEffectsPending = false
+						}
+					}
+					if !outputStarted {
+						shouldFailover := false
+						if !cyberHit {
+							if eventType == "error" {
+								shouldFailover = OpenAIStreamErrorEventShouldFailover(dataBytes, failedMessage)
+							} else {
+								shouldFailover = OpenAIStreamFailedEventShouldFailover(dataBytes, failedMessage)
+							}
+						}
+						if shouldFailover {
+							return resultWithUsage(),
+								options.PassthroughFailoverWithModel(upstreamRequestID, dataBytes, failedMessage, mappedModel, resp.Header)
+						}
+						if !cyberHit && !sawBareError {
+							if status, errType, errMsg, matched := options.ErrorRule(dataBytes, failedMessage); matched {
+								// A matched rule commits its JSON client error after recording
+								// upstream evidence, keeping observation available despite customized
+								// status/type/message presentation.
+								options.RecordError(upstreamRequestID, "http_error", dataBytes, failedMessage)
+								options.MarkCommitted()
+								c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+								c.JSON(status, map[string]any{
+									"error": map[string]any{
+										"type":    errType,
+										"message": errMsg,
+									},
+								})
+								return resultWithUsage(), fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
+							}
+						}
+					}
+					forceFlushFailedEvent = true
+					sawFailedEvent = true
+				}
+				if trimmedData == "[DONE]" {
+					sawDone = true
+					terminalEventType = "[DONE]"
+				}
+				if options.OpenAIStreamEventIsTerminalWithType(trimmedData, eventType) {
+					sawTerminalEvent = true
+					if trimmedData != "[DONE]" {
+						terminalEventType = eventType
+					}
+				}
+				if responseID == "" {
+					responseID = wire.ExtractOpenAIResponseIDFromJSONBytes(dataBytes)
+				}
+				var responseEvent wire.ResponsesStreamEvent
+				if err := json.Unmarshal(dataBytes, &responseEvent); err == nil {
+					responseAccumulator.ProcessEvent(&responseEvent)
+				}
+				if imageOutput, ok := wire.ExtractImageGenerationOutputFromSSEData(dataBytes, streamSeenImages); ok {
+					streamImageOutputs = append(streamImageOutputs, imageOutput)
+				}
+				streamDoneItems.Observe(dataBytes)
+				if normalizedData, normalized := bridge.NormalizeResponsesStreamingTerminalOutput(dataBytes, responseAccumulator, streamDoneItems, streamImageOutputs); normalized {
+					dataBytes = normalizedData
+					data = string(normalizedData)
+					trimmedData = strings.TrimSpace(data)
+					line = "data: " + data
+					eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+				}
+				imageCounter.AddSSEData(dataBytes)
+				if sanitizedData, sanitized := SanitizeOpenAIResponseFailedEventForClient(
+					dataBytes,
+					eventType,
+					options.ClientOutputStarted(clientOutputStarted),
+				); sanitized {
+					dataBytes = sanitizedData
+					trimmedData = strings.TrimSpace(string(sanitizedData))
+					line = "data: " + string(sanitizedData)
+				}
+				lineStartsClientOutput = forceFlushFailedEvent || OpenAIStreamDataStartsClientOutput(trimmedData, eventType)
+				if lineStartsClientOutput && trimmedData != "[DONE]" && !wire.OpenAIStreamEventTypeIsTerminal(eventType) {
+					semanticOutputSeen = true
+				}
+				// This emptiness check applies to passthrough providers generally, before
+				// content commitment, so a lifecycle-only empty completion cannot settle as
+				// an ordinary success.
+				if (eventType == "response.completed" || eventType == "response.done") &&
+					!sawFailedEvent && !semanticOutputSeen && !clientOutputStarted &&
+					wire.OpenAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
+					return resultWithUsage(), options.EmptyCompleted(upstreamRequestID)
+				}
+				wire.ParseSSEUsageBytesWithType(dataBytes, eventType, usage)
+				if pendingLifecycleHeader != "" {
+					header := pendingLifecycleHeader
+					if eventType != strings.TrimSpace(pendingSSEEventType) {
+						header = "event: " + eventType
+					}
+					line = header + "\n" + line
+					pendingLifecycleHeader = ""
+				}
+				suppressCurrentEvent = suppressCurrentEvent || duplicateTerminal
+			}
+			if line == "" {
+				pendingLifecycleHeader = ""
+				pendingSSEEventType = ""
+				if suppressCurrentEvent {
+					suppressCurrentEvent = false
+					responseFailedPending = false
+					continue
 				}
 			}
+
+			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
+				if !clientOutputStarted && !lineStartsClientOutput {
+					pendingLines = append(pendingLines, line)
+					continue
+				}
+				if !clientOutputStarted && len(pendingLines) > 0 {
+					if !writePendingLines() {
+						continue
+					}
+				}
+				if _, err := fmt.Fprintln(w, line); err != nil {
+					clientDisconnected = true
+					options.Logf("[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
+				} else {
+					clientOutputStarted = true
+					flushPending = true
+					if line == "" {
+						flushPendingOutput()
+					}
+				}
+			}
+			if line == "" && responseFailedPending {
+				responseFailedPending = false
+				failureDelivered = true
+			}
 		}
-		if line == "" && responseFailedPending {
-			responseFailedPending = false
-			failureDelivered = true
+		if !more {
+			break
 		}
 	}
 	ensureResponseFailedTerminal()

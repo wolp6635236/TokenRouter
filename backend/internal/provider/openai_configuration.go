@@ -67,8 +67,8 @@ func HasOpenAIConfigurationPatch(credentials, extra map[string]any) bool {
 
 // NormalizeOpenAIAPIKeyConfiguration prepares an OpenAI record's compaction
 // and API-key compatibility settings in place. Nil and other-platform records
-// return nil; OpenAI records first receive normalized compaction switches
-// regardless of authentication type.
+// return nil. OpenAI records validate image-driver overrides and normalize
+// compaction switches before the API-key-specific configuration is processed.
 //
 // API-key credentials and Extra are shallow-copied before compatibility
 // validation. Merely having UpstreamProtocolsKey suppresses workload and
@@ -83,6 +83,9 @@ func NormalizeOpenAIAPIKeyConfiguration(provider *Record) error {
 		provider.Extra = maps.Clone(provider.Extra)
 		if provider.Extra == nil {
 			provider.Extra = map[string]any{}
+		}
+		if err := NormalizeCodexImageResponsesModel(provider.Extra); err != nil {
+			return err
 		}
 		DiscardDeprecatedProviderExtra(provider.Extra)
 		provider.Extra["openai_compact_mode"] = provider.GetOpenAICompactMode()

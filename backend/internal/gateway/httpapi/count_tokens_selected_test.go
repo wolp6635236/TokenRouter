@@ -29,11 +29,11 @@ import (
 // count fields, and absence of network work in the exercised local paths.
 
 // TestSelectedCountDispatchPreservesLocalAndUnsupportedPaths exercises Grok,
-// Kimi, Qoder, and Antigravity with a recording transport. The asserted result
+// Kimi, OpenCode, Qoder, and Antigravity with a recording transport. The asserted result
 // must be a positive local count or unsupported status, and the transport must
 // retain no request for those fixtures.
 func TestSelectedCountDispatchPreservesLocalAndUnsupportedPaths(t *testing.T) {
-	for _, platform := range []string{"grok", "qoder", "antigravity", "kimi"} {
+	for _, platform := range []string{"grok", "qoder", "antigravity", "kimi", "opencode"} {
 		t.Run(platform, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)

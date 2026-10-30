@@ -203,19 +203,29 @@ import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 // representation. The monetary display formats an absolute magnitude with a plus prefix
 // for nonnegative values, while negative values currently receive no minus prefix. The
 // displayed recharge total comes from the history response rather than a sum of the
-// visible page.
+// visible page, and a parent-supplied refresh key reloads the first page after an edit
+// made above the dialog.
 
-// props and emit connect the history subject, optional action visibility, and
-// parent-owned close, deposit, and withdrawal flows displayed by the modal.
-const props = defineProps<{
-  show: boolean // Parent-controlled dialog visibility.
-  // user supplies the selected account; null leaves identity-dependent operations waiting
-  // until the parent chooses an account.
-  user: AdminUser | null
-  // hideActions suppresses both deposit and withdrawal controls while leaving the
-  // history query and table available.
-  hideActions?: boolean
-}>()
+// props and emit connect the history subject, optional action visibility, the parent's
+// edit-refresh signal, and parent-owned close, deposit, and withdrawal flows displayed by
+// the modal.
+const props = withDefaults(
+  defineProps<{
+    show: boolean // Parent-controlled dialog visibility.
+    // user supplies the selected account; null leaves identity-dependent operations waiting
+    // until the parent chooses an account.
+    user: AdminUser | null
+    // hideActions suppresses both deposit and withdrawal controls while leaving the
+    // history query and table available.
+    hideActions?: boolean
+    // refreshKey reports balance edits completed above this dialog; each new value
+    // reloads the first record page while the dialog stays open.
+    refreshKey?: number
+  }>(),
+  {
+    refreshKey: 0,
+  },
+)
 const emit = defineEmits(['close', 'deposit', 'withdraw'])
 // The translation and balance-display services provide history labels and monetary text
 // in the configured balance unit used by this modal.
@@ -234,6 +244,9 @@ const totalRecharged = ref(0)
 // server-side category for the next history page load.
 const pageSize = 15
 const typeFilter = ref('')
+// historyGeneration numbers history requests so a late response from an earlier page,
+// filter, or refresh cannot replace newer results.
+let historyGeneration = 0
 
 // totalPages rounds the item count into history pages and keeps at least one page
 // available when the server returns no records.
@@ -272,23 +285,56 @@ const typeOptions = computed(() => [
   },
 ])
 
-// Opening clears the previous type filter and loads the first history page, keeping
-// navigation from the last viewed user out of the new query.
+// The dialog displays one account's history at a time. Opening, or switching accounts
+// while it stays open, clears the previous type filter and loads the first page; closing
+// or losing the account discards in-flight responses and the pending state so nothing
+// commits for a hidden or replaced account.
+watch([() => props.show, () => props.user?.id], ([open, userId], [wasOpen, previousUserId]) => {
+  const accountChanged = userId !== previousUserId
+  // A closing dialog releases its account instead of switching to another one, so the
+  // departing panel keeps its last rows while it fades out.
+  const closing = wasOpen && !open
+  // Rows, totals, and the page belong to the previous account. Keeping them while the
+  // replacement request runs would show its header over the old ledger, and a failed
+  // request would leave that ledger visible under the new account.
+  if (accountChanged && !closing) {
+    history.value = []
+    total.value = 0
+    totalRecharged.value = 0
+    currentPage.value = 1
+  }
+  if (!open || !userId) {
+    historyGeneration += 1
+    loading.value = false
+    return
+  }
+  if (!wasOpen || accountChanged) {
+    typeFilter.value = ''
+    loadHistory(1)
+  }
+})
+
+// A new refresh key follows an adjustment made in the editor above this dialog. The first
+// page reloads so the new entry and updated totals appear under the open dialog, while a
+// key change delivered while the dialog is closed starts no request.
 watch(
-  () => props.show,
-  (v) => {
-    if (v && props.user) {
-      typeFilter.value = ''
-      loadHistory(1)
-    }
+  () => props.refreshKey,
+  () => {
+    if (props.show) loadHistory(1)
   },
 )
 
 // loadHistory requests one page for the selected user and optional type filter. Missing
 // items and totals become empty or zero values, while request errors are logged and
 // retain the previously displayed history.
+//
+// Each request takes the next generation number, and only the newest generation may
+// commit items, totals, and the loading flag. A page click, filter change, reopening for
+// another user, or an edit refresh can therefore overlap an earlier request without the
+// late response replacing fresher history.
 const loadHistory = async (page: number) => {
   if (!props.user) return
+  const generation = ++historyGeneration
   loading.value = true
   currentPage.value = page
   try {
@@ -298,15 +344,16 @@ const loadHistory = async (page: number) => {
       pageSize,
       typeFilter.value || undefined,
     )
+    if (generation !== historyGeneration) return
     history.value = res.items || []
     total.value = res.total || 0
     totalRecharged.value = res.total_recharged || 0
   } catch (error) {
     // History failures retain the last response and recharge total while recording the
-    // error; pending feedback still ends in the finally block.
+    // error; pending feedback still ends when the newest request settles.
     console.error('Failed to load balance history:', error)
   } finally {
-    loading.value = false
+    if (generation === historyGeneration) loading.value = false
   }
 }
 

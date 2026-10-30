@@ -29,9 +29,37 @@ type UsageLogCreate struct {
 	conflict []sql.ConflictOption
 }
 
+// SetRequestSource sets the "request_source" field.
+func (_c *UsageLogCreate) SetRequestSource(v string) *UsageLogCreate {
+	_c.mutation.SetRequestSource(v)
+	return _c
+}
+
+// SetNillableRequestSource sets the "request_source" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableRequestSource(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetRequestSource(*v)
+	}
+	return _c
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (_c *UsageLogCreate) SetSystemUsage(v map[string]interface{}) *UsageLogCreate {
+	_c.mutation.SetSystemUsage(v)
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *UsageLogCreate) SetUserID(v int64) *UsageLogCreate {
 	_c.mutation.SetUserID(v)
+	return _c
+}
+
+// SetNillableUserID sets the "user_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableUserID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetUserID(*v)
+	}
 	return _c
 }
 
@@ -66,6 +94,14 @@ func (_c *UsageLogCreate) SetNillableTeamID(v *int64) *UsageLogCreate {
 // SetAPIKeyID sets the "api_key_id" field.
 func (_c *UsageLogCreate) SetAPIKeyID(v int64) *UsageLogCreate {
 	_c.mutation.SetAPIKeyID(v)
+	return _c
+}
+
+// SetNillableAPIKeyID sets the "api_key_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableAPIKeyID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetAPIKeyID(*v)
+	}
 	return _c
 }
 
@@ -786,6 +822,10 @@ func (_c *UsageLogCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *UsageLogCreate) defaults() {
+	if _, ok := _c.mutation.RequestSource(); !ok {
+		v := usagelog.DefaultRequestSource
+		_c.mutation.SetRequestSource(v)
+	}
 	if _, ok := _c.mutation.Platform(); !ok {
 		v := usagelog.DefaultPlatform
 		_c.mutation.SetPlatform(v)
@@ -882,11 +922,13 @@ func (_c *UsageLogCreate) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_c *UsageLogCreate) check() error {
-	if _, ok := _c.mutation.UserID(); !ok {
-		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "UsageLog.user_id"`)}
+	if _, ok := _c.mutation.RequestSource(); !ok {
+		return &ValidationError{Name: "request_source", err: errors.New(`ent: missing required field "UsageLog.request_source"`)}
 	}
-	if _, ok := _c.mutation.APIKeyID(); !ok {
-		return &ValidationError{Name: "api_key_id", err: errors.New(`ent: missing required field "UsageLog.api_key_id"`)}
+	if v, ok := _c.mutation.RequestSource(); ok {
+		if err := usagelog.RequestSourceValidator(v); err != nil {
+			return &ValidationError{Name: "request_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_source": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.ProviderID(); !ok {
 		return &ValidationError{Name: "provider_id", err: errors.New(`ent: missing required field "UsageLog.provider_id"`)}
@@ -1051,12 +1093,6 @@ func (_c *UsageLogCreate) check() error {
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "UsageLog.created_at"`)}
 	}
-	if len(_c.mutation.UserIDs()) == 0 {
-		return &ValidationError{Name: "user", err: errors.New(`ent: missing required edge "UsageLog.user"`)}
-	}
-	if len(_c.mutation.APIKeyIDs()) == 0 {
-		return &ValidationError{Name: "api_key", err: errors.New(`ent: missing required edge "UsageLog.api_key"`)}
-	}
 	if len(_c.mutation.ProviderIDs()) == 0 {
 		return &ValidationError{Name: "provider", err: errors.New(`ent: missing required edge "UsageLog.provider"`)}
 	}
@@ -1087,9 +1123,17 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		_spec = sqlgraph.NewCreateSpec(usagelog.Table, sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64))
 	)
 	_spec.OnConflict = _c.conflict
+	if value, ok := _c.mutation.RequestSource(); ok {
+		_spec.SetField(usagelog.FieldRequestSource, field.TypeString, value)
+		_node.RequestSource = value
+	}
+	if value, ok := _c.mutation.SystemUsage(); ok {
+		_spec.SetField(usagelog.FieldSystemUsage, field.TypeJSON, value)
+		_node.SystemUsage = value
+	}
 	if value, ok := _c.mutation.BillingUserID(); ok {
 		_spec.SetField(usagelog.FieldBillingUserID, field.TypeInt64, value)
-		_node.BillingUserID = value
+		_node.BillingUserID = &value
 	}
 	if value, ok := _c.mutation.Platform(); ok {
 		_spec.SetField(usagelog.FieldPlatform, field.TypeString, value)
@@ -1293,7 +1337,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.UserID = nodes[0]
+		_node.UserID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.APIKeyIDs(); len(nodes) > 0 {
@@ -1310,7 +1354,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.APIKeyID = nodes[0]
+		_node.APIKeyID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.ProviderIDs(); len(nodes) > 0 {
@@ -1388,7 +1432,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 // of the `INSERT` statement. For example:
 //
 //	client.UsageLog.Create().
-//		SetUserID(v).
+//		SetRequestSource(v).
 //		OnConflict(
 //			// Update the row with the new values
 //			// the was proposed for insertion.
@@ -1397,7 +1441,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.UsageLogUpsert) {
-//			SetUserID(v+v).
+//			SetRequestSource(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *UsageLogCreate) OnConflict(opts ...sql.ConflictOption) *UsageLogUpsertOne {
@@ -1433,6 +1477,36 @@ type (
 	}
 )
 
+// SetRequestSource sets the "request_source" field.
+func (u *UsageLogUpsert) SetRequestSource(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldRequestSource, v)
+	return u
+}
+
+// UpdateRequestSource sets the "request_source" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateRequestSource() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldRequestSource)
+	return u
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (u *UsageLogUpsert) SetSystemUsage(v map[string]interface{}) *UsageLogUpsert {
+	u.Set(usagelog.FieldSystemUsage, v)
+	return u
+}
+
+// UpdateSystemUsage sets the "system_usage" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateSystemUsage() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldSystemUsage)
+	return u
+}
+
+// ClearSystemUsage clears the value of the "system_usage" field.
+func (u *UsageLogUpsert) ClearSystemUsage() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldSystemUsage)
+	return u
+}
+
 // SetUserID sets the "user_id" field.
 func (u *UsageLogUpsert) SetUserID(v int64) *UsageLogUpsert {
 	u.Set(usagelog.FieldUserID, v)
@@ -1442,6 +1516,12 @@ func (u *UsageLogUpsert) SetUserID(v int64) *UsageLogUpsert {
 // UpdateUserID sets the "user_id" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdateUserID() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldUserID)
+	return u
+}
+
+// ClearUserID clears the value of the "user_id" field.
+func (u *UsageLogUpsert) ClearUserID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldUserID)
 	return u
 }
 
@@ -1496,6 +1576,12 @@ func (u *UsageLogUpsert) SetAPIKeyID(v int64) *UsageLogUpsert {
 // UpdateAPIKeyID sets the "api_key_id" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdateAPIKeyID() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldAPIKeyID)
+	return u
+}
+
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsert) ClearAPIKeyID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldAPIKeyID)
 	return u
 }
 
@@ -2408,6 +2494,41 @@ func (u *UsageLogUpsertOne) Update(set func(*UsageLogUpsert)) *UsageLogUpsertOne
 	return u
 }
 
+// SetRequestSource sets the "request_source" field.
+func (u *UsageLogUpsertOne) SetRequestSource(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestSource(v)
+	})
+}
+
+// UpdateRequestSource sets the "request_source" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateRequestSource() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestSource()
+	})
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (u *UsageLogUpsertOne) SetSystemUsage(v map[string]interface{}) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetSystemUsage(v)
+	})
+}
+
+// UpdateSystemUsage sets the "system_usage" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateSystemUsage() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateSystemUsage()
+	})
+}
+
+// ClearSystemUsage clears the value of the "system_usage" field.
+func (u *UsageLogUpsertOne) ClearSystemUsage() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearSystemUsage()
+	})
+}
+
 // SetUserID sets the "user_id" field.
 func (u *UsageLogUpsertOne) SetUserID(v int64) *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
@@ -2419,6 +2540,13 @@ func (u *UsageLogUpsertOne) SetUserID(v int64) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateUserID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateUserID()
+	})
+}
+
+// ClearUserID clears the value of the "user_id" field.
+func (u *UsageLogUpsertOne) ClearUserID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUserID()
 	})
 }
 
@@ -2482,6 +2610,13 @@ func (u *UsageLogUpsertOne) SetAPIKeyID(v int64) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateAPIKeyID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateAPIKeyID()
+	})
+}
+
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsertOne) ClearAPIKeyID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAPIKeyID()
 	})
 }
 
@@ -3628,7 +3763,7 @@ func (_c *UsageLogCreateBulk) ExecX(ctx context.Context) {
 //		// Override some of the fields with custom
 //		// update values.
 //		Update(func(u *ent.UsageLogUpsert) {
-//			SetUserID(v+v).
+//			SetRequestSource(v+v).
 //		}).
 //		Exec(ctx)
 func (_c *UsageLogCreateBulk) OnConflict(opts ...sql.ConflictOption) *UsageLogUpsertBulk {
@@ -3704,6 +3839,41 @@ func (u *UsageLogUpsertBulk) Update(set func(*UsageLogUpsert)) *UsageLogUpsertBu
 	return u
 }
 
+// SetRequestSource sets the "request_source" field.
+func (u *UsageLogUpsertBulk) SetRequestSource(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetRequestSource(v)
+	})
+}
+
+// UpdateRequestSource sets the "request_source" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateRequestSource() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateRequestSource()
+	})
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (u *UsageLogUpsertBulk) SetSystemUsage(v map[string]interface{}) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetSystemUsage(v)
+	})
+}
+
+// UpdateSystemUsage sets the "system_usage" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateSystemUsage() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateSystemUsage()
+	})
+}
+
+// ClearSystemUsage clears the value of the "system_usage" field.
+func (u *UsageLogUpsertBulk) ClearSystemUsage() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearSystemUsage()
+	})
+}
+
 // SetUserID sets the "user_id" field.
 func (u *UsageLogUpsertBulk) SetUserID(v int64) *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
@@ -3715,6 +3885,13 @@ func (u *UsageLogUpsertBulk) SetUserID(v int64) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdateUserID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateUserID()
+	})
+}
+
+// ClearUserID clears the value of the "user_id" field.
+func (u *UsageLogUpsertBulk) ClearUserID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUserID()
 	})
 }
 
@@ -3778,6 +3955,13 @@ func (u *UsageLogUpsertBulk) SetAPIKeyID(v int64) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdateAPIKeyID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateAPIKeyID()
+	})
+}
+
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsertBulk) ClearAPIKeyID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAPIKeyID()
 	})
 }
 

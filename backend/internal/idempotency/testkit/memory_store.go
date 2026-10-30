@@ -140,33 +140,6 @@ func (r *MemoryStore) TryReclaim(_ context.Context, id int64, fromStatus string,
 	return false, nil
 }
 
-// ExtendProcessingLock updates both deadlines for the requested fixture record
-// when its processing state and fingerprint still match. False identifies missing,
-// finished, or differently fingerprinted records, and prior lock expiry is not checked.
-//
-// The fingerprint describes a request rather than one acquisition of its record.
-// Its comparison matches the SQL command adapter, including accepting another
-// acquisition with that same fingerprint. Fixtures requiring owner-token renewal
-// use the maintenance lease store instead of this HTTP command store.
-func (r *MemoryStore) ExtendProcessingLock(_ context.Context, id int64, requestFingerprint string, newLockedUntil, newExpiresAt time.Time) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// Check processing identity before mutating deadlines under the store lock,
-	// retaining the SQL adapter's conditional renewal behavior across competing HTTP fixture calls.
-	for _, rec := range r.data {
-		if rec.ID != id {
-			continue
-		}
-		if rec.Status != idempotency.IdempotencyStatusProcessing || rec.RequestFingerprint != requestFingerprint {
-			return false, nil
-		}
-		rec.LockedUntil = &newLockedUntil
-		rec.ExpiresAt = newExpiresAt
-		return true, nil
-	}
-	return false, nil
-}
-
 // MarkSucceeded replaces outcome fields for the fixture record identified by ID,
 // clearing its lock and failure reason. Missing IDs succeed silently, matching
 // the SQL adapter's lack of an affected-row check for ordinary command completion.

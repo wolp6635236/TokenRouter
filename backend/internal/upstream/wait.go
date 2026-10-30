@@ -2,11 +2,15 @@ package upstream
 
 import (
 	"context"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
 // wait.go waits for a retry delay or request cancellation and releases its
-// timer.
+// timer, and reads the retry deadline a provider supplies in Retry-After.
 // A retry delay needs to finish either when its timer fires or when the
 // request is cancelled. Nonpositive delays finish immediately, before
 // consulting the context, so callers can use the same helper for an already-resolved
@@ -51,4 +55,26 @@ func WaitContext(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// RetryAfterResetTime interprets Retry-After as positive finite seconds or a
+// future HTTP date relative to now. Invalid, nonpositive, and duration-sized
+// overflow values return nil; numeric fractions convert to nanoseconds with
+// fractional nanoseconds truncated.
+func RetryAfterResetTime(headers http.Header, now time.Time) *time.Time {
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds >= float64(math.MaxInt64)/float64(time.Second) {
+			return nil
+		}
+		// Convert the finite seconds delay to nanoseconds after the
+		// range check; fractional nanoseconds truncate when forming the
+		// duration used by cooldown consumers.
+		reset := now.Add(time.Duration(seconds * float64(time.Second)))
+		return &reset
+	}
+	if reset, err := http.ParseTime(raw); err == nil && reset.After(now) {
+		return &reset
+	}
+	return nil
 }

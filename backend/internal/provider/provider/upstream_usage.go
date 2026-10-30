@@ -8,6 +8,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/deepseek"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/kimi"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/opencode"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usagecontract"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/usageprovider"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/zhipu"
@@ -16,7 +17,7 @@ import (
 // upstream_usage.go registers usage adapters and dispatches provider usage
 // queries through their prepared requests.
 // Native usage queries select a named adapter and bind its technical request
-// before execution. The registry installs the eight catalogued adapters for
+// before execution. The registry installs the catalogued adapters for
 // fixed platform or relay protocols, while provider services own shared query
 // lifecycle, caching, and identity rechecks around this execution layer.
 
@@ -55,6 +56,7 @@ type UpstreamUsageExecution struct {
 func NewUpstreamUsageExecution(options UpstreamUsageExecutionOptions) *UpstreamUsageExecution {
 	source := &UpstreamUsageExecution{Options: options, adapters: make(map[string]usagecontract.Adapter)}
 	factories := map[string]func() usagecontract.Adapter{
+		provider.UpstreamUsageAdapterOpenCodeGo:      func() usagecontract.Adapter { return &opencode.GoUsageAdapter{} },
 		provider.UpstreamUsageAdapterSub2API:         func() usagecontract.Adapter { return &usageprovider.Sub2APIUsageAdapter{} },
 		provider.UpstreamUsageAdapterNewAPI:          func() usagecontract.Adapter { return &usageprovider.NewAPIUsageAdapter{} },
 		provider.UpstreamUsageAdapterDerouter:        func() usagecontract.Adapter { return &usageprovider.DerouterUsageAdapter{} },

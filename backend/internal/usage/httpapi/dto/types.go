@@ -8,6 +8,7 @@ import (
 	billinghttp "github.com/TokenFlux/TokenRouter/internal/billing/httpapi"
 	identitydto "github.com/TokenFlux/TokenRouter/internal/identity/httpapi/dto"
 	routingdto "github.com/TokenFlux/TokenRouter/internal/routing/httpapi/dto"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // types.go defines user and administrator usage-response fields and
@@ -35,9 +36,9 @@ type (
 // HTTP encoding.
 type UsageLog struct {
 	ID         int64  `json:"id"`                // usage row identifier
-	UserID     int64  `json:"user_id"`           // acting user identifier
+	UserID     *int64 `json:"user_id"`           // acting user identifier
 	TeamID     *int64 `json:"team_id,omitempty"` // optional team identifier omitted when nil
-	APIKeyID   int64  `json:"api_key_id"`        // used key identifier
+	APIKeyID   *int64 `json:"api_key_id"`        // used key identifier
 	ProviderID int64  `json:"provider_id"`       // execution provider identifier
 	Platform   string `json:"platform"`          // stored execution platform
 	RequestID  string `json:"request_id"`        // local diagnostic request identifier
@@ -127,7 +128,9 @@ type UsageLog struct {
 // AdminUsageLog carries usage details with administrator model, provider-cost
 // and timing observations.
 type AdminUsageLog struct {
-	UsageLog // embedded regular usage response
+	RequestSource string             `json:"request_source"`         // recorded customer or system source
+	SystemUsage   *usage.SystemUsage `json:"system_usage,omitempty"` // optional internal execution evidence
+	UsageLog                         // embedded regular usage response
 
 	// DetailedTiming is joined by the administrator handler from http.access
 	// observations. Nil leaves the timing object omitted when lookup finds no
@@ -225,6 +228,7 @@ type UsageLogTiming struct {
 // UsageCleanupFilters carries the filter fields exposed in cleanup-task HTTP
 // responses.
 type UsageCleanupFilters struct {
+	RequestSource string `json:"request_source,omitempty"` // optional source filter
 	// StartTime and EndTime represent the cleanup store's inclusive bounds. The
 	// creation handler expands an end date by a fixed twenty-four hours minus
 	// one nanosecond before persisting these instants.

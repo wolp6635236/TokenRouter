@@ -41,6 +41,11 @@ export interface IntervalFormEntry {
 // fields use million-token units in the form, media request prices retain their billing units,
 // and empty inputs are normalized during serialization.
 export interface PricingFormEntry {
+  // reference_model remains editable draft state when custom mode is selected; only
+  // reference mode sends its trimmed value to the configuration API.
+  reference_model?: string // Retained reference target draft.
+  reference_mode?: boolean // Selects reference-only serialization.
+
   models: string[] // ordered model patterns
   billing_mode: BillingMode // selected billing mode
 

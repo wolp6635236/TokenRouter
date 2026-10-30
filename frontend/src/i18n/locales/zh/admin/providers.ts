@@ -6,7 +6,19 @@
 export default {
   // Providers Management
   providers: {
-    jev: { description: '使用 API Key 调用 TypeSafe 的 SystemOne 决策模型。' },
+    opencode: {
+      baseUrlHint:
+        '留空使用当前模式的官方地址。自定义根地址填到 /inference 或 /inference/go，各协议地址可在「请求与协议」中单独覆盖。',
+      payg: 'Console / Zen（按量）',
+      paygDesc: '通过 OpenCode Zen 按用量计费。',
+      go: 'OpenCode Go',
+      goDesc: '订阅制，按滚动的五小时、每周和每月窗口计算用量。',
+      modelProtocols: '模型协议',
+      modelProtocolsHint:
+        '查看目录建议，或为指定模型手动设置协议。删除覆盖后使用目录选择，两种服务模式分别保存配置。',
+      catalogSuggestion: '目录建议',
+      selectProtocol: '选择协议',
+    },
     title: '提供商管理',
     description: '管理上游 AI 服务的接入配置和凭据',
     tabs: {
@@ -350,6 +362,8 @@ export default {
       baseUrl: '查询 Base URL 覆盖',
       baseUrlPlaceholder: '留空则使用提供商转发 Base URL',
       baseUrlHint: '所选适配器会固定请求路径和格式。留空即可复用提供商的 Base URL。',
+      openCodeBaseUrlHint: '留空查询 https://opencode.ai。Go 管理地址与推理地址分别配置。',
+      status: { rateLimited: '已达到用量限制' },
       derouterBaseUrlHint:
         '使用提供商的 Account Key 查询可用余额（USD）。留空使用 https://cf-api.derouter.ai，也可填写管理接口的根地址。',
       walletAccessToken: 'New API 用户访问令牌（可选）',
@@ -637,11 +651,8 @@ export default {
         endpoints: '协议端点',
         responsesFallbackDesc:
           '该供应商没有原生 Responses 端点，Responses 请求将转换为 Chat Completions。',
-        chatCompletions: 'Chat Completions',
         chatCompletionsDesc: '标准 OpenAI 兼容端点，其他格式请求将被转换。',
-        anthropic: 'Anthropic',
         anthropicDesc: '直通供应商原生 Anthropic 端点，零转换，适配 Claude Code。',
-        responses: 'Responses',
         responsesDesc: '供应商原生 Responses 端点，适配 Codex。',
       },
       zhipuTeam: {
@@ -1062,6 +1073,10 @@ export default {
       codexFingerprintFull: '完全收敛',
       codexImageToolDesc:
         '控制对话请求中的生图工具。分组设置优先于提供商设置，不影响独立的图片生成、编辑接口。',
+      imageResponsesModel: '生图主控模型',
+      imageResponsesModelDesc:
+        'OAuth 图片生成和编辑时调用图片工具的文本模型。留空使用默认值，图片型号仍由模型配置决定。',
+      imageResponsesModelDefault: '默认（gpt-6-luna）',
       codexImageToolInherit: '跟随分组和全局设置',
       codexImageToolInheritDesc:
         '本提供商不单独指定；分组设置了策略时按分组执行，否则使用全局设置。',
@@ -1172,6 +1187,7 @@ export default {
     syncUpstreamModelsEmpty: '上游没有返回可同步的模型',
     syncUpstreamModelsFailed: '同步上游模型失败',
     syncUpstreamModelsError: '同步上游模型失败：{message}',
+    saveBeforeSync: '连接设置有未保存的更改，保存后才能同步上游模型。',
     clearAllModels: '清除所有模型',
     customModelName: '自定义模型名称',
     enterCustomModelName: '输入自定义模型名称',

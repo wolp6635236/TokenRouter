@@ -10,6 +10,7 @@ import (
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // service.go buffers request snapshots, flushes versioned batches, and drains
@@ -65,7 +66,10 @@ type Repository interface {
 // Usage exposes retained usage-record cost and token counts in request
 // diagnostics.
 type Usage struct {
-	DurationMs *int64 `json:"duration_ms"` // measured upstream execution duration
+	RequestSource string             `json:"request_source"`          // recorded customer or system source
+	SystemUsage   *usage.SystemUsage `json:"system_usage,omitempty"`  // optional internal execution evidence
+	ProviderCost  *float64           `json:"provider_cost,omitempty"` // known provider cost including multiplier
+	DurationMs    *int64             `json:"duration_ms"`             // measured upstream execution duration
 
 	Timings *timing.Performance `json:"timings,omitempty"` // usage-owned performance snapshot
 	TTFTMs  *int                `json:"ttft_ms"`           // selected upstream latency milliseconds

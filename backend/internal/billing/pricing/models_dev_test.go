@@ -86,7 +86,7 @@ func TestModelsDevZeroCacheWriteDoesNotUseModelFallback(t *testing.T) {
 }
 
 // TestModelsDevImageOutputScope converts original Google image, research, text,
-// Omni, and relay entries. Ordinary outputs keep their text prices, while the
+// Omni, and hosted entries. Ordinary outputs keep their text prices, while the
 // original image entry's absent text output remains unavailable.
 func TestModelsDevImageOutputScope(t *testing.T) {
 	catalog, err := modelcatalog.Parse([]byte(`{"providers":{
@@ -96,12 +96,12 @@ func TestModelsDevImageOutputScope(t *testing.T) {
 			"gemini-text-test":{"cost":{"input":2,"output":12},"modalities":{"output":["text"]}},
 			"gemini-omni-test":{"cost":{"input":2,"output":12},"modalities":{"output":["text","image","video"]}}
 		}},
-		"openrouter":{"models":{"gemini-image-test":{"cost":{"input":1,"output":9},"modalities":{"output":["text","image"]}}}}
+		"google-vertex":{"models":{"gemini-image-test":{"cost":{"input":1,"output":9},"modalities":{"output":["text","image"]}}}}
 	}}`))
 	require.NoError(t, err)
 	entries, _, err := ParsePricingEntries(ModelsDevPrices(catalog))
 	require.NoError(t, err)
-	for model, price := range map[string]float64{"deep-research-test": 12e-6, "gemini-text-test": 12e-6, "gemini-omni-test": 12e-6, "openrouter/gemini-image-test": 9e-6} {
+	for model, price := range map[string]float64{"deep-research-test": 12e-6, "gemini-text-test": 12e-6, "gemini-omni-test": 12e-6, "google-vertex/gemini-image-test": 9e-6} {
 		value, err := ResolveModelPricing(model, entries[model])
 		require.NoError(t, err)
 		// Text output keeps its quoted unit after million-to-token conversion; allow

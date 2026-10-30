@@ -2,7 +2,9 @@ package routing_test
 
 import (
 	"context"
+	"errors"
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,10 +17,26 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 )
 
-// A provider shared by two groups contributes its full limits and observed
-// usage to each summary. These fixtures convert stored provider rows into
-// scalar capacity snapshots, while counter spies show which provider IDs and
-// session timeouts the batch service actually requests.
+// group_capacity_external_test.go checks group capacity totals and the provider
+// identities requested from runtime counters. Stored-record fixtures cover
+// quota observation, while direct snapshots expose limit and timeout boundaries
+// before provider projection can normalize them. Shared providers contribute
+// their full limits and usage to every associated group.
+
+// groupCapacityContractFixture supplies snapshots and records capacity query
+// order for both public read paths.
+type groupCapacityContractFixture struct {
+	providers   []provider.CapacitySnapshot   // configured single-group provider snapshots
+	rows        []routing.CapacityProviderRow // configured batch membership rows
+	providerErr error                         // configured provider query failure
+	counts      map[int64]int                 // configured runtime count entries
+	counterErr  error                         // configured runtime counter failure
+	calls       []string                      // recorded query execution order
+	// requested and timeouts copy query arguments before recording them. Later
+	// mutations by the capacity service cannot change the fixture's assertions.
+	requested map[string][]int64      // copied provider query identities
+	timeouts  map[int64]time.Duration // copied session idle durations
+}
 
 // testCapacityProviders adapts stored provider records into observed capacity
 // snapshots for tests.
@@ -146,6 +164,220 @@ type groupCapacityRPMCacheStub struct {
 	// requested copies each query's ID slice. Later caller mutations cannot
 	// change the provider identities retained for this fixture's assertions.
 	requested []int64 // copied queried RPM provider IDs
+}
+
+// TestGroupCapacitySingleAndBatchContributions supplies the same provider
+// memberships through both public capacity paths. It protects limit totals,
+// partial runtime counts, query gating, idle defaults, and single-result identity.
+func TestGroupCapacitySingleAndBatchContributions(t *testing.T) {
+	tests := []struct {
+		name         string                       // capacity boundary scenario name
+		providers    []provider.CapacitySnapshot  // supplied provider membership snapshots
+		want         routing.GroupCapacitySummary // expected summary without group identity
+		wantTimeouts map[int64]time.Duration      // expected bounded session durations
+		wantSessions bool                         // whether sessions are queried
+		wantRPM      bool                         // whether RPM is queried
+	}{
+		{
+			name: "bounded with missing counters",
+			providers: []provider.CapacitySnapshot{
+				{ID: 1, Concurrency: 3, MaxSessions: 4, SessionIdleTimeoutMinutes: 7, BaseRPM: 11},
+				{ID: 2, Concurrency: 5, MaxSessions: 6, SessionIdleTimeoutMinutes: 9, BaseRPM: 13},
+			},
+			want:         routing.GroupCapacitySummary{ConcurrencyMax: 8, ConcurrencyUsed: 2, SessionsMax: 10, SessionsUsed: 2, RPMMax: 24, RPMUsed: 2},
+			wantTimeouts: map[int64]time.Duration{1: 7 * time.Minute, 2: 9 * time.Minute},
+			wantSessions: true,
+			wantRPM:      true,
+		},
+		{
+			name: "unbounded member still contributes usage",
+			providers: []provider.CapacitySnapshot{
+				{ID: 1, Concurrency: -2, MaxSessions: -3, BaseRPM: -5},
+				{ID: 2, Concurrency: 5, MaxSessions: 6, SessionIdleTimeoutMinutes: 8, BaseRPM: 13},
+			},
+			want:         routing.GroupCapacitySummary{ConcurrencyMax: 3, ConcurrencyUsed: 2, SessionsMax: 6, SessionsUsed: 2, RPMMax: 13, RPMUsed: 2},
+			wantTimeouts: map[int64]time.Duration{2: 8 * time.Minute},
+			wantSessions: true,
+			wantRPM:      true,
+		},
+		{
+			name: "nonpositive idle timeouts",
+			providers: []provider.CapacitySnapshot{
+				{ID: 1, Concurrency: 3, MaxSessions: 4, SessionIdleTimeoutMinutes: 0},
+				{ID: 2, Concurrency: 5, MaxSessions: 6, SessionIdleTimeoutMinutes: -2},
+			},
+			want:         routing.GroupCapacitySummary{ConcurrencyMax: 8, ConcurrencyUsed: 2, SessionsMax: 10, SessionsUsed: 2},
+			wantTimeouts: map[int64]time.Duration{1: 5 * time.Minute, 2: 5 * time.Minute},
+			wantSessions: true,
+		},
+		{
+			name: "unbounded sessions and RPM skip their counters",
+			providers: []provider.CapacitySnapshot{
+				{ID: 1, Concurrency: 3},
+				{ID: 2, Concurrency: 5, MaxSessions: -1, BaseRPM: -1},
+			},
+			want: routing.GroupCapacitySummary{ConcurrencyMax: 8, ConcurrencyUsed: 2},
+		},
+		{
+			name: "RPM alone queries every member",
+			providers: []provider.CapacitySnapshot{
+				{ID: 1, Concurrency: 3},
+				{ID: 2, Concurrency: 5, BaseRPM: 13},
+			},
+			want:    routing.GroupCapacitySummary{ConcurrencyMax: 8, ConcurrencyUsed: 2, RPMMax: 13, RPMUsed: 2},
+			wantRPM: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, path := range []string{"single", "batch"} {
+				t.Run(path, func(t *testing.T) {
+					fixture := &groupCapacityContractFixture{
+						providers:  tt.providers,
+						counts:     map[int64]int{1: 2},
+						counterErr: errors.New("partial counter read"),
+						requested:  make(map[string][]int64),
+					}
+					for _, snapshot := range tt.providers {
+						fixture.rows = append(fixture.rows, routing.CapacityProviderRow{GroupID: 10, Provider: snapshot})
+					}
+					svc := routing.NewCapacityService(fixture, nil, fixture, fixture, fixture)
+					want := tt.want
+					if path == "single" {
+						got, err := svc.GetGroupCapacity(t.Context(), 10)
+						require.NoError(t, err)
+						require.Equal(t, want, got)
+					} else {
+						got, err := svc.GetGroupCapacityByIDs(t.Context(), []int64{10})
+						require.NoError(t, err)
+						want.GroupID = 10
+						require.Equal(t, map[int64]routing.GroupCapacitySummary{10: want}, got)
+					}
+					wantCalls := []string{path, "concurrency"}
+					wantRequested := map[string][]int64{"concurrency": {1, 2}}
+					if tt.wantSessions {
+						wantCalls = append(wantCalls, "sessions")
+						wantRequested["sessions"] = []int64{1, 2}
+					}
+					if tt.wantRPM {
+						wantCalls = append(wantCalls, "rpm")
+						wantRequested["rpm"] = []int64{1, 2}
+					}
+					require.Equal(t, wantCalls, fixture.calls)
+					require.Equal(t, wantRequested, fixture.requested)
+					require.Equal(t, tt.wantTimeouts, fixture.timeouts)
+				})
+			}
+		})
+	}
+}
+
+// TestGroupCapacityBatchMembershipNormalization supplies repeated, invalid,
+// paused, and shared provider memberships. It protects first-row contributions,
+// group order, counter deduplication, and per-group session and RPM query gating.
+func TestGroupCapacityBatchMembershipNormalization(t *testing.T) {
+	fixture := &groupCapacityContractFixture{
+		rows: []routing.CapacityProviderRow{
+			{GroupID: 20, Provider: provider.CapacitySnapshot{ID: 2, Concurrency: 3}},
+			{GroupID: 10, Provider: provider.CapacitySnapshot{ID: 1, Concurrency: 4, MaxSessions: 5, BaseRPM: 7}},
+			{GroupID: 10, Provider: provider.CapacitySnapshot{ID: 1, Concurrency: 100, MaxSessions: 100, BaseRPM: 100}},
+			{GroupID: 10, Provider: provider.CapacitySnapshot{ID: 2, Concurrency: 3}},
+			{GroupID: 99, Provider: provider.CapacitySnapshot{ID: 3, Concurrency: 100}},
+			{GroupID: 10, Provider: provider.CapacitySnapshot{ID: 0, Concurrency: 100}},
+			{GroupID: 10, Provider: provider.CapacitySnapshot{ID: 4, Concurrency: 100, QuotaAutoPaused: true}},
+		},
+		counts:    map[int64]int{1: 2, 2: 1},
+		requested: make(map[string][]int64),
+	}
+	svc := routing.NewCapacityService(fixture, &groupCapacityGroupRepoStub{groupIDs: []int64{20, 10, 30}}, fixture, fixture, fixture)
+	got, err := svc.GetAllGroupCapacity(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []routing.GroupCapacitySummary{
+		{GroupID: 20, ConcurrencyMax: 3, ConcurrencyUsed: 1},
+		{GroupID: 10, ConcurrencyMax: 7, ConcurrencyUsed: 3, SessionsMax: 5, SessionsUsed: 3, RPMMax: 7, RPMUsed: 3},
+		{GroupID: 30},
+	}, got)
+	require.Equal(t, []string{"batch", "concurrency", "sessions", "rpm"}, fixture.calls)
+	require.Equal(t, map[string][]int64{
+		"concurrency": {2, 1},
+		"sessions":    {1, 2},
+		"rpm":         {1, 2},
+	}, fixture.requested)
+	require.Equal(t, map[int64]time.Duration{1: 5 * time.Minute}, fixture.timeouts)
+}
+
+// TestGroupCapacityProviderFailures supplies a reader failure through each
+// public capacity entry point. Batch errors propagate without single-group
+// retries, and all provider failures stop runtime counter queries.
+func TestGroupCapacityProviderFailures(t *testing.T) {
+	for _, path := range []string{"single", "batch", "all"} {
+		t.Run(path, func(t *testing.T) {
+			readErr := errors.New("provider read failed")
+			fixture := &groupCapacityContractFixture{providerErr: readErr}
+			svc := routing.NewCapacityService(fixture, &groupCapacityGroupRepoStub{groupIDs: []int64{10}}, fixture, fixture, fixture)
+			switch path {
+			case "single":
+				got, err := svc.GetGroupCapacity(t.Context(), 10)
+				require.ErrorIs(t, err, readErr)
+				require.Zero(t, got)
+				require.Equal(t, []string{"single"}, fixture.calls)
+			case "batch":
+				got, err := svc.GetGroupCapacityByIDs(t.Context(), []int64{10})
+				require.ErrorIs(t, err, readErr)
+				require.Empty(t, got)
+				require.Equal(t, []string{"batch"}, fixture.calls)
+			case "all":
+				got, err := svc.GetAllGroupCapacity(t.Context())
+				require.ErrorIs(t, err, readErr)
+				require.Nil(t, got)
+				require.Equal(t, []string{"batch"}, fixture.calls)
+			}
+		})
+	}
+}
+
+// ListSchedulableByGroupID returns disposable snapshot storage and the fixture
+// error. The copied slice lets capacity filtering remove paused providers
+// without changing snapshots used by the paired batch test.
+func (f *groupCapacityContractFixture) ListSchedulableByGroupID(context.Context, int64) ([]provider.CapacitySnapshot, error) {
+	f.calls = append(f.calls, "single")
+	return slices.Clone(f.providers), f.providerErr
+}
+
+// ListSchedulableCapacityByGroupIDs records the batch read and returns copied
+// membership storage with the configured error. Rows remain unfiltered so the
+// service's membership validation is exercised directly.
+func (f *groupCapacityContractFixture) ListSchedulableCapacityByGroupIDs(context.Context, []int64) ([]routing.CapacityProviderRow, error) {
+	f.calls = append(f.calls, "batch")
+	return slices.Clone(f.rows), f.providerErr
+}
+
+// GetProviderConcurrencyBatch records provider order and returns the configured
+// partial counts alongside an optional error. Missing map entries stay absent
+// so the service itself supplies their zero contribution.
+func (f *groupCapacityContractFixture) GetProviderConcurrencyBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	f.calls = append(f.calls, "concurrency")
+	f.requested["concurrency"] = slices.Clone(ids)
+	return maps.Clone(f.counts), f.counterErr
+}
+
+// GetActiveSessionCountBatch copies requested identities and idle durations
+// before returning partial counts and an optional error. Tests can inspect the
+// supplied timeout defaults independently of counter-result handling.
+func (f *groupCapacityContractFixture) GetActiveSessionCountBatch(_ context.Context, ids []int64, timeouts map[int64]time.Duration) (map[int64]int, error) {
+	f.calls = append(f.calls, "sessions")
+	f.requested["sessions"] = slices.Clone(ids)
+	f.timeouts = maps.Clone(timeouts)
+	return maps.Clone(f.counts), f.counterErr
+}
+
+// GetRPMBatch records provider order and returns the configured partial counts
+// alongside an optional error. Missing map entries stay absent so the service
+// itself supplies their zero contribution.
+func (f *groupCapacityContractFixture) GetRPMBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	f.calls = append(f.calls, "rpm")
+	f.requested["rpm"] = slices.Clone(ids)
+	return maps.Clone(f.counts), f.counterErr
 }
 
 // TestGroupCapacityService_ExcludesOpenAIQuotaAutoPausedProviders supplies

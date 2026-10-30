@@ -811,15 +811,32 @@ func TestLoadDefaultIdempotencyConfig(t *testing.T) {
 	}
 }
 
-// TestLoadDefaultBatchImageQueueDisabled reads batch worker queue settings
-// after default loading. The queue flag must remain false, protecting the
-// deployment default that leaves that queue disabled.
-func TestLoadDefaultBatchImageQueueDisabled(t *testing.T) {
-	resetViperWithJWTSecret(t)
-
-	cfg, err := Load()
-	require.NoError(t, err)
-	require.False(t, cfg.BatchImage.QueueEnabled)
+// TestLoadBatchImageRetiredSettings supplies obsolete flags and unused limits
+// through both supported configuration sources. Loading ignores those values
+// while retaining the active queue defaults and validating configured Vertex storage.
+func TestLoadBatchImageRetiredSettings(t *testing.T) {
+	for _, enabled := range []string{"false", "true"} {
+		t.Run(enabled, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			configFile := filepath.Join(t.TempDir(), "config.yaml")
+			content := "batch_image:\n  enabled: " + enabled + "\n  queue_enabled: " + enabled + "\n  vertex_enabled: " + enabled + "\n  max_items_per_job_trial: -1\n  output_retention_max_days: -1\n  idempotency_key_prefix: unused\n  vertex_input_retention_hours: -1\n  vertex_output_retention_hours: -1\n"
+			require.NoError(t, os.WriteFile(configFile, []byte(content), 0o600))
+			t.Setenv("CONFIG_FILE", configFile)
+			t.Setenv("BATCH_IMAGE_ENABLED", enabled)
+			t.Setenv("BATCH_IMAGE_QUEUE_ENABLED", enabled)
+			t.Setenv("BATCH_IMAGE_VERTEX_ENABLED", enabled)
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.NotEmpty(t, cfg.BatchImage.QueueReadyKey)
+			require.Positive(t, cfg.BatchImage.JobLockTTLSeconds)
+			require.Empty(t, cfg.BatchImage.VertexManagedGCSBucket)
+			cfg.BatchImage.VertexManagedGCSBucket = "gs://invalid-bucket"
+			require.ErrorContains(t, cfg.Validate(), "batch_image.vertex_managed_gcs_bucket")
+			cfg.BatchImage.VertexManagedGCSBucket = "managed-bucket"
+			cfg.BatchImage.VertexManagedGCSPrefix = "shared-prefix"
+			require.ErrorContains(t, cfg.Validate(), "batch_image.vertex_managed_gcs_prefix")
+		})
+	}
 }
 
 // TestLoadIdempotencyConfigFromEnv overrides missing-key observation and
@@ -2673,6 +2690,284 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	})
 }
 
+// TestValidateGatewayFirstErrorAndMutationOrder combines errors before, within,
+// and after gateway validation. Each repair must expose the next error while
+// preserving the warning sequence and only mutations reached before that error.
+func TestValidateGatewayFirstErrorAndMutationOrder(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	maxBodySize := cfg.Gateway.MaxBodySize
+	maxConnsPerProvider := cfg.Gateway.OpenAIWS.MaxConnsPerProvider
+	cfg.JWT.ExpireHour = 25
+	cfg.Idempotency.CleanupBatchSize = 0
+	cfg.Gateway.MaxBodySize = 0
+	cfg.Gateway.Live.MaxSessionDurationSeconds = -1
+	cfg.Gateway.ConnectionPoolIsolation = "invalid"
+	cfg.Gateway.IdleConnTimeoutSeconds = 181
+	cfg.Gateway.MaxUpstreamClients = 0
+	cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = 0
+	cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds = 1234
+	cfg.Gateway.OpenAIWS.MaxConnsPerProvider = 0
+	cfg.Gateway.Scheduling.OutboxLagWarnSeconds = 2
+	cfg.Gateway.Scheduling.OutboxLagRebuildSeconds = 1
+	cfg.Ops.MetricsCollectorCache.TTL = -1
+	cfg.Concurrency.PingInterval = 0
+	cfg.Gateway.Grok.FreeQuotaSoftGateEnabled = true
+	cfg.Gateway.Grok.FreeQuotaTokenLimit = 0
+
+	var logs bytes.Buffer
+	// Capture only validation warnings, then restore the shared logger so later
+	// serial fixtures cannot accidentally keep writing into this test's buffer.
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	steps := []struct {
+		wantError   string        // expected first validation error
+		wantLive    int           // retained Live duration seconds
+		wantTTL     int           // retained response-affinity lifetime seconds
+		wantWarning bool          // gateway idle warning emitted
+		repair      func(*Config) // correction exposing subsequent validation failure
+	}{
+		{
+			wantError: "idempotency.cleanup_batch_size must be positive",
+			wantLive:  -1,
+			repair:    func(c *Config) { c.Idempotency.CleanupBatchSize = 1 },
+		},
+		{
+			wantError: "gateway.max_body_size must be positive",
+			wantLive:  -1,
+			repair:    func(c *Config) { c.Gateway.MaxBodySize = maxBodySize },
+		},
+		{
+			wantError: "gateway.connection_pool_isolation must be one of: proxy/provider/provider_proxy",
+			wantLive:  3600,
+			repair:    func(c *Config) { c.Gateway.ConnectionPoolIsolation = ConnectionPoolIsolationProvider },
+		},
+		{
+			wantError:   "gateway.max_upstream_clients must be positive",
+			wantLive:    3600,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Gateway.MaxUpstreamClients = 1 },
+		},
+		{
+			wantError:   "gateway.openai_ws.max_conns_per_provider must be positive",
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Gateway.OpenAIWS.MaxConnsPerProvider = maxConnsPerProvider },
+		},
+		{
+			wantError:   "gateway.scheduling.outbox_lag_rebuild_seconds must be >= outbox_lag_warn_seconds",
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Gateway.Scheduling.OutboxLagRebuildSeconds = 2 },
+		},
+		{
+			wantError:   "ops.metrics_collector_cache.ttl must be non-negative",
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Ops.MetricsCollectorCache.TTL = 0 },
+		},
+		{
+			wantError:   "concurrency.ping_interval must be between 5-30 seconds",
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Concurrency.PingInterval = 5 },
+		},
+		{
+			wantError:   "gateway.grok.free_quota_token_limit must be positive",
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+			repair:      func(c *Config) { c.Gateway.Grok.FreeQuotaTokenLimit = 1 },
+		},
+		{
+			wantLive:    3600,
+			wantTTL:     1234,
+			wantWarning: true,
+		},
+	}
+	for _, step := range steps {
+		logs.Reset()
+		err := cfg.Validate()
+		if step.wantError == "" {
+			require.NoError(t, err)
+		} else {
+			require.EqualError(t, err, step.wantError)
+		}
+		require.Equal(t, step.wantLive, cfg.Gateway.Live.MaxSessionDurationSeconds)
+		require.Equal(t, step.wantTTL, cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
+		require.Equal(t, 181, cfg.Gateway.IdleConnTimeoutSeconds)
+		wantMessages := []string{"jwt.expire_hour is high; consider shorter expiration for security"}
+		if step.wantWarning {
+			wantMessages = append(wantMessages, "gateway.idle_conn_timeout_seconds is high; consider 60-120 seconds for better connection reuse")
+		}
+		var messages []string
+		decoder := json.NewDecoder(&logs)
+		for decoder.More() {
+			var record map[string]any
+			require.NoError(t, decoder.Decode(&record))
+			require.Equal(t, "WARN", record["level"])
+			message, ok := record["msg"].(string)
+			require.True(t, ok)
+			messages = append(messages, message)
+		}
+		require.Equal(t, wantMessages, messages)
+		if step.repair != nil {
+			step.repair(cfg)
+		}
+	}
+}
+
+// TestValidateGatewayNonfiniteValues supplies NaN and both infinities to
+// gateway floating-point controls. Validation must retain each field's existing
+// comparison-only or explicitly finite rule, including accepted nonfinite values.
+func TestValidateGatewayNonfiniteValues(t *testing.T) {
+	fields := []struct {
+		name      string                 // gateway configuration field path
+		set       func(*Config, float64) // field-specific value assignment callback
+		acceptNaN bool                   // existing NaN acceptance behavior
+		acceptInf bool                   // existing positive-infinity acceptance behavior
+	}{
+		{
+			name:      "gateway.openai_ws.oauth_max_conns_factor",
+			set:       func(c *Config, value float64) { c.Gateway.OpenAIWS.OAuthMaxConnsFactor = value },
+			acceptNaN: true,
+			acceptInf: true,
+		},
+		{
+			name:      "gateway.openai_ws.apikey_max_conns_factor",
+			set:       func(c *Config, value float64) { c.Gateway.OpenAIWS.APIKeyMaxConnsFactor = value },
+			acceptNaN: true,
+			acceptInf: true,
+		},
+		{
+			name:      "gateway.openai_ws.pool_target_utilization",
+			set:       func(c *Config, value float64) { c.Gateway.OpenAIWS.PoolTargetUtilization = value },
+			acceptNaN: true,
+		},
+		{
+			name: "gateway.advanced_scheduler.ewma_error_rate_alpha",
+			set:  func(c *Config, value float64) { c.Gateway.AdvancedScheduler.EWMAErrorRateAlpha = value },
+		},
+		{
+			name: "gateway.advanced_scheduler.ewma_ttft_alpha",
+			set:  func(c *Config, value float64) { c.Gateway.AdvancedScheduler.EWMATTFTAlpha = value },
+		},
+		{
+			name: "gateway.advanced_scheduler.score_weights.*",
+			set:  func(c *Config, value float64) { c.Gateway.AdvancedScheduler.ScoreWeights.Priority = value },
+		},
+		{
+			name:      "gateway.advanced_scheduler.sticky_escape_error_rate",
+			set:       func(c *Config, value float64) { c.Gateway.AdvancedScheduler.StickyEscapeErrorRate = value },
+			acceptNaN: true,
+		},
+	}
+	for _, field := range fields {
+		for _, sample := range []struct {
+			name   string  // floating-point input classification
+			value  float64 // supplied nonfinite floating-point value
+			accept bool    // expected successful validation result
+		}{
+			{"NaN", math.NaN(), field.acceptNaN},
+			{"positive infinity", math.Inf(1), field.acceptInf},
+			{"negative infinity", math.Inf(-1), false},
+		} {
+			t.Run(field.name+"/"+sample.name, func(t *testing.T) {
+				resetViperWithJWTSecret(t)
+				cfg, err := Load()
+				require.NoError(t, err)
+				field.set(cfg, sample.value)
+				err = cfg.Validate()
+				if sample.accept {
+					require.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, field.name)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateGatewayPoolBoundaries checks inclusive idle capacity and worker
+// ranges alongside disabled autoscaling. Invalid ordinary pool settings must
+// still fail while inactive scaling settings retain their current acceptance.
+func TestValidateGatewayPoolBoundaries(t *testing.T) {
+	cases := []struct {
+		name      string        // boundary scenario display name
+		configure func(*Config) // supplied pool and worker settings
+		wantError string        // expected first validation error
+	}{
+		{
+			name: "idle counts equal total capacity",
+			configure: func(c *Config) {
+				c.Gateway.OpenAIWS.MaxConnsPerProvider = 1
+				c.Gateway.OpenAIWS.MinIdlePerProvider = 1
+				c.Gateway.OpenAIWS.MaxIdlePerProvider = 1
+				c.Gateway.OpenAIWS.PoolTargetUtilization = 1
+			},
+		},
+		{
+			name: "zero idle counts and unlimited HTTP connections",
+			configure: func(c *Config) {
+				c.Gateway.OpenAIWS.MinIdlePerProvider = 0
+				c.Gateway.OpenAIWS.MaxIdlePerProvider = 0
+				c.Gateway.MaxConnsPerHost = 0
+			},
+		},
+		{
+			name: "idle minimum fails before idle capacity",
+			configure: func(c *Config) {
+				c.Gateway.OpenAIWS.MaxConnsPerProvider = 1
+				c.Gateway.OpenAIWS.MinIdlePerProvider = 3
+				c.Gateway.OpenAIWS.MaxIdlePerProvider = 2
+			},
+			wantError: "gateway.openai_ws.min_idle_per_provider must be <= max_idle_per_provider",
+		},
+		{
+			name: "workers equal both scaling limits",
+			configure: func(c *Config) {
+				c.Gateway.UsageRecord.AutoScaleEnabled = true
+				c.Gateway.UsageRecord.WorkerCount = 1
+				c.Gateway.UsageRecord.AutoScaleMinWorkers = 1
+				c.Gateway.UsageRecord.AutoScaleMaxWorkers = 1
+				c.Gateway.UsageRecord.AutoScaleUpQueuePercent = 1
+				c.Gateway.UsageRecord.AutoScaleDownQueuePercent = 0
+				c.Gateway.UsageRecord.AutoScaleCooldownSeconds = 0
+			},
+		},
+		{
+			name: "disabled scaling retains ordinary worker validation",
+			configure: func(c *Config) {
+				c.Gateway.UsageRecord.AutoScaleEnabled = false
+				c.Gateway.UsageRecord.WorkerCount = 0
+				c.Gateway.UsageRecord.AutoScaleMinWorkers = -1
+			},
+			wantError: "gateway.usage_record.worker_count must be positive",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			cfg, err := Load()
+			require.NoError(t, err)
+			tc.configure(cfg)
+			err = cfg.Validate()
+			if tc.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, tc.wantError)
+			}
+		})
+	}
+}
+
 // TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields disables
 // autoscaling and supplies otherwise invalid autoscaling-only settings with a
 // positive worker count. Validation must accept those inactive controls while
@@ -3835,5 +4130,113 @@ func TestPricingCatalogIncludesDecisionModels(t *testing.T) {
 			expected += "?type=all"
 		}
 		require.Equal(t, expected, cfg.Pricing.RemoteURL)
+	}
+}
+
+// TestNormalizeWeChatConnectConfig_CapabilitiesAndScopes supplies every capability set
+// with recognized, unknown, and mixed-case modes and supported or invalid scopes.
+// Startup normalization must select the expected stored mode and scope while
+// retaining the caller's explicit capability observations.
+func TestNormalizeWeChatConnectConfig_CapabilitiesAndScopes(t *testing.T) {
+	capabilities := []struct {
+		name   string    // capability combination name
+		open   bool      // supplied open capability
+		mp     bool      // supplied official-account capability
+		mobile bool      // supplied mobile capability
+		modes  [3]string // expected open/mp/mobile selections
+	}{
+		{"none", false, false, false, [3]string{"open", "mp", "mobile"}},
+		{"open", true, false, false, [3]string{"open", "open", "open"}},
+		{"mp", false, true, false, [3]string{"mp", "mp", "mp"}},
+		{"mobile", false, false, true, [3]string{"mobile", "mobile", "mobile"}},
+		{"open_mp", true, true, false, [3]string{"open", "mp", "open"}},
+		{"open_mobile", true, false, true, [3]string{"open", "open", "mobile"}},
+		{"mp_mobile", false, true, true, [3]string{"mp", "mp", "mobile"}},
+		{"all", true, true, true, [3]string{"open", "mp", "mobile"}},
+	}
+	modes := []struct {
+		raw   string // supplied mode text
+		index int    // canonical mode table index
+	}{
+		{"open", 0},
+		{"mp", 1},
+		{"mobile", 2},
+		{" OPEN ", 0},
+		{"\tMp\n", 1},
+		{" MoBiLe ", 2},
+		{"", 0},
+		{" \t ", 0},
+		{"unknown", 0},
+	}
+	scopes := []struct {
+		raw string // supplied scope text
+		mp  string // expected official-account scope
+	}{
+		{"", "snsapi_userinfo"},
+		{" \t ", "snsapi_userinfo"},
+		{"snsapi_base", "snsapi_base"},
+		{" snsapi_base ", "snsapi_base"},
+		{"snsapi_userinfo", "snsapi_userinfo"},
+		{" SNSAPI_BASE ", "snsapi_userinfo"},
+		{"snsapi_login", "snsapi_userinfo"},
+		{"snsapi_base snsapi_userinfo", "snsapi_userinfo"},
+		{"invalid", "snsapi_userinfo"},
+	}
+	for _, capability := range capabilities {
+		for _, mode := range modes {
+			for _, scope := range scopes {
+				t.Run(fmt.Sprintf("%s/mode=%q/scope=%q", capability.name, mode.raw, scope.raw), func(t *testing.T) {
+					cfg := WeChatConnectConfig{
+						OpenEnabled:   capability.open,
+						MPEnabled:     capability.mp,
+						MobileEnabled: capability.mobile,
+						Mode:          mode.raw,
+						Scopes:        scope.raw,
+					}
+					normalizeWeChatConnectConfig(&cfg)
+					wantMode := capability.modes[mode.index]
+					wantScope := map[string]string{"open": "snsapi_login", "mp": scope.mp, "mobile": ""}[wantMode]
+					require.Equal(t, wantMode, cfg.Mode)
+					require.Equal(t, wantScope, cfg.Scopes)
+					require.Equal(t, [3]bool{capability.open, capability.mp, capability.mobile}, [3]bool{cfg.OpenEnabled, cfg.MPEnabled, cfg.MobileEnabled})
+					require.False(t, cfg.Enabled)
+				})
+			}
+		}
+	}
+}
+
+// TestNormalizeWeChatConnectConfig_LegacyNormalization supplies globally enabled
+// legacy configurations without explicit channel switches. Startup normalization
+// must promote the normalized mode and fill missing credential members independently.
+func TestNormalizeWeChatConnectConfig_LegacyNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		raw          string  // supplied legacy mode
+		mode         string  // expected selected mode
+		capabilities [3]bool // expected open/mp/mobile switches
+	}{
+		{"OPEN", "open", [3]bool{true, false, false}},
+		{" Mp ", "mp", [3]bool{false, true, false}},
+		{"MoBiLe", "mobile", [3]bool{false, false, true}},
+		{"invalid", "open", [3]bool{true, false, false}},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			base := WeChatConnectConfig{
+				Enabled:         true,
+				Mode:            tc.raw,
+				OpenAppID:       " open-id ",
+				MPAppSecret:     " mp-secret ",
+				MobileAppID:     " mobile-id ",
+				MobileAppSecret: " mobile-secret ",
+			}
+			cfg := base
+			normalizeWeChatConnectConfig(&cfg)
+			require.Equal(t, tc.mode, cfg.Mode)
+			require.Equal(t, tc.capabilities, [3]bool{cfg.OpenEnabled, cfg.MPEnabled, cfg.MobileEnabled})
+			require.Equal(t, "open-id", cfg.AppID)
+			require.Equal(t, "mp-secret", cfg.AppSecret)
+			require.Equal(t, [6]string{"open-id", "mp-secret", "open-id", "mp-secret", "mobile-id", "mobile-secret"},
+				[6]string{cfg.OpenAppID, cfg.OpenAppSecret, cfg.MPAppID, cfg.MPAppSecret, cfg.MobileAppID, cfg.MobileAppSecret})
+		})
 	}
 }

@@ -2,7 +2,9 @@ package openaiforward
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -68,11 +70,11 @@ func TestMergeAnthropicUsageNormalizesGLMAndDeepSeekAliases(t *testing.T) {
 	}
 }
 
-// TestClaudeUsageToOpenAIUsagePreservesCNProviderNativeAnthropicBuckets
-// converts already-normalized Anthropic token buckets for two CN fixtures.
-// Cache creation and reads must remain separate while their sum with uncached
-// input forms the OpenAI total.
-func TestClaudeUsageToOpenAIUsagePreservesCNProviderNativeAnthropicBuckets(t *testing.T) {
+// TestClaudeUsageToOpenAIUsagePreservesKimiZhipuDeepSeekNativeAnthropicBuckets
+// converts already-normalized Anthropic token buckets for two Kimi, Zhipu, and
+// DeepSeek fixtures. Cache creation and reads must remain separate while their
+// sum with uncached input forms the OpenAI total.
+func TestClaudeUsageToOpenAIUsagePreservesKimiZhipuDeepSeekNativeAnthropicBuckets(t *testing.T) {
 	tests := []struct {
 		name         string              // provider fixture name
 		usage        protocol.TokenUsage // normalized token buckets
@@ -111,4 +113,40 @@ func TestClaudeUsageToOpenAIUsagePreservesCNProviderNativeAnthropicBuckets(t *te
 			require.Equal(t, tt.usage.CacheCreationInputTokens, openAIUsage.CacheCreationInputTokens)
 		})
 	}
+}
+
+// TestAnthropicUsageCollectorMergesEventsAndBuildsResult feeds a start event,
+// an undecodable payload, and a delta with a TTL bucket move to the shared
+// reader collector. Output counts from message_start, explicit zero TTL
+// buckets, speed, model evidence, and result identity must all survive.
+func TestAnthropicUsageCollectorMergesEventsAndBuildsResult(t *testing.T) {
+	resp := &http.Response{Header: http.Header{"X-Request-Id": []string{"req-1"}}}
+	effort := "high"
+	collector := newAnthropicUsageCollector(resp, "client-model", "billing-model", "upstream-model", &effort, time.Now(), true)
+	require.Nil(t, collector.PartialResult(), "no observed usage leaves no partial result")
+
+	start, decoded := collector.Observe(`{"type":"message_start","message":{"model":"vendor-model","usage":{"input_tokens":100,"output_tokens":3,"cache_creation_input_tokens":12,"cache_read_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":7},"speed":"fast"}}}`)
+	require.True(t, decoded)
+	require.Equal(t, "message_start", start.Type)
+	require.Equal(t, 3, collector.usage.OutputTokens, "typed merge keeps compatible message_start output")
+	_, decoded = collector.Observe(`not json`)
+	require.False(t, decoded)
+	_, decoded = collector.Observe(`{"type":"message_delta","usage":{"output_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":12,"ephemeral_1h_input_tokens":0}}}`)
+	require.True(t, decoded)
+
+	want := protocol.TokenUsage{InputTokens: 100, OutputTokens: 10, CacheCreationInputTokens: 12, CacheReadInputTokens: 30, CacheCreation5mTokens: 12, CacheCreation1hTokens: 0, Speed: "fast"}
+	require.Equal(t, want, collector.usage)
+	result := collector.Result(true)
+	require.Equal(t, &want, result.NativeUsage)
+	require.Equal(t, 142, result.Usage.InputTokens)
+	require.Equal(t, "req-1", result.RequestID)
+	require.Equal(t, "client-model", result.Model)
+	require.Equal(t, "billing-model", result.BillingModel)
+	require.Equal(t, "upstream-model", result.UpstreamModel)
+	require.Equal(t, "vendor-model", result.UpstreamResponseModel)
+	require.Equal(t, "/v1/messages", result.UpstreamEndpoint)
+	require.Same(t, &effort, result.ReasoningEffort)
+	require.True(t, result.Stream)
+	require.True(t, result.ClientDisconnect)
+	require.NotNil(t, collector.PartialResult())
 }

@@ -16,31 +16,31 @@ import (
 // Anthropic windows from Fable scope and Grok header quota from official
 // billing observations.
 
-// TestCNProviderThresholdCandidates attaches two monitor limits to a Coding
+// TestCodingPlanThresholdCandidates attaches two monitor limits to a Coding
 // Plan provider. It verifies candidate count, omission of usage-free limits,
 // and rejection after changing the credential identity.
-func TestCNProviderThresholdCandidates(t *testing.T) {
+func TestCodingPlanThresholdCandidates(t *testing.T) {
 	t.Parallel()
 	observed := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	reset5h := observed.Add(3 * time.Hour)
 	resetWeekly := observed.Add(4 * 24 * time.Hour)
 	used5h, usedWeekly := 90.0, 50.0
-	provider := cnCodingTestProvider(capability.PlatformKimi)
-	attachCNMonitorLimits(provider, observed, []UpstreamUsageLimit{
+	provider := codingPlanTestProvider(capability.PlatformKimi)
+	attachUsageMonitorLimits(provider, observed, []UpstreamUsageLimit{
 		{Name: "5h", Used: &used5h, ResetAt: &reset5h},
 		{Name: "7d", Used: &usedWeekly, ResetAt: &resetWeekly},
 	})
-	cands := CNProviderThresholdCandidates(provider, capability.PlatformKimi)
+	cands := CodingPlanThresholdCandidates(provider, capability.PlatformKimi)
 	require.Len(t, cands, 2)
 
-	partial := cnCodingTestProvider(capability.PlatformKimi)
-	attachCNMonitorLimits(partial, observed, []UpstreamUsageLimit{{Name: "5h", ResetAt: &reset5h}})
-	require.Empty(t, filterNil(CNProviderThresholdCandidates(partial, capability.PlatformKimi)))
+	partial := codingPlanTestProvider(capability.PlatformKimi)
+	attachUsageMonitorLimits(partial, observed, []UpstreamUsageLimit{{Name: "5h", ResetAt: &reset5h}})
+	require.Empty(t, filterNil(CodingPlanThresholdCandidates(partial, capability.PlatformKimi)))
 
 	// Keep the stored observation unchanged while replacing its API Key so the
 	// validator must reject the previous query identity before creating limits.
 	provider.Credentials["api_key"] = "sk-changed"
-	require.Empty(t, CNProviderThresholdCandidates(provider, capability.PlatformKimi))
+	require.Empty(t, CodingPlanThresholdCandidates(provider, capability.PlatformKimi))
 }
 
 // filterNil returns nonnil candidate pointers in their original order,
@@ -65,8 +65,8 @@ func TestEvaluateProviderSchedulingThreshold_KimiCodingPlan(t *testing.T) {
 	reset := now.Add(3 * time.Hour)
 	used5h, usedWeekly := 90.0, 30.0
 	weeklyReset := now.Add(7 * 24 * time.Hour)
-	provider := cnCodingTestProvider(capability.PlatformKimi)
-	attachCNMonitorLimits(provider, now, []UpstreamUsageLimit{
+	provider := codingPlanTestProvider(capability.PlatformKimi)
+	attachUsageMonitorLimits(provider, now, []UpstreamUsageLimit{
 		{Name: "5h", Used: &used5h, ResetAt: &reset},
 		{Name: "7d", Used: &usedWeekly, ResetAt: &weeklyReset},
 	})
@@ -79,22 +79,22 @@ func TestEvaluateProviderSchedulingThreshold_KimiCodingPlan(t *testing.T) {
 	require.True(t, reset.Equal(*decision.Until))
 }
 
-// TestEvaluateProviderSchedulingThreshold_CNWindowResetSkipped supplies an
+// TestEvaluateProviderSchedulingThreshold_CodingPlanWindowResetSkipped supplies an
 // expired high-usage observation and a future low-usage observation
 // separately. It verifies neither case selects a provider pause.
-func TestEvaluateProviderSchedulingThreshold_CNWindowResetSkipped(t *testing.T) {
+func TestEvaluateProviderSchedulingThreshold_CodingPlanWindowResetSkipped(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	expiredUsed := 99.0
 	expiredReset := now.Add(-time.Hour)
-	expired := cnCodingTestProvider(capability.PlatformZhipu)
-	attachCNMonitorLimits(expired, now, []UpstreamUsageLimit{{Name: "5h", Used: &expiredUsed, ResetAt: &expiredReset}})
+	expired := codingPlanTestProvider(capability.PlatformZhipu)
+	attachUsageMonitorLimits(expired, now, []UpstreamUsageLimit{{Name: "5h", Used: &expiredUsed, ResetAt: &expiredReset}})
 	require.False(t, EvaluateProviderSchedulingThreshold(expired, map[string]int{capability.PlatformZhipu: 80}, now).ShouldPause)
 
 	lowUsed := 20.0
 	lowReset := now.Add(3 * time.Hour)
-	low := cnCodingTestProvider(capability.PlatformZhipu)
-	attachCNMonitorLimits(low, now, []UpstreamUsageLimit{{Name: "5h", Used: &lowUsed, ResetAt: &lowReset}})
+	low := codingPlanTestProvider(capability.PlatformZhipu)
+	attachUsageMonitorLimits(low, now, []UpstreamUsageLimit{{Name: "5h", Used: &lowUsed, ResetAt: &lowReset}})
 	require.False(t, EvaluateProviderSchedulingThreshold(low, map[string]int{capability.PlatformZhipu: 80}, now).ShouldPause)
 }
 

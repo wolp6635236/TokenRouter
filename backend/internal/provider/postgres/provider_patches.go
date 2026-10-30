@@ -23,8 +23,8 @@ import (
 //
 // Bulk patches combine common fields with per-provider protocol changes. SQL
 // evaluates existing credential and proxy values when deciding which Ollama or
-// CN observations become stale, and retains a valid stored Codex fingerprint
-// seed when identity creation is requested. The dedicated CN snapshot path
+// Usage observations become stale, and retains a valid stored Codex fingerprint
+// seed when identity creation is requested. The dedicated usage snapshot path
 // compares updated_at and inserts its scheduling event with the matching
 // update.
 
@@ -52,12 +52,12 @@ var (
 	// These exact keys identify remaining usage display observations whose values
 	// do not change candidate routing; dedicated monitor writes may publish separately.
 	schedulerNeutralExtraKeys = map[string]struct{}{
-		"codex_usage_updated_at":                {},
-		"grok_billing_snapshot":                 {},
-		"qoder_quota_snapshot":                  {},
-		"qoder_quota_updated_at":                {},
-		"session_window_utilization":            {},
-		acctcore.CNUsageMonitorSnapshotExtraKey: {},
+		"codex_usage_updated_at":              {},
+		"grok_billing_snapshot":               {},
+		"qoder_quota_snapshot":                {},
+		"qoder_quota_updated_at":              {},
+		"session_window_utilization":          {},
+		acctcore.UsageMonitorSnapshotExtraKey: {},
 	}
 )
 
@@ -77,7 +77,7 @@ func (r *ProviderStore) UpdateExtra(ctx context.Context, id int64, updates map[s
 // Scheduler-relevant keys enlist a change event in the selected Ent
 // transaction, with local commit before snapshot synchronization. Neutral
 // keys skip that event but still reload the snapshot outside a context
-// transaction. SQL retains unrelated keys, clears CN snapshots on identity
+// transaction. SQL retains unrelated keys, clears usage snapshots on identity
 // configuration patches, and obtains any required Codex seed from current
 // stored state rather than the caller's patch.
 func (r *ProviderStore) updateExtra(ctx context.Context, id int64, updates map[string]any, version *acctcore.UsageObservationVersion) error {
@@ -114,8 +114,8 @@ func (r *ProviderStore) updateExtra(ctx context.Context, id int64, updates map[s
 		}
 	}
 	extraExpression := "(COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe' - 'upstream_billing_probe_enabled' - 'openai_long_context_billing_enabled') || $1::jsonb"
-	if cnUsageMonitorIdentityExtraPatch(updates) {
-		extraExpression = "(" + extraExpression + ") - '" + acctcore.CNUsageMonitorSnapshotExtraKey + "'"
+	if usageMonitorIdentityExtraPatch(updates) {
+		extraExpression = "(" + extraExpression + ") - '" + acctcore.UsageMonitorSnapshotExtraKey + "'"
 	}
 	if acctcore.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
@@ -169,22 +169,21 @@ func (r *ProviderStore) updateExtra(ctx context.Context, id int64, updates map[s
 	return nil
 }
 
-// UpdateCNUsageMonitorSnapshotCAS stores a nonnil CN observation while
-// updated_at still equals the observed version. Nil snapshot or no matching
-// row returns false; clearExtraKey is trimmed and removes that key after the
+// UpdateUsageMonitorSnapshotCAS stores a nonnil usage observation while
+// updated_at still equals the observed version. Nil snapshot or no matching row
+// returns false; clearExtraKey is trimmed and removes that key after the
 // snapshot merge when nonempty.
 //
-// The modifying CTE inserts its scheduler event from the same matching
-// update, so a statement failure rejects both effects. The selected Ent
-// transaction is committed when locally owned and remains caller-owned when
-// supplied through ctx. Immediate synchronization follows a local commit or
-// the noncontext path, and direct SQL event naming requires a configured
-// Events adapter.
-func (r *ProviderStore) UpdateCNUsageMonitorSnapshotCAS(
+// The modifying CTE inserts its scheduler event from the same matching update,
+// so a statement failure rejects both effects. The selected Ent transaction is
+// committed when locally owned and remains caller-owned when supplied through
+// ctx. Immediate synchronization follows a local commit or the noncontext path,
+// and direct SQL event naming requires a configured Events adapter.
+func (r *ProviderStore) UpdateUsageMonitorSnapshotCAS(
 	ctx context.Context,
 	providerID int64,
 	expectedUpdatedAt time.Time,
-	snapshot *acctcore.CNUsageMonitorSnapshot,
+	snapshot *acctcore.UsageMonitorSnapshot,
 	clearExtraKey string,
 ) (bool, error) {
 	if snapshot == nil {
@@ -228,7 +227,7 @@ func (r *ProviderStore) UpdateCNUsageMonitorSnapshotCAS(
 		)
 		INSERT INTO scheduler_outbox (event_type, provider_id, group_id, payload)
 		SELECT $6, updated.id, NULL, NULL FROM updated
-	`, strings.TrimSpace(clearExtraKey), acctcore.CNUsageMonitorSnapshotExtraKey, string(payload),
+	`, strings.TrimSpace(clearExtraKey), acctcore.UsageMonitorSnapshotExtraKey, string(payload),
 		providerID, expectedUpdatedAt, r.eventName(ProviderChanged))
 	if err != nil {
 		return false, err
@@ -257,11 +256,12 @@ func (r *ProviderStore) UpdateCNUsageMonitorSnapshotCAS(
 // factor clears its column.
 //
 // Credential and Extra keys merge against current JSONB values. Existing
-// API-key, base-URL, and proxy observations decide which Ollama or CN
-// snapshots become stale. Protocol patches remove retired credential keys.
-// A protocol-only patch leaves existing Extra route overrides untouched;
-// those overrides are removed when an Extra, identity, or seed update also
-// builds the Extra expression. Codex identity creation reuses a valid stored seed.
+// API-key, base-URL, and proxy observations decide which Ollama or Kimi, Zhipu,
+// and DeepSeek snapshots become stale. Protocol patches remove retired
+// credential keys. A protocol-only patch leaves existing Extra route overrides
+// untouched; those overrides are removed when an Extra, identity, or seed
+// update also builds the Extra expression. Codex identity creation reuses a
+// valid stored seed.
 //
 // The update and bulk event share a locally opened or context Ent transaction
 // when available. Immediate synchronization is reserved for disabling changes
@@ -378,10 +378,10 @@ func (r *ProviderStore) BulkUpdate(ctx context.Context, ids []int64, updates acc
 				" AND "+OllamaCloudBaseURLMatchesSQL(credentialPlaceholder+"::jsonb ->> 'base_url'")+")")
 	}
 
-	// CN observations depend on credentials, proxy and query/TLS settings; mentioning
+	// Usage observations depend on credentials, proxy and query/TLS settings; mentioning
 	// those fields invalidates the snapshot even when the supplied value is unchanged.
-	cnUsageIdentityChanged := len(updates.Credentials) > 0 || updates.ProxyID != nil || cnUsageMonitorIdentityExtraPatch(updates.Extra)
-	if len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || cnUsageIdentityChanged || updates.EnsureCodexFingerprintSeed {
+	usageIdentityChanged := len(updates.Credentials) > 0 || updates.ProxyID != nil || usageMonitorIdentityExtraPatch(updates.Extra)
+	if len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || usageIdentityChanged || updates.EnsureCodexFingerprintSeed {
 		extraExpression := "COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe' - 'upstream_billing_probe_enabled' - 'openai_long_context_billing_enabled'"
 		if len(updates.Extra) > 0 {
 			payload, err := json.Marshal(updates.Extra)
@@ -417,9 +417,9 @@ func (r *ProviderStore) BulkUpdate(ctx context.Context, ids []int64, updates acc
 		} else if snapshotIdentityChanged != "" {
 			extraExpression = "CASE WHEN " + snapshotIdentityChanged + " THEN (" + extraExpression + ") - 'ollama_cloud_usage_snapshot' ELSE " + extraExpression + " END"
 		}
-		if cnUsageIdentityChanged {
+		if usageIdentityChanged {
 			extraExpression = "CASE WHEN platform IN ('kimi', 'zhipu', 'deepseek') AND type = 'apikey'" +
-				" THEN (" + extraExpression + ") - '" + acctcore.CNUsageMonitorSnapshotExtraKey + "' ELSE " + extraExpression + " END"
+				" THEN (" + extraExpression + ") - '" + acctcore.UsageMonitorSnapshotExtraKey + "' ELSE " + extraExpression + " END"
 		}
 		if updates.EnsureCodexFingerprintSeed {
 			extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
@@ -581,11 +581,11 @@ func IsSchedulerNeutralExtraKey(key string) bool {
 	return false
 }
 
-// cnUsageMonitorIdentityExtraPatch reports whether the patch mentions
+// usageMonitorIdentityExtraPatch reports whether the patch mentions
 // usage-query or TLS identity settings. Presence triggers invalidation even
 // when the supplied value is nil or unchanged, because the snapshot belongs
 // to the earlier query identity.
-func cnUsageMonitorIdentityExtraPatch(updates map[string]any) bool {
+func usageMonitorIdentityExtraPatch(updates map[string]any) bool {
 	for _, key := range []string{
 		acctcore.UpstreamUsageQueryExtraKey,
 		"enable_tls_fingerprint",

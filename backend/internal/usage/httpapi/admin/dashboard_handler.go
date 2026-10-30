@@ -208,6 +208,15 @@ func (h *DashboardHandler) GetRealtimeMetrics(c *gin.Context) {
 // text, invalid ID text leaves selectors unset, and query failures return the
 // generic trend error.
 func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
+	requestSource := strings.TrimSpace(c.Query("request_source"))
+	if requestSource == "" {
+		requestSource = usage.SourceUser
+	}
+	if !usage.ValidRequestSource(requestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
+
 	startTime, endTime := parseTimeRange(c, h.calendar)
 	granularity := c.DefaultQuery("granularity", "day")
 
@@ -280,7 +289,7 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 		return
 	}
 
-	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, providerID, groupID, teamID, model, requestType, stream, billingType, nativeCompactionV2)
+	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, providerID, groupID, teamID, model, requestType, stream, billingType, nativeCompactionV2, requestSource)
 	if err != nil {
 		response.Error(c, 500, "Failed to get usage trend")
 		return
@@ -301,6 +310,15 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 // gives request type precedence over stream text, and exposes cache-hit
 // status.
 func (h *DashboardHandler) GetModelStats(c *gin.Context) {
+	requestSource := strings.TrimSpace(c.Query("request_source"))
+	if requestSource == "" {
+		requestSource = usage.SourceUser
+	}
+	if !usage.ValidRequestSource(requestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
+
 	startTime, endTime := parseTimeRange(c, h.calendar)
 
 	var userID, apiKeyID, providerID, groupID, teamID int64
@@ -376,7 +394,7 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 		return
 	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, modelSource, requestType, stream, billingType, nativeCompactionV2)
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, modelSource, requestType, stream, billingType, nativeCompactionV2, requestSource)
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
@@ -395,6 +413,15 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 // optional selectors. Request type takes precedence over stream text, invalid
 // ID text leaves selectors unset, and the response exposes cache-hit status.
 func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
+	requestSource := strings.TrimSpace(c.Query("request_source"))
+	if requestSource == "" {
+		requestSource = usage.SourceUser
+	}
+	if !usage.ValidRequestSource(requestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
+
 	startTime, endTime := parseTimeRange(c, h.calendar)
 
 	var userID, apiKeyID, providerID, groupID, teamID int64
@@ -462,7 +489,7 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 		return
 	}
 
-	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, requestType, stream, billingType, nativeCompactionV2)
+	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, providerID, groupID, teamID, requestType, stream, billingType, nativeCompactionV2, requestSource)
 	if err != nil {
 		response.Error(c, 500, "Failed to get group statistics")
 		return

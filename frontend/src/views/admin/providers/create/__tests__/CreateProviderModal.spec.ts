@@ -94,7 +94,7 @@ const ModelWhitelistSelectorStub = defineComponent({
       default: undefined,
     },
   },
-  emits: ['update:modelValue'],
+  emits: ['update:modelValue', 'synced'],
   template: `
     <div>
       <button
@@ -658,7 +658,7 @@ describe('CreateProviderModal OpenAI provider options', () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Kimi')
     await wrapper
-      .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
+      .get('[data-testid="provider-endpoint-chat_completions"]')
       .setValue('https://relay.example.com/v1')
     await wrapper.get('form#create-provider-form input[type="password"]').setValue('sk-relay')
 
@@ -670,6 +670,19 @@ describe('CreateProviderModal OpenAI provider options', () => {
         api_key: 'sk-relay',
       },
     )
+  })
+
+  // Zhipu pay-as-you-go keys have no usage endpoint, while Coding Plan keys use a fixed
+  // vendor adapter. The usage editor follows the resolved adapter: hidden for payg, and
+  // shown without adapter or address inputs for coding.
+  it('shows the usage editor only when the drafted CN mode has an adapter', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Zhipu GLM')
+    expect(wrapper.find('[data-testid="upstream-usage-config"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="provider-mode-coding"]').trigger('click')
+    expect(wrapper.find('[data-testid="upstream-usage-config"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="upstream-usage-adapter"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="upstream-usage-base-url"]').exists()).toBe(false)
   })
 
   // An OpenAI draft enters authorization through the public form action. The
@@ -729,6 +742,22 @@ describe('CreateProviderModal OpenAI provider options', () => {
     expect(
       importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled,
     ).toBeUndefined()
+  })
+
+  // Codex session creation carries the image driver selected in the shared form.
+  // The import payload must preserve this override alongside credential metadata.
+  it('includes the selected image Responses driver when importing a Codex session', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-provider-form input[type="text"]').setValue('Image provider')
+    await wrapper.get('[data-testid="create-image-responses-model-input"]').setValue('gpt-6.1-sol')
+    await wrapper.get('form#create-provider-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.codex_image_responses_model).toBe(
+      'gpt-6.1-sol',
+    )
+    wrapper.unmount()
   })
 
   // A personal access token import uses the dedicated creation endpoint. The
@@ -923,7 +952,6 @@ describe('Jev 提供商', () => {
     const wrapper = mountModal()
     await wrapper.get('[data-testid="create-provider-platform-jev"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="jev-provider-type-api-key"]').exists()).toBe(true)
     await wrapper.get('form#create-provider-form input[type="text"]').setValue('Jev test')
     await wrapper.get('form#create-provider-form input[type="password"]').setValue('test-key')
     await wrapper.get('form#create-provider-form').trigger('submit.prevent')
@@ -940,6 +968,108 @@ describe('Jev 提供商', () => {
         extra: expect.objectContaining({
           upstream_usage_query: expect.objectContaining({ enabled: false }),
         }),
+      }),
+    )
+    wrapper.unmount()
+  })
+})
+
+describe('OpenCode provider creation', () => {
+  beforeEach(() => {
+    createProviderMock.mockReset()
+    createProviderMock.mockResolvedValue({ id: 102 })
+  })
+
+  // Selecting OpenCode forces API-key credentials and the payg mode card. Submission
+  // stores an empty root, no address overrides, and every enabled protocol for model-aware
+  // routing.
+  it('creates an independent OpenCode API-key provider', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="create-provider-platform-opencode"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="provider-mode-payg"]').attributes('aria-checked')).toBe(
+      'true',
+    )
+    expect(wrapper.get('[data-testid="create-provider-base-url"]').attributes('placeholder')).toBe(
+      'https://opencode.ai/inference',
+    )
+    await wrapper.get('form#create-provider-form input[type="text"]').setValue('OpenCode test')
+    await wrapper.get('form#create-provider-form input[type="password"]').setValue('oc_sk_test')
+    await wrapper.get('form#create-provider-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createProviderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platform: 'opencode',
+        type: 'apikey',
+        credentials: expect.objectContaining({
+          api_key: 'oc_sk_test',
+          base_url: '',
+          provider_mode: 'payg',
+          api_base_urls: {},
+          opencode_model_protocols: { payg: {}, go: {} },
+          upstream_protocols: [
+            'anthropic_messages',
+            'openai_responses',
+            'openai_chat_completions',
+            'gemini_generate_content',
+            'systemone',
+          ],
+        }),
+      }),
+    )
+    wrapper.unmount()
+  })
+
+  // The administrator picks the Go card and overrides one protocol address below the root.
+  // Placeholders follow the Go root, and the payload keeps only the entered override.
+  it('saves the Go mode and a single protocol address override', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="create-provider-platform-opencode"]').trigger('click')
+    await wrapper.get('[data-testid="provider-mode-go"]').trigger('click')
+    expect(wrapper.get('[data-testid="provider-endpoint-gemini"]').attributes('placeholder')).toBe(
+      'https://opencode.ai/inference/go/google/v1beta',
+    )
+    await wrapper
+      .get('[data-testid="provider-endpoint-responses"]')
+      .setValue(' https://relay.example/v1 ')
+    await wrapper.get('form#create-provider-form input[type="text"]').setValue('OpenCode Go')
+    await wrapper.get('form#create-provider-form input[type="password"]').setValue('oc_sk_go')
+    await wrapper.get('form#create-provider-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createProviderMock.mock.calls[0]?.[0]?.credentials).toEqual(
+      expect.objectContaining({
+        provider_mode: 'go',
+        api_base_urls: { responses: 'https://relay.example/v1' },
+      }),
+    )
+    wrapper.unmount()
+  })
+
+  // The shared model selector previews a model absent from bundled defaults with the
+  // entered key and mode. The suggestions it reports are saved as the accepted catalog
+  // table, separately from manual overrides.
+  it('persists synchronized catalog suggestions for a newly discovered model', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="create-provider-platform-opencode"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('form#create-provider-form input[type="text"]').setValue('OpenCode preview')
+    await wrapper.get('form#create-provider-form input[type="password"]').setValue('preview-key')
+    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
+    expect(selector.props('syncCredentials')).toMatchObject({
+      platform: 'opencode',
+      api_key: 'preview-key',
+      provider_mode: 'payg',
+    })
+    selector.vm.$emit('synced', {
+      models: ['new-model'],
+      model_protocols: { 'new-model': 'anthropic_messages' },
+    })
+    await wrapper.get('form#create-provider-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createProviderMock.mock.calls[0]?.[0]?.credentials).toEqual(
+      expect.objectContaining({
+        opencode_model_protocols: { payg: {}, go: {} },
+        opencode_catalog_protocols: { payg: { 'new-model': 'anthropic_messages' }, go: {} },
       }),
     )
     wrapper.unmount()

@@ -646,13 +646,14 @@ func (s *PricingConfigService) invalidateCache() {
 //
 // An eligible exact match precedes the ordered wildcard list. With
 // effective=false, even a configured blank card can match; with effective=true,
-// HasEffectivePricing decides whether to skip it, including its supported token
+// references remain selectable for target lookup. Other cards use
+// HasEffectivePricing to decide eligibility, including supported token
 // modifiers and interval fields. Skipped exact or wildcard entries let a later
 // eligible wildcard provide the result.
 func lookupPricing(cache *pricingConfigCache, groupID int64, model string, effective bool) *ModelPricingEntry {
 	model = normalizePriceModelName(model)
 	matches := func(entry *ModelPricingEntry) bool {
-		return entry != nil && (!effective || entry.HasEffectivePricing())
+		return entry != nil && (!effective || entry.ReferenceModel != "" || entry.HasEffectivePricing())
 	}
 	// Apply eligibility before returning exact or ordered prefix entries, so an
 	// ineffective configured card cannot mask a later usable wildcard during
@@ -713,18 +714,19 @@ func (s *PricingConfigService) GetConfigModelPricing(ctx context.Context, groupI
 	return s.getConfigModelPricing(ctx, groupID, model, false)
 }
 
-// GetEffectiveConfigModelPricing returns a cloned card accepted by
-// HasEffectivePricing for the group and model. Blank ineligible matches are
-// skipped so a later wildcard may apply; absent configuration and observed load
-// failures yield nil.
+// GetEffectiveConfigModelPricing returns a cloned reference or effective price
+// card for the group and model. Blank custom cards are skipped so a later
+// wildcard may apply. References retain their target for ResolveModelPricing;
+// absent configuration and observed load failures yield nil.
 func (s *PricingConfigService) GetEffectiveConfigModelPricing(ctx context.Context, groupID int64, model string) *ModelPricingEntry {
 	return s.getConfigModelPricing(ctx, groupID, model, true)
 }
 
 // getConfigModelPricing reads the group's active configuration once and returns
 // a cloned card selected by lookupPricing. A true effective value filters cards
-// through HasEffectivePricing. Missing configurations and cards yield nil; load
-// errors are reported through the warning callback before yielding nil.
+// through HasEffectivePricing while keeping references eligible for target lookup.
+// Missing configurations and cards yield nil; load errors are reported through
+// the warning callback before yielding nil.
 func (s *PricingConfigService) getConfigModelPricing(ctx context.Context, groupID int64, model string, effective bool) *ModelPricingEntry {
 	lk, err := s.lookupGroupPricingConfig(ctx, groupID)
 	if err != nil {
@@ -801,11 +803,14 @@ func (s *PricingConfigService) IsModelRestricted(ctx context.Context, groupID in
 	return policy.IsModelRestricted(model)
 }
 
-// PricingEntries validates model ranges, interval rules, amounts, and time pricing.
-// It clears empty time objects and canonicalizes valid video labels in the
+// PricingEntries validates model ranges, references, intervals, amounts, and time pricing.
+// It trims reference targets, clears empty time objects, and canonicalizes video labels in the
 // supplied working entries. Callers publish or persist these entries only after
 // validation succeeds, keeping stored labels within the validated character limit.
 func (v PricingConfigValidation) PricingEntries(entries []ModelPricingEntry) error {
+	if err := validatePriceReferences(entries); err != nil {
+		return err
+	}
 	if err := validateNoConflictingModels(entries); err != nil {
 		return err
 	}
@@ -983,12 +988,15 @@ func checkPricesNotNegative(p ModelPricingEntry) error {
 	return nil
 }
 
-// ProviderStatsPricing rejects user-only tier, reasoning, and populated time
+// ProviderStatsPricing rejects references, user-only tier, reasoning, and populated time
 // modifiers before validating provider-cost cards. Empty time objects can be
 // normalized away by PricingEntries; callers supply separate working cards for
 // their provider statistics rules.
 func (v PricingConfigValidation) ProviderStatsPricing(pricing []ModelPricingEntry) error {
 	for _, p := range pricing {
+		if p.ReferenceModel != "" {
+			return infraerrors.BadRequest("INVALID_PRICE_REFERENCE", "provider cost rules do not support model references")
+		}
 		if p.FastModeMultiplier != nil {
 			return infraerrors.BadRequest(
 				"PROVIDER_STATS_FAST_MODE_MULTIPLIER_UNSUPPORTED",

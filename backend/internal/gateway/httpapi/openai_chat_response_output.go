@@ -53,9 +53,9 @@ func (p *OpenAIResponseOutput) chatStreamFailure(c *gin.Context, provider *gatew
 	// A second provider may start only while the reader still holds business
 	// output; after publication, its content would be appended to an existing stream.
 	if !clientOutputStarted && decision.ShouldFailover(gatewayprovider.ExecutionErrorPolicy(provider), policyStatus, openai.OpenAIStreamFailedEventShouldFailover(payloadBytes, message)) {
-		MarkOpenAIResponseFailureEffects(c, policyStatus, decision.StopScheduling)
 		failure := p.NewStreamPolicyFailureWithModel(
-			c, provider, false, requestID, resp.Header, payloadBytes, message, upstreamModel,
+			c, provider, false, requestID, resp.Header, payloadBytes, message,
+			&AppliedOpenAIResponseEffects{StatusCode: policyStatus, StopScheduling: decision.StopScheduling}, upstreamModel,
 		)
 		return openai.ChatFailure{Failover: failure}
 	}
@@ -129,13 +129,6 @@ func (p *OpenAIResponseOutput) ChatOptions(c *gin.Context, provider *gatewayprov
 			if p.Options.Configured && p.Options.StreamDataIntervalTimeout > 0 {
 				// Configured stream idle intervals are stored as whole seconds.
 				return time.Duration(p.Options.StreamDataIntervalTimeout) * time.Second
-			}
-			return 0
-		},
-		KeepaliveInterval: func() time.Duration {
-			if p.Options.Configured && p.Options.StreamKeepaliveInterval > 0 {
-				// Configured heartbeat intervals are stored as whole seconds.
-				return time.Duration(p.Options.StreamKeepaliveInterval) * time.Second
 			}
 			return 0
 		},

@@ -21,10 +21,10 @@ import (
 // for caller-owned failure handling; their matches describe response evidence
 // rather than prove provider state.
 
-// CNResponseIndicatesInsufficientBalance reports whether the body contains a
-// supported balance-error phrase. It lowercases raw text and accepts Chinese
-// or English wording anywhere in the body; empty input returns false.
-func CNResponseIndicatesInsufficientBalance(body []byte) bool {
+// ResponseIndicatesInsufficientBalance reports whether the body contains a
+// supported balance-error phrase. It lowercases raw text and accepts Chinese or
+// English wording anywhere in the body; empty input returns false.
+func ResponseIndicatesInsufficientBalance(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}

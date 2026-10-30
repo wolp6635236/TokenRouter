@@ -187,6 +187,11 @@ func transformResponsesClientToolStream(
 
 	for documents.Scan() {
 		line := documents.Text()
+		// Comments describe upstream liveness only. Discard them before collecting
+		// metadata so comment-only separators cannot become downstream protocol output.
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
 		data, isData := wire.ExtractSSEDataLine(line)
 		if isData {
 			payload := []byte(data)

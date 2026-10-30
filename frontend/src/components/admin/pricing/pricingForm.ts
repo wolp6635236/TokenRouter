@@ -1,3 +1,4 @@
+import { validateModelReferences } from '@/components/admin/model-attributes/modelReferences'
 import type { ModelPricingEntry } from '@/api/admin/pricing'
 import {
   apiIntervalsToForm,
@@ -39,6 +40,8 @@ type TranslateFn = (key: string, params?: Record<string, unknown>) => string
 export function pricingEntryFromAPI(entry: ModelPricingEntry): PricingFormEntry {
   return {
     models: [...(entry.models || [])],
+    reference_model: entry.reference_model,
+    reference_mode: Boolean(entry.reference_model),
     billing_mode: entry.billing_mode || 'token',
     price_multiplier: entry.price_multiplier ?? null,
     fast_mode_multiplier:
@@ -65,9 +68,25 @@ export function pricingEntryFromAPI(entry: ModelPricingEntry): PricingFormEntry 
 // corresponding conversions.
 //
 // Zero amounts remain configured prices, while null and empty strings remain absent amounts.
-// Both Fast fields are serialized from the draft; hydration and field editing determine which
+// Reference mode emits the target and empty amount fields while preserving the local draft.
+// Both Fast fields in custom mode are serialized; hydration and field editing determine which
 // representation holds the effective value before this function runs.
 export function pricingEntryToAPI(entry: PricingFormEntry): ModelPricingEntry {
+  if (entry.reference_mode) {
+    return {
+      models: entry.models.map((model) => model.trim()),
+      reference_model: entry.reference_model?.trim(),
+      billing_mode: 'token',
+      input_price: null,
+      output_price: null,
+      cache_write_price: null,
+      cache_read_price: null,
+      image_input_price: null,
+      image_output_price: null,
+      per_request_price: null,
+      intervals: [],
+    }
+  }
   return {
     models: entry.models.map((model) => model.trim()),
     billing_mode: entry.billing_mode,
@@ -90,9 +109,12 @@ export function pricingEntryToAPI(entry: PricingFormEntry): ModelPricingEntry {
 }
 
 // validatePricingForm returns the first model conflict or invalid configured card message.
-// Entries with no models are skipped, model comparison trims and lowercases complete
+// Reference targets are checked before amount validation; custom entries with no models are
+// skipped. Model comparison trims and lowercases complete
 // identifiers, and null indicates that the configured entries passed these checks.
 export function validatePricingForm(entries: PricingFormEntry[], t: TranslateFn): string | null {
+  const references = entries.filter((entry) => entry.reference_mode)
+  if (validateModelReferences(references)) return t('admin.pricing.referenceInvalid')
   const configured = entries.filter((entry) => entry.models.length > 0)
   const models = configured.flatMap((entry) =>
     entry.models.map((model) => {
@@ -119,6 +141,7 @@ export function validatePricingForm(entries: PricingFormEntry[], t: TranslateFn)
 // multipliers must be positive when configured, and interval errors precede schedule errors.
 // The returned localized message identifies the first failed rule, while null accepts the card.
 function validatePricingEntry(entry: PricingFormEntry, t: TranslateFn): string | null {
+  if (entry.reference_mode) return null
   const prices = [
     entry.price_multiplier,
     entry.fast_mode_multiplier,

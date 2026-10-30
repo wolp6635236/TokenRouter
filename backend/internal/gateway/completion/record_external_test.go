@@ -4876,3 +4876,80 @@ func (s configuredPrices) GetEffectiveConfigModelPricing(ctx context.Context, id
 	}
 	return nil
 }
+
+// TestRecordFundingPricingInstant supplies captured subscription pricing at an
+// off-peak turn instant while recording at peak time. Native recording must use
+// the current clock, whereas OpenAI honors PricingAt and otherwise uses that clock.
+func TestRecordFundingPricingInstant(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.Local)
+	turnAt := now.Add(-2 * time.Hour)
+	for _, tc := range []struct {
+		name      string    // descriptive pricing instant case
+		openAI    bool      // inclusive OpenAI bucket interpretation
+		pricingAt time.Time // captured turn pricing instant
+		wantPeak  float64   // expected token peak factor
+	}{
+		{name: "anthropic uses current time", pricingAt: turnAt, wantPeak: 3},
+		{name: "openai uses captured turn time", openAI: true, pricingAt: turnAt, wantPeak: 1},
+		{name: "openai defaults to current time", openAI: true, wantPeak: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &completiontestkit.UsageLogStore{Inserted: true}
+			funds := &completiontestkit.SettlementStore{}
+			svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(logs, funds, nil, nil, nil)
+			clockCalls := 0
+			svc.Options.Now = func() time.Time {
+				clockCalls++
+				return now
+			}
+			groupID := int64(7)
+			configureBillingGroup(svc, &routing.Group{ID: groupID}, pricing.BillingSettings{
+				PeakRateEnabled:    true,
+				PeakStart:          "11:59",
+				PeakEnd:            "12:01",
+				PeakRateMultiplier: 3,
+			}, nil)
+			input := &completion.Input{
+				RequestID: "funding-pricing-instant",
+				PricingAt: tc.pricingAt,
+				Result: &completion.Result{
+					Model: "gpt-5.4",
+					Usage: completion.TokenUsage{InputTokens: 10, OutputTokens: 2},
+				},
+				APIKey: &completion.KeySnapshot{
+					ID: 2, GroupID: &groupID,
+					Group: &completion.GroupSnapshot{ID: groupID, RateMultiplier: 1.4},
+				},
+				User:     &completion.PayerSnapshot{ID: 1},
+				Provider: &completion.ProviderSnapshot{ID: 3, RateMultiplier: 1},
+				Subscription: &billing.UserSubscription{
+					ID: 99,
+					Plan: &billing.SubscriptionPlan{
+						GroupIDs:             []int64{groupID},
+						GroupRateMultipliers: map[int64]float64{groupID: 0.5},
+					},
+				},
+			}
+			recorder := svc.Core(nil, tc.openAI)
+			if tc.openAI {
+				require.NoError(t, recorder.RecordOpenAI(t.Context(), input))
+			} else {
+				opts := &completion.PricingOptions{PricingAt: turnAt}
+				require.NoError(t, recorder.RecordAnthropic(t.Context(), input, opts))
+				require.Equal(t, now, opts.PricingAt)
+			}
+			require.Equal(t, 1, clockCalls)
+			require.Zero(t, funds.ResolveCalls)
+			require.Equal(t, 1, funds.Calls)
+			require.Equal(t, 1, logs.Calls)
+			require.Equal(t, 0.5*tc.wantPeak, logs.LastLog.RateMultiplier)
+			require.Equal(t, tc.wantPeak, funds.LastCmd.SubscriptionRateMultiplierScale)
+			require.Equal(t, 1.4*tc.wantPeak, funds.LastCmd.SubscriptionRateMultiplier)
+			require.Equal(t, 1.4*tc.wantPeak, funds.LastCmd.BalanceRateMultiplier)
+			require.Positive(t, logs.LastLog.TotalCost)
+			// Tolerate rounding from multiplying the independently calculated base by
+			// the captured plan factor and the protocol-selected peak window factor.
+			require.InDelta(t, logs.LastLog.TotalCost*0.5*tc.wantPeak, funds.LastCmd.BillableAmountUSD, 1e-12)
+		})
+	}
+}

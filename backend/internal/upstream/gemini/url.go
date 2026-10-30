@@ -27,8 +27,11 @@ var geminiAIStudioActions = map[string]struct{}{
 // under the supplied base URL. It trims base, model, and action; callers
 // validate base URL policy, while this builder rejects unsafe model segments
 // and unsupported actions. stream adds alt=sse independently of action.
+//
+// The base may be a service root or a protocol root that already ends in
+// /v1beta, as relay address slots store it; both produce one version segment.
 func BuildGeminiAIStudioModelActionURL(baseURL, model, action string, stream bool) (string, error) {
-	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	trimmedBase := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(baseURL), "/"), "/v1beta")
 	if trimmedBase == "" {
 		return "", errors.New("gemini base url is required")
 	}

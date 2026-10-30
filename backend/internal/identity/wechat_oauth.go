@@ -34,8 +34,8 @@ const (
 // WeChatOAuthOptions carries channel settings resolved for one browser
 // authorization ceremony.
 type WeChatOAuthOptions struct {
-	// Mode, AppID, AppSecret, AuthorizeURL, Scope, RedirectURI, FrontendCallback
-	// and APIBaseURL describe the same selected ceremony. HTTP handlers resolve
+	// Mode, AppID, AppSecret, AuthorizeURL, Scope, RedirectURI, and
+	// FrontendCallback describe the same selected ceremony. HTTP handlers resolve
 	// these values before the client uses its application credentials and
 	// endpoint addresses.
 	// Mode: selected authorization channel mode. AppID: selected channel
@@ -43,8 +43,7 @@ type WeChatOAuthOptions struct {
 	// credential. AuthorizeURL: selected provider authorization endpoint. Scope:
 	// requested authorization scope value. RedirectURI: backend authorization
 	// callback address. FrontendCallback: frontend authorization return address.
-	// APIBaseURL: provider identity API base.
-	Mode, AppID, AppSecret, AuthorizeURL, Scope, RedirectURI, FrontendCallback, APIBaseURL string
+	Mode, AppID, AppSecret, AuthorizeURL, Scope, RedirectURI, FrontendCallback string
 	// OpenEnabled and MPEnabled record the two browser capabilities
 	// independently. RequiresUnionID reports true only when both are true, so
 	// the callback can require its shared cross-channel subject.

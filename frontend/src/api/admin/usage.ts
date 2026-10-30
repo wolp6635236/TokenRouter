@@ -15,6 +15,7 @@ import type { EndpointStat } from '@/api/usage.types'
  * duration and optional endpoint breakdowns.
  */
 export interface AdminUsageStatsResponse {
+  incomplete_cost_requests?: number // Requests with partial or unknown costs.
   total_requests: number // Recorded total requests.
   total_input_tokens: number // Total input tokens.
   total_output_tokens: number // Total output tokens.
@@ -56,6 +57,7 @@ export interface SimpleApiKey {
  * attached to a cleanup task.
  */
 export interface UsageCleanupFilters {
+  request_source?: string // Optional customer or internal source selector.
   start_time: string // Requested interval start.
   end_time: string // Requested interval end.
   user_id?: number // Owning user identifier.
@@ -93,6 +95,7 @@ export interface UsageCleanupTask {
  * or billing filters for cleanup creation.
  */
 export interface CreateUsageCleanupTaskRequest {
+  request_source?: string // Optional customer or internal source selector.
   start_date: string // Requested start date.
   end_date: string // Requested end date.
   user_id?: number // Owning user identifier.
@@ -154,6 +157,7 @@ export async function list(
 export async function getStats(
   params: {
     request_id?: string // Unified request identifier.
+    request_source?: string // Optional customer or internal source selector.
     endpoint_source?: 'all' | 'inbound' | 'upstream' | 'path' // Recorded endpoint source.
     user_id?: number // Owning user identifier.
     team_id?: number // Team record identifier.

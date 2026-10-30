@@ -52,7 +52,6 @@ type Options struct {
 	ResponseReadLimit    int64 // response body byte cap
 	MaxLineSize          int   // SSE line byte limit
 	StreamInterval       int   // upstream idle interval seconds
-	StreamKeepalive      int   // downstream heartbeat interval seconds
 	URLAllowlistEnabled  bool  // upstream host allowlist permission
 	AllowInsecureHTTP    bool  // format-validator HTTP scheme permission
 	// AllowedHosts retains the supplied slice for URL validation; callers

@@ -89,7 +89,7 @@ func TestOpenAIBufferedFailureProtocols(t *testing.T) {
 			wantError:    "upstream response failed: status=502 (not in custom error codes)",
 		},
 		{
-			name:      "failover_consumes_applied_health",
+			name:      "failover_reuses_applied_health",
 			errorJSON: `{"type":"authentication_error","code":"invalid_api_key","message":"credential rejected"}`,
 			credentials: map[string]any{
 				"custom_error_codes_enabled": true,
@@ -200,8 +200,6 @@ func TestOpenAIBufferedFailureProtocols(t *testing.T) {
 					require.Empty(t, recorder.Body.String())
 					require.False(t, c.Writer.Written())
 					require.False(t, IsResponseCommitted(c))
-					_, _, pending := consumeOpenAIResponseFailureEffects(c)
-					require.False(t, pending)
 				} else {
 					require.NotErrorAs(t, err, &failover)
 					require.EqualError(t, err, tt.wantError)

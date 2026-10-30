@@ -86,6 +86,9 @@ func describeUsageCleanupFilters(filters UsageCleanupFilters) string {
 	var parts []string
 	parts = append(parts, "start="+filters.StartTime.UTC().Format(time.RFC3339))
 	parts = append(parts, "end="+filters.EndTime.UTC().Format(time.RFC3339))
+	if filters.RequestSource != "" {
+		parts = append(parts, "request_source="+filters.RequestSource)
+	}
 	if filters.UserID != nil {
 		parts = append(parts, fmt.Sprintf("user_id=%d", *filters.UserID))
 	}

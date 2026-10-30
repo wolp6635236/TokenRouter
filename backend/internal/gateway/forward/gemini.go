@@ -273,7 +273,7 @@ func Gemini(ctx context.Context, p GeminiPorts, in GeminiInput) (*Result, error)
 		p.Log(fmt.Sprintf("%s status=%s error=%v", prefix, kind, err))
 	}
 	result, err := p.Execute(ctx, execution, hooks)
-	if err != nil {
+	if err != nil && !result.HasUsage && !result.Served {
 		return nil, err
 	}
 	imageCount := result.ObservedImages
@@ -292,7 +292,7 @@ func Gemini(ctx context.Context, p GeminiPorts, in GeminiInput) (*Result, error)
 		ImageCount:            imageCount,
 		ImageSize:             imageSize,
 		ImageInputSize:        imageInputSize,
-	}, nil
+	}, err
 }
 
 // WithGeminiSession returns an option assigning group and session affinity to

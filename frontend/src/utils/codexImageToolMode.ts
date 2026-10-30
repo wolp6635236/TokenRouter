@@ -9,7 +9,9 @@
  * choice. Full-object saves delete cleared keys; merge-style saves use null
  * values so persisted JSONB fields are cleared. The supplied extra object is
  * mutated and returned, so callers own the draft and select cleanup behavior
- * appropriate to their persistence operation.
+ * appropriate to their persistence operation. The image Responses driver is
+ * stored independently from this injection policy. Its empty string is a
+ * persisted reset value so merge updates can restore the backend default.
  */
 
 /**
@@ -103,4 +105,28 @@ export function applyCodexImageToolMode(
   }
 
   return extra
+}
+
+/** The image driver key stores a provider override independently of tool injection policy. */
+export const CODEX_IMAGE_RESPONSES_MODEL_KEY = 'codex_image_responses_model'
+
+/**
+ * readCodexImageResponsesModel reads the optional provider text-driver override.
+ * Missing or mistyped values become an empty draft, leaving the backend default
+ * responsible for selecting the model used by OAuth image adaptation.
+ */
+export function readCodexImageResponsesModel(
+  extra: Record<string, unknown> | null | undefined,
+): string {
+  const value = extra?.[CODEX_IMAGE_RESPONSES_MODEL_KEY]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * applyCodexImageResponsesModel writes the trimmed driver into owned provider metadata.
+ * Empty strings explicitly restore the backend default in both full-object and
+ * merge updates, so clearing a field replaces a previously persisted override.
+ */
+export function applyCodexImageResponsesModel(extra: Record<string, unknown>, model: string): void {
+  extra[CODEX_IMAGE_RESPONSES_MODEL_KEY] = model.trim()
 }

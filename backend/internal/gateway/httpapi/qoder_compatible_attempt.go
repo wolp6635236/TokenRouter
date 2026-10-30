@@ -126,18 +126,18 @@ func (b *qoderCompatibleAttemptBridge) SelectionFailed(err error, pending, first
 // reacquires through runtime slot handling. Errors are presented and return
 // false.
 //
-// The retry byte baseline precedes its wait, so heartbeats during that wait
-// count toward changed output. Initial acquisition captures size after waiting
-// instead. Successful cleanup is wrapped for the request’s stream mode,
+// The retry byte baseline precedes its wait, with recorded heartbeat bytes
+// excluded from both observations. Initial acquisition captures size after
+// waiting instead. Successful cleanup is wrapped for the request’s stream mode,
 // letting Forward explicitly release streams while buffered cancellation can
 // also release the same lease.
 func (b *qoderCompatibleAttemptBridge) Acquire(retry bool) bool {
 	var err error
 	if retry {
-		// Capture before the retry wait so its heartbeat output also
-		// blocks another replay; the initial acquisition instead
-		// captures after its admission wait.
-		b.writerSize = b.c.Writer.Size()
+		// Capture before the retry wait and subtract its heartbeat bytes.
+		// Only business output closes replay; the initial acquisition
+		// instead captures after its admission wait.
+		b.writerSize = HeartbeatAdjustedWrittenSize(b.c)
 		b.release, err = b.h.acquireQoderRetryProviderSlot(b.c, qoderTargetSnapshot(b.provider), b.selection, b.stream, b.streamStarted)
 	} else {
 		b.release = b.selection.ReleaseFunc()
@@ -162,7 +162,7 @@ func (b *qoderCompatibleAttemptBridge) Acquire(retry bool) bool {
 	MarkOpsProviderSlotAcquired(b.c)
 	b.release = wrapQoderReleaseOnDone(b.Context(), b.release, b.stream)
 	if !retry {
-		b.writerSize = b.c.Writer.Size()
+		b.writerSize = HeartbeatAdjustedWrittenSize(b.c)
 	}
 	return true
 }
@@ -196,7 +196,7 @@ func (b *qoderCompatibleAttemptBridge) Forward() textflow.QoderCompatibleOutcome
 		b.release = nil
 	}
 	b.selection.Report(b.provider.Snapshot().ID, err == nil, b.result)
-	return textflow.QoderCompatibleOutcome{Err: err, OutputChanged: b.c.Writer.Size() != b.writerSize, Partial: err != nil && b.result != nil, Canceled: err != nil && qoderRequestCanceled(b.Context(), err), CanRefresh: b.h.shouldRefreshQoderProvider(err, false), CanFailover: b.h.options.MaySwitch(err)}
+	return textflow.QoderCompatibleOutcome{Err: err, OutputChanged: HeartbeatAdjustedWrittenSize(b.c) != b.writerSize, Partial: err != nil && b.result != nil, Canceled: err != nil && qoderRequestCanceled(b.Context(), err), CanRefresh: b.h.shouldRefreshQoderProvider(err, false), CanFailover: b.h.options.MaySwitch(err)}
 }
 
 // Refresh requests bounded credential recovery for the retained target. Only a

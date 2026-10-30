@@ -11,7 +11,7 @@ import (
 // Messages authentication scheme selection depends on provider platform and
 // authentication type as well as the Extra value. Fixtures cover default,
 // explicit, and unrecognized settings and compare an unsupported platform with
-// a CN API-key record.
+// a Kimi, Zhipu, or DeepSeek API-key record.
 
 // TestProvider_GetAnthropicAPIKeyAuthScheme supplies default, bearer, invalid,
 // and unsupported-platform configurations. Each result must select the asserted
@@ -72,10 +72,10 @@ func TestProvider_GetAnthropicAPIKeyAuthScheme(t *testing.T) {
 	}
 }
 
-// TestGetAnthropicAPIKeyAuthScheme_CNProvider uses a Zhipu API-key record for
+// TestGetAnthropicAPIKeyAuthScheme_Zhipu uses a Zhipu API-key record for
 // the Messages protocol. Its missing Extra value must select x-api-key, and an
 // explicit bearer setting must replace that selection.
-func TestGetAnthropicAPIKeyAuthScheme_CNProvider(t *testing.T) {
+func TestGetAnthropicAPIKeyAuthScheme_Zhipu(t *testing.T) {
 	t.Parallel()
 
 	zhipu := &Record{

@@ -53,6 +53,7 @@ type UsageHandler struct {
 // CreateUsageCleanupTaskRequest carries administrator deletion dates,
 // optional equality selectors and a parsing timezone.
 type CreateUsageCleanupTaskRequest struct {
+	RequestSource string `json:"request_source"` // optional customer or system source selector
 	// StartDate and EndDate are required date-only text parsed in Timezone or
 	// the server calendar. Creation expands EndDate by fixed elapsed-day
 	// arithmetic to an inclusive instant.
@@ -97,6 +98,12 @@ func NewUsageHandler(
 // over stream, date-only ends advance by calendar day, and exact_total
 // requests the repository's full count.
 func (h *UsageHandler) List(c *gin.Context) {
+	requestSource := strings.TrimSpace(c.Query("request_source"))
+	if !usage.ValidRequestSource(requestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
+
 	page, pageSize := response.ParsePagination(c)
 	exactTotal := false
 	if exactTotalRaw := strings.TrimSpace(c.Query("exact_total")); exactTotalRaw != "" {
@@ -237,6 +244,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		Model:              model,
 		ModelFilterSource:  usage.ModelSourceRequested,
 		RequestType:        requestType,
+		RequestSource:      requestSource,
 		Stream:             stream,
 		NativeCompactionV2: nativeCompactionV2,
 		BillingType:        billingType,
@@ -270,6 +278,12 @@ func (h *UsageHandler) List(c *gin.Context) {
 // nocache bypasses lookup and insertion for this response; it leaves existing
 // entries available to later cached requests.
 func (h *UsageHandler) Stats(c *gin.Context) {
+	requestSource := strings.TrimSpace(c.Query("request_source"))
+	if !usage.ValidRequestSource(requestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
+
 	var userID, apiKeyID, providerID, groupID, teamID int64
 	if userIDStr := c.Query("user_id"); userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
@@ -419,6 +433,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		Model:              model,
 		ModelFilterSource:  usage.ModelSourceRequested,
 		RequestType:        requestType,
+		RequestSource:      requestSource,
 		Stream:             stream,
 		NativeCompactionV2: nativeCompactionV2,
 		BillingType:        billingType,
@@ -619,6 +634,10 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 
 	var requestType *int16
 	stream := req.Stream
+	if !usage.ValidRequestSource(req.RequestSource) {
+		response.BadRequest(c, "Invalid request_source")
+		return
+	}
 	if req.RequestType != nil {
 		parsed, err := usage.ParseUsageRequestType(*req.RequestType)
 		if err != nil {
@@ -631,17 +650,18 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 	}
 
 	filters := usage.UsageCleanupFilters{
-		StartTime:   startTime,
-		EndTime:     endTime,
-		UserID:      req.UserID,
-		APIKeyID:    req.APIKeyID,
-		ProviderID:  req.ProviderID,
-		GroupID:     req.GroupID,
-		TeamID:      req.TeamID,
-		Model:       req.Model,
-		RequestType: requestType,
-		Stream:      stream,
-		BillingType: req.BillingType,
+		StartTime:     startTime,
+		EndTime:       endTime,
+		UserID:        req.UserID,
+		APIKeyID:      req.APIKeyID,
+		ProviderID:    req.ProviderID,
+		GroupID:       req.GroupID,
+		TeamID:        req.TeamID,
+		Model:         req.Model,
+		RequestType:   requestType,
+		RequestSource: req.RequestSource,
+		Stream:        stream,
+		BillingType:   req.BillingType,
 	}
 
 	var userID any

@@ -190,13 +190,13 @@ func TestAttributeSupplementOwnsMutableValues(t *testing.T) {
 }
 
 // TestAttributeSupplementRejectsInvalidData supplies another provider's
-// metadata to a relay entry and then submits an invalid modality. The relay's
-// attributes remain intact, and invalid input adds no catalog entry.
+// metadata to a retained service entry and then submits an invalid modality.
+// The service's attributes remain intact, and invalid input adds no catalog entry.
 func TestAttributeSupplementRejectsInvalidData(t *testing.T) {
-	catalog, err := Parse([]byte(`{"providers":{"relay":{"models":{"jev-preview":{"modalities":{"input":["image"]}}}}}}`))
+	catalog, err := Parse([]byte(`{"providers":{"google-vertex":{"models":{"jev-preview":{"modalities":{"input":["image"]}}}}}}`))
 	require.NoError(t, err)
-	require.NoError(t, catalog.ApplyAttributeSupplement("relay/jev-preview", []byte(`{"provider":"typesafe","attributes":{"input_modalities":["text"],"output_modalities":["text"]}}`)))
-	attrs, found := catalog.LookupAttributes("relay/jev-preview", nil)
+	require.NoError(t, catalog.ApplyAttributeSupplement("google-vertex/jev-preview", []byte(`{"provider":"typesafe","attributes":{"input_modalities":["text"],"output_modalities":["text"]}}`)))
+	attrs, found := catalog.LookupAttributes("google-vertex/jev-preview", nil)
 	require.True(t, found)
 	require.Equal(t, []string{"image"}, *attrs.InputModalities)
 	require.Nil(t, attrs.OutputModalities)

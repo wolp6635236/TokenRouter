@@ -21,22 +21,23 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/jev"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/opencode"
 )
 
 // model_catalogue.go fetches upstream model lists and extracts
 // platform-appropriate model identifiers. Upstream model lists use different
-// endpoints and identity fields across API-key and OAuth services. OpenAI
-// OAuth reads a Codex manifest, CN providers query an OpenAI-format root, Grok
-// can place protocol IDs in metadata, and Jev names retain their complete path
-// spelling.
+// endpoints and identity fields across API-key and OAuth services. OpenAI OAuth
+// reads a Codex manifest, Kimi, Zhipu, and DeepSeek providers query an
+// OpenAI-format root, Grok can place protocol IDs in metadata, and Jev names
+// retain their complete path spelling.
 //
 // Requests resolve platform authentication and loaded proxy or TLS settings
 // before reading a bounded response. Generic model extraction chooses standard
 // ID, slug, then name, while Grok uses protocol fields before display labels.
 // Both supported object wrappers and top-level arrays feed sorted distinct
 // results. Typed synchronization errors distinguish configuration, unsupported
-// routes, and upstream failures, and non-success HTTP diagnostics report
-// status without copying the upstream response body into the error.
+// routes, and upstream failures, and non-success HTTP diagnostics report status
+// without copying the upstream response body into the error.
 
 // DefaultCodexModelsURL supplies the OAuth manifest endpoint configured for
 // administrative model synchronization and authenticated catalogue queries.
@@ -213,18 +214,35 @@ func (s *ModelCatalogue) FetchUpstreamSupportedModels(ctx context.Context, value
 }
 
 // buildUpstreamModelsRequest selects the model-list builder for a nonnil
-// provider record. CN platforms use OpenAI-format requests, while unknown
-// platforms return an unsupported synchronization error before transport
-// execution.
+// provider record. Kimi, Zhipu, and DeepSeek platforms use OpenAI-format
+// requests, while unknown platforms return an unsupported synchronization error
+// before transport execution.
 func (s *ModelCatalogue) buildUpstreamModelsRequest(ctx context.Context, value *providercore.Record) (*http.Request, error) {
 	switch {
+	case value.IsOpenCode():
+		if err := providercore.ValidateOpenCodeCredentials(value); err != nil {
+			return nil, newUpstreamModelSyncConfigError("Invalid OpenCode configuration", err)
+		}
+		base, err := s.Options.ValidateURL(value.OpenCodeRoot())
+		if err != nil {
+			return nil, newUpstreamModelSyncConfigError("Invalid OpenCode base URL", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v1/models", nil)
+		if err != nil {
+			return nil, err
+		}
+		ApplyProviderHeaderOverrides(value, req.Header)
+		opencode.ApplyHeaders(req.Header, value.GetCredential("api_key"), nil)
+		req.Header.Set("Accept", "application/json")
+		return req, nil
 	case value.Platform == capability.PlatformJev:
 		return s.buildJevUpstreamModelsRequest(ctx, value)
 	case value.IsGrok():
 		return s.buildGrokUpstreamModelsRequest(ctx, value)
-	case value.IsOpenAI() || value.IsCNProvider():
-		// CN inference can use Messages, but its model catalogue still follows OpenAI
-		// format. Choose that root before appending the shared models endpoint.
+	case value.IsOpenAI() || value.HasProtocolEndpointDefaults():
+		// Kimi, Zhipu, and DeepSeek inference can use Messages, but its model
+		// catalogue still follows OpenAI format. Choose that root before
+		// appending the shared models endpoint.
 		return s.buildOpenAIUpstreamModelsRequest(ctx, value)
 	case value.IsGemini():
 		return s.buildGeminiUpstreamModelsRequest(ctx, value)
@@ -334,7 +352,7 @@ func (s *ModelCatalogue) buildGrokUpstreamModelsRequest(ctx context.Context, val
 			}
 		}
 	}
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 	return req, nil
 }
 
@@ -409,7 +427,7 @@ func (s *ModelCatalogue) buildAnthropicUpstreamModelsRequest(ctx context.Context
 	// Apply allowed overrides after platform defaults and authentication. The
 	// shared filter permits intentional client-header replacement while protected
 	// credential headers retain their selected values.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 	return req, nil
 }
 
@@ -451,7 +469,7 @@ func (s *ModelCatalogue) buildOpenAIUpstreamModelsRequest(ctx context.Context, v
 	// Apply allowed overrides after platform defaults and authentication. The
 	// shared filter permits intentional client-header replacement while protected
 	// credential headers retain their selected values.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 	return req, nil
 }
 
@@ -515,8 +533,8 @@ func (s *ModelCatalogue) buildOpenAIOAuthUpstreamModelsRequest(ctx context.Conte
 	req.Header.Set("Originator", identity.Originator)
 	req.Header.Set("User-Agent", identity.UserAgent)
 	req.Header.Set("Version", identity.Version)
-	setTestChatGPTHeaders(req.Header, credentialProvider)
-	applyGrokQuotaHeaders(credentialProvider, req.Header)
+	SetChatGPTAccountHeaders(req.Header, credentialProvider)
+	ApplyProviderHeaderOverrides(credentialProvider, req.Header)
 	openai.EnforceCodexIdentityHeadersWithUA(req.Header, credentialProvider.GetOpenAIUserAgent())
 	return req, nil
 }

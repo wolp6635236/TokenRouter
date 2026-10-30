@@ -16,6 +16,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // grok_quota_transport.go validates endpoints and binds provider transport for
@@ -92,16 +93,6 @@ func (s *GrokQuotaTransport) baseURL(ctx context.Context, value *provider.Record
 	return grok.ResolveProviderBaseURL(value.IsGrokOAuth(), value.GetCredential("base_url"), fallback)
 }
 
-// applyGrokQuotaHeaders applies enabled provider overrides to the supplied
-// request headers.
-// It delegates protected-header filtering and wire casing to
-// ApplyProviderHeaderOverrides.
-// Nil headers are ignored by that adapter, so no additional header map is
-// allocated.
-func applyGrokQuotaHeaders(value *provider.Record, headers http.Header) {
-	ApplyProviderHeaderOverrides(value, headers)
-}
-
 // ResolveProxy returns a loaded proxy URL or attaches a successful storage lookup.
 // Nil record, missing ID, absent lookup callback, lookup failure and nil lookup
 // result return empty. A successful lookup mutates the borrowed record, so callers
@@ -145,7 +136,7 @@ func (s *GrokQuotaTransport) FetchBilling(ctx context.Context, value *provider.R
 		Do: func(request *http.Request) (*http.Response, error) {
 			return s.Do(request, proxy, value.ID, max(value.Concurrency, 2))
 		},
-		ApplyHeaders: func(headers http.Header) { applyGrokQuotaHeaders(value, headers) }, Truncate: openai.Truncate, MapStatus: s.MapStatus, Warn: slog.Warn,
+		ApplyHeaders: func(headers http.Header) { ApplyProviderHeaderOverrides(value, headers) }, Truncate: openai.Truncate, MapStatus: s.MapStatus, Warn: slog.Warn,
 	})
 }
 
@@ -169,6 +160,8 @@ func GrokQuotaProbeBody(model string) ([]byte, error) {
 // OAuth CLI headers precede provider overrides, and the platform closes the
 // response.
 func (s *GrokQuotaTransport) ActiveQuota(ctx context.Context, value *provider.Record, token, proxy, model string, observe func(*grok.QuotaSnapshot, int)) error {
+	ctx = usage.WithSystemRequest(ctx, usage.SystemRequest{Source: usage.SourceQuotaProbe, RequestedModel: model, Automatic: true})
+
 	body, err := GrokQuotaProbeBody(model)
 	if err != nil {
 		return apperror.Newf(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build probe body: %v", err)
@@ -191,7 +184,7 @@ func (s *GrokQuotaTransport) ActiveQuota(ctx context.Context, value *provider.Re
 			if value.IsGrokOAuth() {
 				grok.ApplyCLIHeaders(headers)
 			}
-			applyGrokQuotaHeaders(value, headers)
+			ApplyProviderHeaderOverrides(value, headers)
 		},
 		Do: func(request *http.Request) (*http.Response, error) {
 			return s.Do(request, proxy, value.ID, max(value.Concurrency, 1))
@@ -220,7 +213,7 @@ func (s *GrokQuotaTransport) FetchModels(ctx context.Context, value *provider.Re
 	}
 	return grok.FetchObservedModels(ctx, grok.ModelsRequest{
 		URL: httpclient.BuildOpenAIEndpointURL(base, "/v1/models"), Token: token, UserID: value.GetCredential("sub"), Email: value.GetCredential("email"), OAuth: value.IsGrokOAuth(),
-		ApplyOverrides: func(headers http.Header) { applyGrokQuotaHeaders(value, headers) },
+		ApplyOverrides: func(headers http.Header) { ApplyProviderHeaderOverrides(value, headers) },
 		Do: func(request *http.Request) (*http.Response, error) {
 			proxyURL := ""
 			// Model observation is best effort. A failed proxy lookup leaves

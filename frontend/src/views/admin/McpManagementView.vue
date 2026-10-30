@@ -1,55 +1,7 @@
 <template>
   <AppLayout>
     <TablePageLayout>
-      <template v-if="confirmation || fileID || error" #actions>
-        <div
-          v-if="confirmation"
-          class="mt-4 rounded-surface border border-primary-200 bg-primary-50 p-4 dark:border-primary-800 dark:bg-primary-950/30"
-        >
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="font-semibold text-gray-900 dark:text-gray-100">{{
-                t('admin.mcp.review')
-              }}</h2>
-              <p class="mt-1 text-sm text-gray-700 dark:text-gray-300">{{
-                operationLabel(confirmation.operation)
-              }}</p>
-              <p class="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{{
-                confirmation.operation.operation_id
-              }}</p>
-            </div>
-            <button
-              v-if="confirmation.state === 'pending'"
-              class="btn btn-primary"
-              type="button"
-              :disabled="approving"
-              @click="approve"
-            >
-              {{ approving ? t('common.processing') : t('admin.mcp.approve') }}
-            </button>
-            <p v-else class="text-sm text-primary-700 dark:text-primary-300" role="status">
-              {{
-                t(confirmation.state === 'approved' ? 'admin.mcp.approved' : 'admin.mcp.consumed')
-              }}
-            </p>
-          </div>
-          <details class="mt-3 text-sm">
-            <summary class="cursor-pointer text-gray-700 dark:text-gray-300">{{
-              t('admin.mcp.operationDetails')
-            }}</summary>
-            <p class="mt-2 whitespace-pre-wrap text-gray-600 dark:text-gray-400">{{
-              confirmation.operation.description
-            }}</p>
-          </details>
-          <details open class="mt-3 text-sm">
-            <summary class="cursor-pointer text-gray-700 dark:text-gray-300">{{
-              t('admin.mcp.preview')
-            }}</summary>
-            <pre
-              class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control bg-white p-3 text-xs dark:bg-dark-900"
-              >{{ formattedPreview }}</pre>
-          </details>
-        </div>
+      <template v-if="fileID || (error && !confirmationOpen)" #actions>
         <div
           v-if="fileID"
           class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-surface border border-gray-200 p-4 dark:border-dark-700"
@@ -64,9 +16,12 @@
             {{ downloading ? t('common.processing') : t('admin.mcp.download') }}
           </button>
         </div>
-        <p v-if="error" class="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">{{
-          error
-        }}</p>
+        <p
+          v-if="error && !confirmationOpen"
+          class="mt-3 text-sm text-red-600 dark:text-red-400"
+          role="alert"
+          >{{ error }}</p
+        >
       </template>
       <template #filters>
         <div class="flex flex-col gap-2">
@@ -341,6 +296,83 @@
     </Teleport>
 
     <BaseDialog
+      :show="confirmationOpen"
+      :title="t('admin.mcp.review')"
+      width="normal"
+      :close-on-escape="!approving"
+      @close="closeConfirmation"
+    >
+      <div class="space-y-4" :aria-busy="loading || approving">
+        <p v-if="loading" class="text-sm text-gray-500 dark:text-dark-400" role="status">{{
+          t('common.loading')
+        }}</p>
+        <p v-if="error" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ error }}</p>
+        <template v-if="confirmation">
+          <div>
+            <p class="font-medium text-gray-900 dark:text-gray-100">{{
+              operationLabel(confirmation.operation)
+            }}</p>
+            <p class="mt-1 break-all font-mono text-xs text-gray-500 dark:text-dark-400">{{
+              confirmation.operation.operation_id
+            }}</p>
+          </div>
+          <details class="text-sm">
+            <summary class="cursor-pointer text-gray-700 dark:text-gray-300">{{
+              t('admin.mcp.operationDetails')
+            }}</summary>
+            <p class="mt-2 whitespace-pre-wrap break-words text-gray-600 dark:text-dark-400">{{
+              confirmation.operation.description
+            }}</p>
+          </details>
+          <div>
+            <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{
+              t('admin.mcp.preview')
+            }}</h4>
+            <pre
+              class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-control bg-gray-50 p-3 text-xs dark:bg-dark-900"
+              >{{ formattedPreview }}</pre>
+          </div>
+          <p
+            v-if="confirmation.state !== 'pending'"
+            class="text-sm text-primary-700 dark:text-primary-300"
+            role="status"
+            >{{
+              t(confirmation.state === 'approved' ? 'admin.mcp.approved' : 'admin.mcp.consumed')
+            }}</p
+          >
+        </template>
+      </div>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button
+            class="btn btn-secondary"
+            type="button"
+            :disabled="approving"
+            @click="closeConfirmation"
+          >
+            {{ t(confirmation?.state === 'pending' ? 'common.cancel' : 'common.close') }}
+          </button>
+          <button
+            v-if="error && !confirmation"
+            class="btn btn-secondary"
+            type="button"
+            :disabled="loading"
+            @click="load"
+            >{{ t('admin.mcp.refresh') }}</button
+          >
+          <button
+            v-if="confirmation?.state === 'pending'"
+            class="btn btn-primary"
+            type="button"
+            :disabled="loading || approving"
+            @click="approve"
+            >{{ approving ? t('common.processing') : t('admin.mcp.approve') }}</button
+          >
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
       :show="editorOpen"
       :title="
         t(
@@ -551,7 +583,8 @@ import type { MCPToken, MCPTokenInput, MCPOperation, MCPConfirmation } from '@/a
 // through an owner-authenticated endpoint and keep it local to that copy attempt.
 // Sensitive actions share a queue from their first request through verification
 // and retry, because the TOTP controller can retain one pending decision. Browser
-// confirmation leaves the approved business action for the agent to retry.
+// confirmation opens a modal from the incoming URL and leaves the approved
+// business action for the agent to retry. Dismissal removes only that URL parameter.
 
 // Shared UI services supply locale, browser-route state, feedback, and strong authentication.
 const { t, locale } = useI18n()
@@ -598,6 +631,10 @@ const oauthConnectionHint = computed(() => {
 const editingSource = ref('')
 const operations = ref<MCPOperation[]>([])
 const confirmation = ref<MCPConfirmation | null>(null)
+// The incoming confirmation link opens the modal immediately, including loading and failure states.
+const confirmationOpen = computed(
+  () => typeof route.query.confirmation_id === 'string' && !!route.query.confirmation_id,
+)
 const loading = ref(false)
 const error = ref('')
 const search = ref('')
@@ -970,9 +1007,16 @@ async function revoke() {
 // Approval does not execute the business action; the refreshed state tells the
 // user that the agent can retry its original request with the confirmation ID.
 async function approve() {
-  if (!confirmation.value || approving.value) return
+  if (
+    !confirmationOpen.value ||
+    confirmation.value?.state !== 'pending' ||
+    loading.value ||
+    approving.value
+  )
+    return
   const id = confirmation.value.id
   approving.value = true
+  error.value = ''
   try {
     await runSensitive(() => api.approveConfirmation(id))
     await load()
@@ -981,6 +1025,16 @@ async function approve() {
   } finally {
     approving.value = false
   }
+}
+
+// closeConfirmation dismisses the review without approving the requested action.
+// Active approval and verification keep the modal open until they settle. Removing
+// only its query parameter preserves other incoming workflows and management state.
+async function closeConfirmation() {
+  if (approving.value) return
+  const query = { ...route.query }
+  delete query.confirmation_id
+  await router.replace({ query })
 }
 
 // download retrieves protected bytes after satisfying the endpoint's current TOTP policy.

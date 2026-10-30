@@ -160,12 +160,7 @@ func (s *ModelRulesSnapshot) resolve(model string) (string, bool) {
 // the model is returned exactly as supplied for downstream platform handling.
 func (s *ModelRulesSnapshot) ForwardMappedModel(model string) string {
 	mapped, matched := s.ResolveMappedModel(model)
-	// A blank target supplies no outbound model. Retain the requested spelling so
-	// forwarding passes the caller's model onward to its platform normalizer.
-	if !matched || strings.TrimSpace(mapped) == "" {
-		return model
-	}
-	return strings.TrimSpace(mapped)
+	return ForwardMappedTarget(model, mapped, matched)
 }
 
 // Supports reports whether one mapped model passes the captured whitelist and

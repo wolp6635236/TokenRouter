@@ -70,12 +70,19 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_UnsupportedProxyScheme() {
 }
 
 // TestProbeProxy_Success_IPAPI serves exit metadata for the first built-in
-// target through a loopback proxy. It checks nonnegative header latency and
-// each returned IP, city, region, country, and country-code field.
+// target through a loopback proxy that requires the zh-CN language parameter.
+// It checks the default request's locale, nonnegative header latency, and each
+// returned IP, city, region, country, and country-code field.
 func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPAPI() {
 	s.setupProxyServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Serve a successful response only for the first probe target.
 		if strings.Contains(r.RequestURI, "ip-api.com") {
+			// Reject a corrupted locale so the probe cannot pass by matching
+			// the correct host while sending an invalid language parameter.
+			if r.URL.Query().Get("lang") != "zh-CN" {
+				http.Error(w, "expected zh-CN language parameter", http.StatusBadRequest)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"status":"success","query":"1.2.3.4","city":"c","regionName":"r","country":"cc","countryCode":"CC"}`)
 			return

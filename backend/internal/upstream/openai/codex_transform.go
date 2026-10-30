@@ -34,8 +34,8 @@ import (
 // These values coordinate the Responses text driver, bounded call identities,
 // and fixed guidance markers used during OAuth request compatibility handling.
 const (
-	// ImagesResponsesMainModel is the Responses text driver for image-only request
-	// adaptation; the selected image model remains on its hosted tool.
+	// ImagesResponsesMainModel is the API-key text driver for image-only request
+	// adaptation. OAuth callers resolve their driver from provider configuration.
 	ImagesResponsesMainModel = "gpt-5.4-mini"
 
 	// CodexCallIDMaxLength bounds normalized identifiers, and CodexCallIDPrefix
@@ -1311,15 +1311,16 @@ func ValidateOpenAIResponsesImageModel(reqBody map[string]any, model string, ima
 
 // NormalizeOpenAIResponsesImageOnlyModel moves an image-only request to a
 // Responses text driver with an image_generation tool. Nonempty requests change
-// only when imageOnly is true; callers own that model classification. The first
-// hosted image tool is used, or a new one is appended.
+// only when imageOnly is true; callers supply a resolved nonblank mainModel and
+// own that model classification. The first hosted image tool is used, or a new
+// one is appended.
 //
 // Existing nonblank tool model and existing option keys win over top-level
 // image fields, which are removed after consideration. A prompt populates input
 // only when input is absent; a choice is added only when absent. The top-level
-// model becomes ImagesResponsesMainModel while the selected image model stays
-// on the tool, preserving their separate execution roles.
-func NormalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any, imageOnly bool) bool {
+// model becomes mainModel from provider policy while the selected image model
+// stays on the tool, preserving their separate execution roles.
+func NormalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any, imageOnly bool, mainModel string) bool {
 	if len(reqBody) == 0 {
 		return false
 	}
@@ -1390,10 +1391,10 @@ func NormalizeOpenAIResponsesImageOnlyModel(reqBody map[string]any, imageOnly bo
 		reqBody["tool_choice"] = map[string]any{"type": "image_generation"}
 		modified = true
 	}
-	if imageModel != ImagesResponsesMainModel {
+	if imageModel != mainModel {
 		modified = true
 	}
-	reqBody["model"] = ImagesResponsesMainModel
+	reqBody["model"] = mainModel
 	return modified
 }
 

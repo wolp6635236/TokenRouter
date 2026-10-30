@@ -9,8 +9,9 @@ import (
 )
 
 // TestGetAPIProtocol supplies supported, absent, and invalid legacy variants
-// across CN platforms. It checks recognized routing modes, Zhipu's Responses
-// fallback, and default Chat selection on an OpenAI record.
+// across Kimi, Zhipu, and DeepSeek platforms. It checks recognized routing
+// modes, Zhipu's Responses fallback, and default Chat selection on an OpenAI
+// record.
 func TestGetAPIProtocol(t *testing.T) {
 	t.Parallel()
 
@@ -33,7 +34,7 @@ func TestGetAPIProtocol(t *testing.T) {
 	require.Equal(t, APIProtocolAdaptive, mk(capability.PlatformDeepseek, APIProtocolAdaptive).GetAPIProtocol())
 	require.Equal(t, APIProtocolChatCompletions, mk(capability.PlatformZhipu, APIProtocolResponses).GetAPIProtocol(), "zhipu 无 responses 端点")
 	require.Equal(t, APIProtocolChatCompletions, mk(capability.PlatformKimi, "bogus").GetAPIProtocol(), "非法值回退默认")
-	require.Equal(t, APIProtocolChatCompletions, (ProtocolTarget{Record: &Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}).GetAPIProtocol(), "非 CN 供应商恒为默认")
+	require.Equal(t, APIProtocolChatCompletions, (ProtocolTarget{Record: &Record{Platform: capability.PlatformOpenAI, Type: capability.ProviderTypeAPIKey}}).GetAPIProtocol(), "OpenAI providers use the default Chat protocol")
 }
 
 // TestGetCodingPlanProviderUsesPlatformInsteadOfURL supplies coding-plan records
@@ -59,27 +60,16 @@ func TestGetCodingPlanProviderUsesPlatformInsteadOfURL(t *testing.T) {
 	require.Equal(t, capability.PlatformZhipu, zhipu.GetCodingPlanProvider(), "中继路径不得改变平台身份")
 }
 
-// TestSupportsNativeCNResponses compares DeepSeek, Kimi, Zhipu, and OpenAI
-// platform records, including Kimi coding mode. It checks that native Responses
-// support follows platform identity for those supplied configurations.
-func TestSupportsNativeCNResponses(t *testing.T) {
-	t.Parallel()
-	require.True(t, (ProtocolTarget{Record: &Record{Platform: capability.PlatformDeepseek}}).SupportsNativeCNResponses())
-	require.True(t, (ProtocolTarget{Record: &Record{Platform: capability.PlatformKimi}}).SupportsNativeCNResponses())
-	require.True(t, (ProtocolTarget{Record: &Record{Platform: capability.PlatformKimi, Credentials: map[string]any{"provider_mode": ProviderModeCoding}}}).SupportsNativeCNResponses())
-	require.False(t, (ProtocolTarget{Record: &Record{Platform: capability.PlatformZhipu}}).SupportsNativeCNResponses())
-	require.False(t, (ProtocolTarget{Record: &Record{Platform: capability.PlatformOpenAI}}).SupportsNativeCNResponses())
-}
-
 // TestAdaptiveProtocolBaseURLs combines adaptive selection with each supported
-// CN platform and provider mode. It checks their default Chat, Messages, and
-// Responses addresses plus the Messages endpoint convenience method.
+// Kimi, Zhipu, and DeepSeek platform and provider mode. It checks their default
+// Chat, Messages, and Responses addresses plus the Messages endpoint
+// convenience method.
 func TestAdaptiveProtocolBaseURLs(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name          string // endpoint scenario display name
-		platform      string // configured CN platform identity
+		platform      string // configured Kimi/Zhipu/DeepSeek platform identity
 		mode          string // configured provider billing mode
 		wantChat      string // expected default Chat address
 		wantAnthropic string // expected default Messages address
@@ -98,9 +88,9 @@ func TestAdaptiveProtocolBaseURLs(t *testing.T) {
 				"api_protocol":  APIProtocolAdaptive,
 				"provider_mode": tc.mode,
 			}}}
-			require.Equal(t, tc.wantChat, provider.GetCNProtocolBaseURL(APIProtocolChatCompletions))
-			require.Equal(t, tc.wantAnthropic, provider.GetCNProtocolBaseURL(APIProtocolAnthropic))
-			require.Equal(t, tc.wantResponses, provider.GetCNProtocolBaseURL(APIProtocolResponses))
+			require.Equal(t, tc.wantChat, provider.GetTextAPIKeyProtocolBaseURL(APIProtocolChatCompletions))
+			require.Equal(t, tc.wantAnthropic, provider.GetTextAPIKeyProtocolBaseURL(APIProtocolAnthropic))
+			require.Equal(t, tc.wantResponses, provider.GetTextAPIKeyProtocolBaseURL(APIProtocolResponses))
 			require.Equal(t, tc.wantAnthropic, provider.GetAnthropicProtocolBaseURL())
 		})
 	}
@@ -123,9 +113,9 @@ func TestAdaptiveProtocolBaseURLOverrides(t *testing.T) {
 	}}}
 
 	require.Equal(t, "https://chat.example.com", provider.GetOpenAIBaseURL())
-	require.Equal(t, "https://chat.example.com", provider.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+	require.Equal(t, "https://chat.example.com", provider.GetTextAPIKeyProtocolBaseURL(APIProtocolChatCompletions))
 	require.Equal(t, "https://anthropic.example.com", provider.GetAnthropicProtocolBaseURL())
-	require.Equal(t, "https://responses.example.com", provider.GetCNProtocolBaseURL(APIProtocolResponses))
+	require.Equal(t, "https://responses.example.com", provider.GetTextAPIKeyProtocolBaseURL(APIProtocolResponses))
 }
 
 // TestAnthropicProtocolBaseURL supplies fixed legacy Messages records with
@@ -214,4 +204,95 @@ func TestGetOpenAIFormatBaseURL_ProtocolAware(t *testing.T) {
 		Credentials: map[string]any{"base_url": "https://ds-relay.example.com"},
 	}}
 	require.Equal(t, "https://ds-relay.example.com", ccProvider.GetOpenAIFormatBaseURL())
+}
+
+// TestOpenCodeProtocolEndpointsKeepProviderPolicySeparate selects each
+// supported wire family through one endpoint entry. Kimi, Zhipu, and DeepSeek
+// stateless classification and Kimi, Zhipu, and DeepSeek-specific endpoint
+// lookup must remain unavailable for the OpenCode record.
+func TestOpenCodeProtocolEndpointsKeepProviderPolicySeparate(t *testing.T) {
+	r := &Record{Platform: PlatformOpenCode, Type: ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "key"}}
+	for selected, suffix := range map[capability.ProtocolID]string{
+		capability.ProtocolOpenAIResponses:       "/openai/v1",
+		capability.ProtocolOpenAIChatCompletions: "/openai/v1",
+		capability.ProtocolAnthropicMessages:     "/anthropic/v1",
+		capability.ProtocolGeminiGenerateContent: "/google/v1beta",
+		capability.ProtocolSystemOne:             "/systemone/v1",
+	} {
+		target := ProtocolTarget{Record: r, Protocol: selected}
+		require.Equal(t, "https://opencode.ai/inference"+suffix, target.BaseURL())
+		require.False(t, target.UsesStatelessResponses())
+		require.Empty(t, target.GetTextAPIKeyProtocolBaseURL(APIProtocolResponses))
+	}
+	require.Equal(t, DefaultJevBaseURL, r.GetJevBaseURL())
+	require.Equal(t, "google-default", r.GetGeminiBaseURL("google-default"))
+}
+
+// TestProtocolBaseURLUsesAnthropicProviderEndpoint checks ordinary Anthropic
+// API-key records with a unified protocol selection. Both default and custom
+// endpoints must resolve through Anthropic settings without requiring Kimi,
+// Zhipu, and DeepSeek slots.
+func TestProtocolBaseURLUsesAnthropicProviderEndpoint(t *testing.T) {
+	for _, custom := range []string{"", "https://messages.example/anthropic"} {
+		r := &Record{Platform: PlatformAnthropic, Type: ProviderTypeAPIKey, Credentials: map[string]any{
+			"api_key": "key", "base_url": custom, UpstreamProtocolsKey: []string{string(capability.ProtocolAnthropicMessages)},
+		}}
+		want := custom
+		if want == "" {
+			want = "https://api.anthropic.com"
+		}
+		require.Equal(t, want, (ProtocolTarget{Record: r, Protocol: capability.ProtocolAnthropicMessages}).BaseURL())
+	}
+}
+
+// TestSupportsHTTPResponsesContinuation separates native response references from
+// converted or stateless routes. OpenCode keeps its platform identity while API
+// keys on its Responses route can retain an authorized upstream identifier.
+func TestSupportsHTTPResponsesContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		platform string                // configured provider platform
+		kind     string                // configured credential type
+		protocol capability.ProtocolID // admitted operation protocol
+		allowed  bool                  // expected continuation eligibility
+	}{
+		{capability.PlatformOpenCode, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIResponses, true},
+		{capability.PlatformOpenCode, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIChatCompletions, false},
+		{capability.PlatformOpenCode, capability.ProviderTypeAPIKey, capability.ProtocolAnthropicMessages, false},
+		{capability.PlatformOpenCode, capability.ProviderTypeAPIKey, capability.ProtocolGeminiGenerateContent, false},
+		{capability.PlatformOpenCode, capability.ProviderTypeAPIKey, "", false},
+		{capability.PlatformOpenCode, capability.ProviderTypeOAuth, capability.ProtocolOpenAIResponses, false},
+		{capability.PlatformKimi, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIResponses, false},
+		{capability.PlatformDeepseek, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIResponses, false},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIResponses, true},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, capability.ProtocolOpenAIChatCompletions, false},
+		{capability.PlatformOpenAI, capability.ProviderTypeAPIKey, "", true},
+		{capability.PlatformOpenAI, capability.ProviderTypeOAuth, capability.ProtocolOpenAIResponses, false},
+	} {
+		t.Run(tc.platform+"/"+tc.kind+"/"+string(tc.protocol), func(t *testing.T) {
+			target := ProtocolTarget{Record: &Record{Platform: tc.platform, Type: tc.kind}, Protocol: tc.protocol}
+			require.Equal(t, tc.allowed, target.SupportsHTTPResponsesContinuation())
+			require.Equal(t, tc.platform, target.Platform)
+		})
+	}
+	require.False(t, (ProtocolTarget{}).SupportsHTTPResponsesContinuation())
+}
+
+// TestResponsesOperationPoliciesResolveSelectedProtocol exercises platform
+// rules on explicit Responses and Chat operations over an adaptive provider.
+// It checks that endpoint slots, continuation removal, and client-tool encoding
+// retain separate platform choices and never leak into a selected Chat route.
+func TestResponsesOperationPoliciesResolveSelectedProtocol(t *testing.T) {
+	t.Parallel()
+	for _, platform := range []string{PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformOpenAI, PlatformOpenCode} {
+		for _, protocol := range []capability.ProtocolID{capability.ProtocolOpenAIResponses, capability.ProtocolOpenAIChatCompletions} {
+			t.Run(platform+"/"+string(protocol), func(t *testing.T) {
+				target := ProtocolTarget{Record: &Record{Platform: platform, Type: ProviderTypeAPIKey, Credentials: map[string]any{UpstreamProtocolsKey: []string{}}}, Protocol: protocol}
+				responses := protocol == capability.ProtocolOpenAIResponses
+				slots := responses && (platform == PlatformKimi || platform == PlatformDeepseek)
+				require.Equal(t, slots, target.UsesResponsesEndpointSlots())
+				require.Equal(t, slots, target.UsesStatelessResponses())
+				require.Equal(t, responses && platform == PlatformDeepseek, target.RequiresResponsesClientToolEncoding())
+			})
+		}
+	}
 }

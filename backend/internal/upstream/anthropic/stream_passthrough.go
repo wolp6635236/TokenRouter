@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -19,15 +18,15 @@ import (
 
 // stream_passthrough.go forwards API-key SSE lines and collects usage through
 // downstream write failures.
-// API-key SSE passthrough sends upstream lines while parsing their usage for
+// API-key SSE passthrough consumes upstream heartbeats and sends business
+// lines while parsing their usage for
 // local accounting. The first nonempty data payload supplies legacy arrival
 // timing, so an initial message_start can establish that timestamp before any
 // semantic content appears.
 //
 // Scanner reads and downstream writes use a bounded channel. A full channel
 // pauses further scans until the loop receives a line. Read timestamps govern
-// the idle limit, while keepalive timing follows completed client frames
-// and avoids injecting a ping into a partially written event. A failed client
+// the idle limit independently of downstream HTTP heartbeat activity. A failed client
 // write stops further delivery but leaves upstream parsing active for final
 // usage. message_stop or DONE provides completion evidence; EOF or read failure
 // before that evidence returns accumulated state with an error. The reader
@@ -42,8 +41,8 @@ import (
 //
 // Data lines are observed before delivery and feed the compatible usage parser.
 // A write failure leaves upstream reads active, while idle timeout or
-// incomplete terminal evidence returns partial usage. Keepalives wait for
-// complete forwarded frames, preserving line framing during upstream pauses.
+// incomplete terminal evidence returns partial usage. The HTTP boundary supplies
+// downstream keepalives without changing this reader's upstream activity clock.
 // A terminal observation allows later EOF or read error to complete successfully.
 // The shared body observer records upstream arrivals independently of line forwarding,
 // so converter output and downstream buffering cannot establish upstream latency.
@@ -168,39 +167,30 @@ func StreamResponsePassthrough(
 		intervalTimer.Reset(streamInterval)
 	}
 
-	keepaliveInterval := options.Keepalive
-	var keepaliveTimer *time.Timer
-	if keepaliveInterval > 0 {
-		keepaliveTimer = time.NewTimer(keepaliveInterval)
-		defer keepaliveTimer.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTimer != nil {
-		keepaliveCh = keepaliveTimer.C
-	}
-	lastDataAt := time.Now()
-	// A completed client frame restarts downstream idle scheduling. Stop and
-	// drain pending timer delivery before resetting so a prior heartbeat tick
-	// cannot immediately follow that fresh frame.
-	resetKeepaliveTimer := func() {
-		if keepaliveTimer == nil {
-			return
-		}
-		if !keepaliveTimer.Stop() {
-			select {
-			case <-keepaliveTimer.C:
-			default:
+	var heartbeatFilter upstream.SSEHeartbeatLineFilter
+	// Filtered lines retain their delimiters; only complete forwarded frames flush.
+	// A write failure stops delivery while the scanner continues collecting usage.
+	writeFilteredLines := func(lines [][]byte) {
+		for _, raw := range lines {
+			if clientDisconnected {
+				return
+			}
+			if _, err := w.Write(RestoreToolNamesInBytes(raw, options.ToolNames)); err != nil {
+				clientDisconnected = true
+				logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
+				return
+			}
+			if string(raw) == "\n" {
+				flusher.Flush()
 			}
 		}
-		keepaliveTimer.Reset(keepaliveInterval)
 	}
-
-	inPartialEvent := false
 
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				writeFilteredLines(heartbeatFilter.Flush())
 				if !clientDisconnected {
 					flusher.Flush()
 				}
@@ -220,6 +210,7 @@ func StreamResponsePassthrough(
 				return &StreamResult{Usage: usage, ClientDisconnect: clientDisconnected}, nil
 			}
 			if ev.err != nil {
+				writeFilteredLines(heartbeatFilter.Flush())
 				// A terminal marker was observed before this read error. Retain
 				// the collected completed result, because that later scanner
 				// failure does not remove the earlier completion evidence.
@@ -285,25 +276,8 @@ func StreamResponsePassthrough(
 
 			// A failed line or newline write ends further client delivery,
 			// while the loop continues reading usage. Flush at blank lines so
-			// successful output reaches complete frame boundaries before
-			// keepalive scheduling resets.
-			if !clientDisconnected {
-				restored := string(RestoreToolNamesInBytes([]byte(line), options.ToolNames))
-				if _, err := io.WriteString(w, restored); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
-				} else if _, err := io.WriteString(w, "\n"); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: provider=%d", options.ProviderID)
-				} else if line == "" {
-					flusher.Flush()
-					lastDataAt = time.Now()
-					resetKeepaliveTimer()
-					inPartialEvent = false
-				} else {
-					inPartialEvent = true
-				}
-			}
+			// successful output reaches complete frame boundaries during ordinary delivery.
+			writeFilteredLines(heartbeatFilter.Push([]byte(line + "\n")))
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -322,30 +296,6 @@ func StreamResponsePassthrough(
 				options.OnTimeout(ctx, model)
 			}
 			return &StreamResult{Usage: usage}, fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if clientDisconnected {
-				continue
-			}
-			// A forwarded frame is still open, so injecting ping would mix
-			// another event's lines into it. Defer the heartbeat until
-			// blank-line output completes that frame.
-			if inPartialEvent {
-				resetKeepaliveTimer()
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				resetKeepaliveTimer()
-				continue
-			}
-			if _, err := fmt.Fprint(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n"); err != nil {
-				clientDisconnected = true
-				logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during keepalive ping, continue draining upstream for usage: provider=%d", options.ProviderID)
-				continue
-			}
-			flusher.Flush()
-			lastDataAt = time.Now()
-			resetKeepaliveTimer()
 		}
 	}
 }

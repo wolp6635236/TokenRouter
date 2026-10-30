@@ -18,12 +18,7 @@
           class="h-4 w-12 animate-pulse rounded-compact bg-gray-200 font-medium dark:bg-dark-600"
         ></span>
         <!-- Update indicator -->
-        <span v-if="hasUpdate" class="relative flex h-2 w-2">
-          <span
-            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75"
-          ></span>
-          <span class="relative inline-flex h-2 w-2 rounded-full bg-amber-500"></span>
-        </span>
+        <span v-if="hasUpdate" class="h-2 w-2 rounded-full bg-amber-500" aria-hidden="true"></span>
       </button>
 
       <!-- Dropdown -->

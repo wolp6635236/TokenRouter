@@ -43,6 +43,7 @@ export type ProviderBrandKey =
   | 'coze'
   | 'cloudflare'
   | 'jina'
+  | 'opencode'
   | 'typesafe'
   | 'unknown'
 
@@ -365,6 +366,16 @@ const providerBrands: Record<ProviderBrandKey, ProviderBrand> = {
     iconWrapClass:
       'bg-slate-50 text-slate-800 ring-slate-200 dark:bg-slate-500/15 dark:text-slate-200 dark:ring-slate-400/30',
   },
+  opencode: {
+    key: 'opencode',
+    label: 'OpenCode',
+    iconKey: 'opencode',
+    iconColor: 'currentColor',
+    badgeClass:
+      'bg-zinc-100 text-zinc-900 ring-zinc-200 dark:bg-zinc-500/20 dark:text-zinc-50 dark:ring-zinc-400/30',
+    iconWrapClass:
+      'bg-zinc-50 text-zinc-800 ring-zinc-200 dark:bg-zinc-500/15 dark:text-zinc-200 dark:ring-zinc-400/30',
+  },
   typesafe: {
     key: 'typesafe',
     label: 'TypeSafe',
@@ -420,6 +431,7 @@ const defaultProviderBrandKeys: ProviderBrandKey[] = [
   'coze',
   'cloudflare',
   'jina',
+  'opencode',
   'typesafe',
   'unknown',
 ]
@@ -478,6 +490,7 @@ const providerBrandAliases: Record<ProviderBrandKey, string[]> = {
   coze: ['coze', '扣子'],
   cloudflare: ['cloudflare', 'workers ai', '@cf'],
   jina: ['jina'],
+  opencode: ['opencode', 'opencode zen', 'opencode go', 'opencode console'],
   typesafe: ['typesafe', 'typesafe ai', 'jev'],
   unknown: ['未知供应商', '未知', 'unknown'],
 }

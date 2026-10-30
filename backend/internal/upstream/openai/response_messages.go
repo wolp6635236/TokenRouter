@@ -388,11 +388,10 @@ func ReadMessagesStreaming(resp *http.Response, c *upstream.OutputContext, optio
 
 	// Snapshot heartbeat spacing for this attempt; client pings use consumed
 	// upstream line time while idle failure checks use the producer's arrival timestamp.
-	keepaliveInterval := options.KeepaliveInterval()
 
 	// With both timer policies disabled, synchronous scanning retains the
 	// same parser and terminal requirement while avoiding queued read-ahead and its producer.
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 {
 		var parser wire.OpenAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -460,16 +459,6 @@ func ReadMessagesStreaming(resp *http.Response, c *upstream.OutputContext, optio
 	// to interrupt a scanner read blocked after this consumer has returned.
 	defer close(done)
 
-	var keepaliveTicker *time.Ticker
-	if keepaliveInterval > 0 {
-		keepaliveTicker = time.NewTicker(keepaliveInterval)
-		defer keepaliveTicker.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTicker != nil {
-		keepaliveCh = keepaliveTicker.C
-	}
-	lastDataAt := time.Now()
 	var parser wire.OpenAICompatSSEFrameParser
 
 	for {
@@ -492,7 +481,7 @@ func ReadMessagesStreaming(resp *http.Response, c *upstream.OutputContext, optio
 				handleScanErr(ev.err)
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete: %w", ev.err)
 			}
-			lastDataAt = time.Now()
+
 			line := ev.line
 			if IsCompatDoneSentinelLine(line) {
 				return missingTerminalErr()
@@ -519,29 +508,6 @@ func ReadMessagesStreaming(resp *http.Response, c *upstream.OutputContext, optio
 				zap.Duration("interval", streamInterval),
 			)
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if clientDisconnected {
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				continue
-			}
-			// An Anthropic ping counts as local client output, so subsequent
-			// missing-terminal or failure handling uses the post-output Messages policy
-			// even before content.
-			writeStreamHeaders()
-			if _, err := fmt.Fprint(c.Writer, "event: ping\ndata: {\"type\":\"ping\"}\n\n"); err != nil {
-				// Latch failed ping delivery while keeping upstream read/accounting
-				// processing available until a terminal or another exit determines the attempt outcome.
-				logger.L().Info("openai messages stream: client disconnected during keepalive",
-					zap.String("request_id", requestID),
-				)
-				clientDisconnected = true
-				continue
-			}
-			clientOutputStarted = true
-			c.Writer.Flush()
 		}
 	}
 }

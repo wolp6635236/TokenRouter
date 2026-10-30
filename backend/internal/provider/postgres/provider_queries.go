@@ -565,17 +565,10 @@ func (r *ProviderStore) ListSchedulableCapacityByGroupIDs(ctx context.Context, g
 // priorities have no added ID tie-breaker here.
 func (r *ProviderStore) ListSchedulableByPlatform(ctx context.Context, platform string) ([]acctcore.Record, error) {
 	now := time.Now()
-	providers, err := r.client.Provider.Query().
+	providers, err := r.SchedulableProvidersQuery(now).
 		Where(
 			dbprovider.PlatformEQ(platform),
-			dbprovider.StatusEQ(acctcore.StatusActive),
-			dbprovider.SchedulableEQ(true),
-			TempUnschedulablePredicate(),
-			NotExpiredPredicate(now),
-			dbprovider.Or(dbprovider.OverloadUntilIsNil(), dbprovider.OverloadUntilLTE(now)),
-			dbprovider.Or(dbprovider.RateLimitResetAtIsNil(), dbprovider.RateLimitResetAtLTE(now)),
 		).
-		Order(dbent.Asc(dbprovider.FieldPriority)).
 		All(ctx)
 	if err != nil {
 		return nil, err
@@ -603,17 +596,10 @@ func (r *ProviderStore) ListSchedulableByPlatforms(ctx context.Context, platform
 		return nil, nil
 	}
 	now := time.Now()
-	providers, err := r.client.Provider.Query().
+	providers, err := r.SchedulableProvidersQuery(now).
 		Where(
 			dbprovider.PlatformIn(platforms...),
-			dbprovider.StatusEQ(acctcore.StatusActive),
-			dbprovider.SchedulableEQ(true),
-			TempUnschedulablePredicate(),
-			NotExpiredPredicate(now),
-			dbprovider.Or(dbprovider.OverloadUntilIsNil(), dbprovider.OverloadUntilLTE(now)),
-			dbprovider.Or(dbprovider.RateLimitResetAtIsNil(), dbprovider.RateLimitResetAtLTE(now)),
 		).
-		Order(dbent.Asc(dbprovider.FieldPriority)).
 		All(ctx)
 	if err != nil {
 		return nil, err
@@ -642,18 +628,11 @@ func (r *ProviderStore) ListSchedulableByGroupIDAndPlatforms(ctx context.Context
 // the returned order.
 func (r *ProviderStore) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]acctcore.Record, error) {
 	now := time.Now()
-	providers, err := r.client.Provider.Query().
+	providers, err := r.SchedulableProvidersQuery(now).
 		Where(
 			dbprovider.PlatformEQ(platform),
-			dbprovider.StatusEQ(acctcore.StatusActive),
-			dbprovider.SchedulableEQ(true),
 			dbprovider.Not(dbprovider.HasProviderGroups()),
-			TempUnschedulablePredicate(),
-			NotExpiredPredicate(now),
-			dbprovider.Or(dbprovider.OverloadUntilIsNil(), dbprovider.OverloadUntilLTE(now)),
-			dbprovider.Or(dbprovider.RateLimitResetAtIsNil(), dbprovider.RateLimitResetAtLTE(now)),
 		).
-		Order(dbent.Asc(dbprovider.FieldPriority)).
 		All(ctx)
 	if err != nil {
 		return nil, err
@@ -670,18 +649,11 @@ func (r *ProviderStore) ListSchedulableUngroupedByPlatforms(ctx context.Context,
 		return nil, nil
 	}
 	now := time.Now()
-	providers, err := r.client.Provider.Query().
+	providers, err := r.SchedulableProvidersQuery(now).
 		Where(
 			dbprovider.PlatformIn(platforms...),
-			dbprovider.StatusEQ(acctcore.StatusActive),
-			dbprovider.SchedulableEQ(true),
 			dbprovider.Not(dbprovider.HasProviderGroups()),
-			TempUnschedulablePredicate(),
-			NotExpiredPredicate(now),
-			dbprovider.Or(dbprovider.OverloadUntilIsNil(), dbprovider.OverloadUntilLTE(now)),
-			dbprovider.Or(dbprovider.RateLimitResetAtIsNil(), dbprovider.RateLimitResetAtLTE(now)),
 		).
-		Order(dbent.Asc(dbprovider.FieldPriority)).
 		All(ctx)
 	if err != nil {
 		return nil, err

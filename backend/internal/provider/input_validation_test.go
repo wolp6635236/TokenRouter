@@ -12,11 +12,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
-// TestCNProviderProviderModeAndCredentialValidation compares historical CN
-// defaults with newly persisted credentials. Historical edits retain absent
-// mode keys, creation saves default mode and protocol, and unsupported type or
-// Responses combinations fail.
-func TestCNProviderProviderModeAndCredentialValidation(t *testing.T) {
+// TestKimiZhipuDeepSeekProviderModeAndCredentialValidation compares historical
+// Kimi, Zhipu, and DeepSeek defaults with newly persisted credentials.
+// Historical edits retain absent mode keys, creation saves default mode and
+// protocol, and unsupported type or Responses combinations fail.
+func TestKimiZhipuDeepSeekProviderModeAndCredentialValidation(t *testing.T) {
 	t.Parallel()
 	historical := &Record{
 		Platform:    capability.PlatformKimi,
@@ -25,7 +25,7 @@ func TestCNProviderProviderModeAndCredentialValidation(t *testing.T) {
 	}
 	require.Equal(t, ProviderModePayG, historical.GetProviderMode())
 	require.Equal(t, APIProtocolChatCompletions, (ProtocolTarget{Record: historical}).GetAPIProtocol())
-	require.NoError(t, NormalizeCNProviderCredentials(historical, false))
+	require.NoError(t, NormalizeTextEndpointCredentials(historical, false))
 	require.NotContains(t, historical.Credentials, "provider_mode", "编辑历史提供商不应强制回写默认字段")
 
 	created := &Record{
@@ -33,7 +33,7 @@ func TestCNProviderProviderModeAndCredentialValidation(t *testing.T) {
 		Type:        capability.ProviderTypeAPIKey,
 		Credentials: map[string]any{"api_key": "sk-test"},
 	}
-	require.NoError(t, NormalizeCNProviderCredentials(created, true))
+	require.NoError(t, NormalizeTextEndpointCredentials(created, true))
 	require.Equal(t, ProviderModePayG, created.Credentials["provider_mode"])
 	require.Equal(t, APIProtocolChatCompletions, created.Credentials["api_protocol"])
 
@@ -41,9 +41,9 @@ func TestCNProviderProviderModeAndCredentialValidation(t *testing.T) {
 		Platform: capability.PlatformZhipu, Type: capability.ProviderTypeAPIKey,
 		Credentials: map[string]any{"api_protocol": APIProtocolResponses},
 	}
-	require.Error(t, NormalizeCNProviderCredentials(invalidResponses, false))
+	require.Error(t, NormalizeTextEndpointCredentials(invalidResponses, false))
 	invalidType := &Record{Platform: capability.PlatformDeepseek, Type: capability.ProviderTypeOAuth}
-	require.Error(t, NormalizeCNProviderCredentials(invalidType, false))
+	require.Error(t, NormalizeTextEndpointCredentials(invalidType, false))
 }
 
 // TestNormalizeProviderConcurrencyDefaultsInvalidGrokOAuthToOne passes zero and
@@ -64,11 +64,11 @@ func TestNormalizeProviderConcurrencyPreservesExplicitValues(t *testing.T) {
 	require.Equal(t, 2, NormalizeProviderConcurrency(capability.PlatformGrok, capability.ProviderTypeAPIKey, 2))
 }
 
-// cnProviderTestCredentials builds CN fixtures using a custom relay address.
-// Adaptive selection provides separate protocol URLs and excludes Responses for
-// Zhipu, allowing validation tests to keep platform capability assumptions
-// consistent.
-func cnProviderTestCredentials(platform, mode, protocol string) map[string]any {
+// textAPIKeyTestCredentials builds Kimi, Zhipu, and DeepSeek fixtures using a
+// custom relay address. Adaptive selection provides separate protocol URLs and
+// excludes Responses for Zhipu, allowing validation tests to keep platform
+// capability assumptions consistent.
+func textAPIKeyTestCredentials(platform, mode, protocol string) map[string]any {
 	credentials := map[string]any{
 		"api_key":       "sk-test",
 		"provider_mode": mode,
@@ -88,11 +88,11 @@ func cnProviderTestCredentials(platform, mode, protocol string) map[string]any {
 	return credentials
 }
 
-// TestCNProviderCredentialValidationRejectsInvalid runs unsupported platform,
-// mode, type, and legacy-protocol combinations for creation and editing. Each
-// rejected case returns HTTP 400 with the scenario's expected structured
-// reason.
-func TestCNProviderCredentialValidationRejectsInvalid(t *testing.T) {
+// TestKimiZhipuDeepSeekCredentialValidationRejectsInvalid runs unsupported
+// platform, mode, type, and legacy-protocol combinations for creation and
+// editing. Each rejected case returns HTTP 400 with the scenario's expected
+// structured reason.
+func TestKimiZhipuDeepSeekCredentialValidationRejectsInvalid(t *testing.T) {
 	t.Parallel()
 	// platform, providerType, mode, and protocol form each rejected credential
 	// combination; reason names its expected structured failure, and name
@@ -117,9 +117,9 @@ func TestCNProviderCredentialValidationRejectsInvalid(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/create=%t", tc.name, create), func(t *testing.T) {
 				provider := &Record{
 					Platform: tc.platform, Type: tc.providerType,
-					Credentials: cnProviderTestCredentials(tc.platform, tc.mode, tc.protocol),
+					Credentials: textAPIKeyTestCredentials(tc.platform, tc.mode, tc.protocol),
 				}
-				err := NormalizeCNProviderCredentials(provider, create)
+				err := NormalizeTextEndpointCredentials(provider, create)
 				require.Error(t, err)
 				require.Equal(t, http.StatusBadRequest, httpx.ErrorCode(err))
 				require.Equal(t, tc.reason, apperror.Reason(err))

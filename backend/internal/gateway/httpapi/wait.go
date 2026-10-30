@@ -17,7 +17,7 @@ import (
 // begins. HTTP observers account for the bytes written as heartbeats, allowing
 // later error presentation to distinguish a body containing only recorded
 // keepalive bytes from output that has additional content. The byte comparison
-// uses the current writer size and the positive request counter.
+// uses the current writer size and all recorded heartbeat sources.
 //
 // The scheduler owns queue admission, retry timing and acquired leases. HTTP
 // adapters supply request contexts, Key-statistics tracking and synchronous
@@ -39,6 +39,8 @@ const (
 	SSEPingFormatNone SSEPingFormat = ""
 	// SSEPingFormatComment is an SSE comment ping for OpenAI/Codex CLI clients.
 	SSEPingFormatComment SSEPingFormat = ":\n\n"
+	// SSEPingFormatGemini keeps native SDK streams alive without JSON events or comments.
+	SSEPingFormatGemini SSEPingFormat = "\n\n"
 )
 
 // SSEPingFormat defines the wire format of a keepalive event.
@@ -76,7 +78,7 @@ func RecordStreamHeartbeat(c *gin.Context, written int) {
 // return false, so an unrecorded output cannot qualify merely because its body
 // resembles a heartbeat.
 //
-// The comparison combines the request counter with the writer's current byte
+// The comparison combines all heartbeat counters with the writer's current byte
 // count. Any extra byte makes it false; it classifies output by recorded size
 // rather than parsing event contents. Callers coordinate recording with output
 // before using the result to decide whether a terminal failure may be appended.
@@ -84,12 +86,8 @@ func StreamHasOnlyHeartbeats(c *gin.Context) bool {
 	if c == nil || c.Writer == nil {
 		return false
 	}
-	value, ok := c.Get(gatewayStreamHeartbeatBytesKey)
-	if !ok {
-		return false
-	}
-	heartbeatBytes, _ := value.(int)
-	return heartbeatBytes > 0 && c.Writer.Size() == heartbeatBytes
+	heartbeatBytes, size := streamHeartbeatSnapshot(c)
+	return heartbeatBytes > 0 && size == heartbeatBytes
 }
 
 // NewConcurrencyHelper binds slot management and wait output to HTTP requests.
@@ -306,10 +304,12 @@ func WaitObserver(c *gin.Context, format SSEPingFormat, interval time.Duration, 
 		// Mark the stream before its first heartbeat write, so even a write error
 		// leaves later error output aware of attempted SSE commitment.
 		if !*started {
-			c.Header("Content-Type", "text/event-stream")
-			c.Header("Cache-Control", "no-cache")
-			c.Header("Connection", "keep-alive")
-			c.Header("X-Accel-Buffering", "no")
+			if !c.Writer.Written() {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Cache-Control", "no-cache")
+				c.Header("Connection", "keep-alive")
+				c.Header("X-Accel-Buffering", "no")
+			}
 			*started = true
 		}
 		written, err := fmt.Fprint(c.Writer, string(format))

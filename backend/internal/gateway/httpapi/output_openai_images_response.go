@@ -89,7 +89,7 @@ func (p *OpenAIResponseOutput) ImageOptions(c *gin.Context) upstreamopenai.Image
 
 		Summary: p.ImageNoOutputSummary,
 
-		AdjustedWrittenSize: func() int { return OpenAIImagesAdjustedWrittenSize(c) },
+		AdjustedWrittenSize: func() int { return HeartbeatAdjustedWrittenSize(c) },
 
 		RecordKeepalive: func(n int) { RecordOpenAIStreamKeepaliveBytes(c, n) },
 

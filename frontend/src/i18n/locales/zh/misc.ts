@@ -292,153 +292,153 @@ export default {
     // Admin tour steps
     admin: {
       welcome: {
-        title: '👋 欢迎使用 TokenRouter',
+        title: '欢迎使用 TokenRouter',
         description:
-          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">TokenRouter 是一个强大的 AI 服务中转平台，让您轻松管理和分发 AI 服务。</p><p style="margin-bottom: 12px;"><b>🎯 核心功能：</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>📦 <b>分组管理</b> - 创建不同的服务套餐（VIP、免费试用等）</li><li>🔗 <b>提供商池</b> - 连接多个上游 AI 服务商提供商</li><li>🔑 <b>密钥分发</b> - 为用户生成独立的 API Key</li><li>💰 <b>计费管理</b> - 灵活的费率和配额控制</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">接下来，我们将用 3 分钟带您完成首次配置 →</p></div>',
-        nextBtn: '开始配置 🚀',
+          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">TokenRouter 通过已接入的提供商转发 AI 请求，并管理 API 密钥、计费和额度。</p><p style="margin-bottom: 12px;"><b>核心功能：</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li><b>分组管理</b> - 创建不同的服务套餐（VIP、免费试用等）</li><li><b>提供商池</b> - 连接多个上游 AI 服务商提供商</li><li><b>密钥分发</b> - 为用户生成独立的 API Key</li><li><b>计费管理</b> - 灵活的费率和配额控制</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">先创建分组，再接入提供商，最后生成 API 密钥。</p></div>',
+        nextBtn: '开始配置',
         prevBtn: '跳过',
       },
       groupManage: {
-        title: '📦 第一步：分组管理',
+        title: '第一步：分组管理',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>什么是分组？</b></p><p style="margin-bottom: 12px;">分组是 TokenRouter 的核心概念，它就像一个"服务套餐"：</p><ul style="margin-left: 20px; margin-bottom: 12px; font-size: 13px;"><li>🎯 每个分组可以包含多个上游提供商</li><li>💰 每个分组有独立的计费倍率</li><li>👥 可以设置为公开或专属分组</li></ul><p style="margin-top: 12px; padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 示例：</b>您可以创建"VIP专线"（高倍率）和"免费试用"（低倍率）两个分组</p><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 点击左侧的"分组管理"开始</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>什么是分组？</b></p><p style="margin-bottom: 12px;">分组是 TokenRouter 的核心概念，它就像一个"服务套餐"：</p><ul style="margin-left: 20px; margin-bottom: 12px; font-size: 13px;"><li>每个分组可以包含多个上游提供商</li><li>每个分组有独立的计费倍率</li><li>可以设置为公开或专属分组</li></ul><p style="margin-top: 12px; font-size: 13px;"><b>示例：</b>您可以创建"VIP专线"（高倍率）和"免费试用"（低倍率）两个分组</p><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">点击左侧的"分组管理"开始</p></div>',
       },
       createGroup: {
-        title: '➕ 创建新分组',
+        title: '创建新分组',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">现在让我们创建第一个分组。</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📝 提示：</b>建议先创建一个测试分组，熟悉流程后再创建正式分组</p><p style="color: var(--tour-action-color); font-weight: 600;">👉 点击"创建分组"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为第一个提供商创建分组。</p><p style="font-size: 13px; margin-bottom: 12px;"><b>提示：</b>建议先创建一个测试分组，熟悉流程后再创建正式分组</p><p style="color: var(--tour-action-color); font-weight: 600;">点击"创建分组"按钮</p></div>',
       },
       groupName: {
-        title: '✏️ 1. 分组名称',
+        title: '分组名称',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为您的分组起一个易于识别的名称。</p><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>💡 命名建议：</b><ul style="margin: 8px 0 0 16px;"><li>"测试分组" - 用于测试</li><li>"VIP专线" - 高质量服务</li><li>"免费试用" - 体验版</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">填写完成后点击"下一步"继续</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为您的分组起一个易于识别的名称。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>命名建议：</b><ul style="margin: 8px 0 0 16px;"><li>"测试分组" - 用于测试</li><li>"VIP专线" - 高质量服务</li><li>"免费试用" - 体验版</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">填写完成后点击"下一步"继续</p></div>',
         nextBtn: '下一步',
       },
       groupMultiplier: {
-        title: '💰 3. 费率倍数',
+        title: '费率倍数',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">设置该分组的计费倍率，控制用户的实际扣费。</p><div style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚙️ 计费规则：</b><ul style="margin: 8px 0 0 16px;"><li><b>1.0</b> - 原价计费（成本价）</li><li><b>1.5</b> - 按基础费用的 1.5 倍扣费</li><li><b>2.0</b> - 按基础费用的 2 倍扣费</li><li><b>0.8</b> - 补贴模式（亏本运营）</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">建议测试分组设置为 1.0</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">设置该分组的计费倍率，控制用户的实际扣费。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>计费规则：</b><ul style="margin: 8px 0 0 16px;"><li><b>1.0</b> - 原价计费（成本价）</li><li><b>1.5</b> - 按基础费用的 1.5 倍扣费</li><li><b>2.0</b> - 按基础费用的 2 倍扣费</li><li><b>0.8</b> - 补贴模式（亏本运营）</li></ul></div><p style="font-size: 13px; color: var(--tour-muted-color);">建议测试分组设置为 1.0</p></div>',
         nextBtn: '下一步',
       },
       groupExclusive: {
-        title: '🔒 4. 专属分组（可选）',
+        title: '专属分组（可选）',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">控制分组的可见性和访问权限。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔐 权限说明：</b><ul style="margin: 8px 0 0 16px;"><li><b>关闭</b> - 公开分组，所有用户可见</li><li><b>开启</b> - 专属分组，仅指定用户可见</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 使用场景：</b>VIP 用户专属、内部测试、特殊客户等</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">控制分组的可见性和访问权限。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>权限说明：</b><ul style="margin: 8px 0 0 16px;"><li><b>关闭</b> - 公开分组，所有用户可见</li><li><b>开启</b> - 专属分组，仅指定用户可见</li></ul></div><p style="font-size: 13px;"><b>使用场景：</b>VIP 用户专属、内部测试、特殊客户等</p></div>',
         nextBtn: '下一步',
       },
       groupSubmit: {
-        title: '✅ 保存分组',
+        title: '保存分组',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">确认信息无误后，点击创建按钮保存分组。</p><p style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ 注意：</b>分组可关联不同平台的提供商，模型和协议策略可随时编辑</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>📌 下一步：</b>创建成功后，我们将添加上游提供商到这个分组</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"创建"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">确认信息无误后，点击创建按钮保存分组。</p><p style="font-size: 13px; margin-bottom: 12px;"><b>注意：</b>分组可关联不同平台的提供商，模型和协议策略可随时编辑</p><p style="font-size: 13px;"><b>下一步：</b>创建成功后，我们将添加上游提供商到这个分组</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"创建"按钮</p></div>',
       },
       providerManage: {
-        title: '🔗 第二步：添加提供商',
+        title: '第二步：添加提供商',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>太棒了！分组已创建成功 🎉</b></p><p style="margin-bottom: 12px;">现在需要添加上游 AI 服务商的提供商，让分组能够实际提供服务。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔑 提供商的作用：</b><ul style="margin: 8px 0 0 16px;"><li>连接到上游 AI 服务（Claude、GPT 等）</li><li>一个分组可以包含多个提供商（负载均衡）</li><li>支持 OAuth 和 Session Key 两种方式</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 点击左侧的"提供商管理"</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>分组已创建。</b></p><p style="margin-bottom: 12px;">现在需要添加上游 AI 服务商的提供商，让分组能够实际提供服务。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>提供商的作用：</b><ul style="margin: 8px 0 0 16px;"><li>连接到上游 AI 服务（Claude、GPT 等）</li><li>一个分组可以包含多个提供商（负载均衡）</li><li>支持 OAuth 和 Session Key 两种方式</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">点击左侧的"提供商管理"</p></div>',
       },
       createProvider: {
-        title: '➕ 添加新提供商',
+        title: '添加新提供商',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮开始添加您的第一个上游提供商。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 提示：</b>建议使用 OAuth 方式，更安全且无需手动提取密钥</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"添加提供商"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮开始添加您的第一个上游提供商。</p><p style="font-size: 13px;"><b>提示：</b>建议使用 OAuth 方式，更安全且无需手动提取密钥</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"添加提供商"按钮</p></div>',
       },
       providerName: {
-        title: '✏️ 1. 提供商名称',
+        title: '提供商名称',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为提供商设置一个便于识别的名称。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 命名建议：</b>"Claude主提供商"、"GPT备用1"、"测试提供商" 等</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为提供商设置一个便于识别的名称。</p><p style="font-size: 13px;"><b>命名建议：</b>"Claude主提供商"、"GPT备用1"、"测试提供商" 等</p></div>',
         nextBtn: '下一步',
       },
       providerPlatform: {
-        title: '🤖 2. 选择平台',
+        title: '选择平台',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择该提供商对应的服务商平台。</p><p style="padding: 8px 12px; background: var(--tour-warning-bg); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 13px;"><b>⚠️ 重要：</b>平台必须与刚才创建的分组平台一致</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择该提供商对应的服务商平台。</p><p style="font-size: 13px;"><b>重要：</b>同一分组可以关联不同平台的提供商。</p></div>',
         nextBtn: '下一步',
       },
       providerType: {
-        title: '🔐 3. 授权方式',
+        title: '授权方式',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择提供商的授权方式。</p><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>✅ 推荐：OAuth 方式</b><ul style="margin: 8px 0 0 16px;"><li>无需手动提取密钥</li><li>更安全，支持自动刷新</li><li>适用于 Claude Code、ChatGPT OAuth</li></ul></div><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 Session Key 方式</b><ul style="margin: 8px 0 0 16px;"><li>需要手动从浏览器提取</li><li>可能需要定期更新</li><li>适用于不支持 OAuth 的平台</li></ul></div></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择提供商的授权方式。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>推荐：OAuth 方式</b><ul style="margin: 8px 0 0 16px;"><li>无需手动提取密钥</li><li>更安全，支持自动刷新</li><li>适用于 Claude Code、ChatGPT OAuth</li></ul></div><div style="font-size: 13px;"><b>Session Key 方式</b><ul style="margin: 8px 0 0 16px;"><li>需要手动从浏览器提取</li><li>可能需要定期更新</li><li>适用于不支持 OAuth 的平台</li></ul></div></div>',
         nextBtn: '下一步',
       },
       providerPriority: {
-        title: '⚖️ 4. 优先级（可选）',
+        title: '优先级（可选）',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">设置提供商的调用优先级。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📊 优先级规则：</b><ul style="margin: 8px 0 0 16px;"><li>数字越小，优先级越高</li><li>系统优先使用低数值提供商</li><li>相同优先级则随机选择</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 使用场景：</b>主提供商设置低数值，备用提供商设置高数值</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">设置提供商的调用优先级。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>优先级规则：</b><ul style="margin: 8px 0 0 16px;"><li>数字越小，优先级越高</li><li>系统优先使用低数值提供商</li><li>相同优先级则随机选择</li></ul></div><p style="font-size: 13px;"><b>使用场景：</b>主提供商设置低数值，备用提供商设置高数值</p></div>',
         nextBtn: '下一步',
       },
       providerGroups: {
-        title: '🎯 5. 分配分组',
+        title: '分配分组',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>关键步骤！</b>将提供商分配到刚才创建的分组。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ 重要提醒：</b><ul style="margin: 8px 0 0 16px;"><li>必须勾选至少一个分组</li><li>未分配分组的提供商无法使用</li><li>一个提供商可以分配给多个分组</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 提示：</b>请勾选刚才创建的测试分组</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">将提供商分配到刚才创建的分组。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>重要提醒：</b><ul style="margin: 8px 0 0 16px;"><li>必须勾选至少一个分组</li><li>未分配分组的提供商无法使用</li><li>一个提供商可以分配给多个分组</li></ul></div><p style="font-size: 13px;"><b>提示：</b>请勾选刚才创建的测试分组</p></div>',
         nextBtn: '下一步',
       },
       providerSubmit: {
-        title: '✅ 保存提供商',
+        title: '保存提供商',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">确认信息无误后，点击保存按钮。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📌 OAuth 授权流程：</b><ul style="margin: 8px 0 0 16px;"><li>点击保存后会跳转到服务商页面</li><li>在服务商页面完成登录授权</li><li>授权成功后自动返回</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>📌 下一步：</b>提供商添加成功后，我们将创建 API 密钥</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"保存"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">确认信息无误后，点击保存按钮。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>OAuth 授权流程：</b><ul style="margin: 8px 0 0 16px;"><li>点击保存后会跳转到服务商页面</li><li>在服务商页面完成登录授权</li><li>授权成功后自动返回</li></ul></div><p style="font-size: 13px;"><b>下一步：</b>提供商添加成功后，我们将创建 API 密钥</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"保存"按钮</p></div>',
       },
       keyManage: {
-        title: '🔑 第三步：生成密钥',
+        title: '第三步：生成密钥',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>恭喜！提供商配置完成 🎉</b></p><p style="margin-bottom: 12px;">最后一步，生成 API Key 来测试服务是否正常工作。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🔑 API Key 的作用：</b><ul style="margin: 8px 0 0 16px;"><li>用于调用 AI 服务的凭证</li><li>每个 Key 绑定一个分组</li><li>可以设置配额和有效期</li><li>支持独立的使用统计</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">👉 点击左侧的"API 密钥"</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;"><b>提供商配置完成。</b></p><p style="margin-bottom: 12px;">最后一步，生成 API Key 来测试服务是否正常工作。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>API Key 的作用：</b><ul style="margin: 8px 0 0 16px;"><li>用于调用 AI 服务的凭证</li><li>每个 Key 绑定一个分组</li><li>可以设置配额和有效期</li><li>支持独立的使用统计</li></ul></div><p style="margin-top: 16px; color: var(--tour-action-color); font-weight: 600;">点击左侧的"API 密钥"</p></div>',
       },
       createKey: {
-        title: '➕ 创建密钥',
+        title: '创建密钥',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮创建您的第一个 API Key。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 提示：</b>创建后请立即复制保存，密钥只显示一次</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"创建密钥"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮创建您的第一个 API Key。</p><p style="font-size: 13px;"><b>提示：</b>创建后请复制并妥善保存密钥，也可以在密钥列表中再次复制。</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"创建密钥"按钮</p></div>',
       },
       keyName: {
-        title: '✏️ 1. 密钥名称',
+        title: '密钥名称',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为密钥设置一个便于管理的名称。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 命名建议：</b>"测试密钥"、"生产环境"、"移动端" 等</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为密钥设置一个便于管理的名称。</p><p style="font-size: 13px;"><b>命名建议：</b>"测试密钥"、"生产环境"、"移动端" 等</p></div>',
         nextBtn: '下一步',
       },
       keyGroup: {
-        title: '🎯 2. 选择分组',
+        title: '选择分组',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择刚才配置好的分组。</p><div style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>📌 分组决定：</b><ul style="margin: 8px 0 0 16px;"><li>该密钥可以使用哪些提供商</li><li>计费倍率是多少</li><li>是否为专属密钥</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 提示：</b>选择刚才创建的测试分组</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择刚才配置好的分组。</p><div style="font-size: 13px; margin-bottom: 12px;"><b>分组决定：</b><ul style="margin: 8px 0 0 16px;"><li>该密钥可以使用哪些提供商</li><li>计费倍率是多少</li><li>是否为专属密钥</li></ul></div><p style="font-size: 13px;"><b>提示：</b>选择刚才创建的测试分组</p></div>',
         nextBtn: '下一步',
       },
       keySubmit: {
-        title: '🎉 生成并复制',
+        title: '生成并复制',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击创建后，系统会生成完整的 API Key。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ 重要提醒：</b><ul style="margin: 8px 0 0 16px;"><li>密钥只显示一次，请立即复制</li><li>丢失后需要重新生成</li><li>妥善保管，不要泄露给他人</li></ul></div><div style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>🚀 下一步：</b><ul style="margin: 8px 0 0 16px;"><li>复制生成的 sk-xxx 密钥</li><li>在支持 OpenAI 接口的客户端中使用</li><li>开始体验 AI 服务！</li></ul></div><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"创建"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击创建后，系统会生成完整的 API Key。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>重要提醒：</b><ul style="margin: 8px 0 0 16px;"><li>创建后请复制并妥善保存密钥。</li><li>可以在密钥列表中再次复制。</li><li>妥善保管，不要泄露给他人</li></ul></div><div style="font-size: 13px; margin-bottom: 12px;"><b>下一步：</b><ul style="margin: 8px 0 0 16px;"><li>复制生成的 sk-xxx 密钥</li><li>在支持 OpenAI 接口的客户端中使用</li><li>发送请求，测试连接。</li></ul></div><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"创建"按钮</p></div>',
       },
     },
     // User tour steps
     user: {
       welcome: {
-        title: '👋 欢迎使用 TokenRouter',
+        title: '欢迎使用 TokenRouter',
         description:
-          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">您好！欢迎来到 TokenRouter AI 服务平台。</p><p style="margin-bottom: 12px;"><b>🎯 快速开始：</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>🔑 创建 API 密钥</li><li>📋 复制密钥到您的应用</li><li>🚀 开始使用 AI 服务</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">只需 1 分钟，让我们开始吧 →</p></div>',
-        nextBtn: '开始 🚀',
+          '<div style="line-height: 1.8;"><p style="margin-bottom: 16px;">使用 API 密钥，将应用连接到平台已接入的 AI 模型。</p><p style="margin-bottom: 12px;"><b>快速开始：</b></p><ul style="margin-left: 20px; margin-bottom: 16px;"><li>创建 API 密钥</li><li>复制密钥到您的应用</li><li>开始使用 AI 服务</li></ul><p style="color: var(--tour-action-color); font-weight: 600;">打开 API 密钥页面，创建第一个密钥。</p></div>',
+        nextBtn: '开始',
         prevBtn: '跳过',
       },
       keyManage: {
-        title: '🔑 API 密钥管理',
+        title: 'API 密钥管理',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">在这里管理您的所有 API 访问密钥。</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 什么是 API 密钥？</b><br/>API 密钥是您访问 AI 服务的凭证，就像一把钥匙，让您的应用能够调用 AI 能力。</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击进入密钥页面</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">在这里管理您的所有 API 访问密钥。</p><p style="font-size: 13px;"><b>什么是 API 密钥？</b><br/>API 密钥是您访问 AI 服务的凭证，就像一把钥匙，让您的应用能够调用 AI 能力。</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击进入密钥页面</p></div>',
       },
       createKey: {
-        title: '➕ 创建新密钥',
+        title: '创建新密钥',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮创建您的第一个 API 密钥。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 提示：</b>创建后密钥只显示一次，请务必复制保存</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"创建密钥"</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击按钮创建您的第一个 API 密钥。</p><p style="font-size: 13px;"><b>提示：</b>创建后请复制并妥善保存密钥，也可以在密钥列表中再次复制。</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"创建密钥"</p></div>',
       },
       keyName: {
-        title: '✏️ 密钥名称',
+        title: '密钥名称',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为密钥起一个便于识别的名称。</p><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>💡 示例：</b>"我的第一个密钥"、"测试用" 等</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">为密钥起一个便于识别的名称。</p><p style="font-size: 13px;"><b>示例：</b>"我的第一个密钥"、"测试用" 等</p></div>',
         nextBtn: '下一步',
       },
       keyGroup: {
-        title: '🎯 选择分组',
+        title: '选择分组',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择管理员为您分配的服务分组。</p><p style="padding: 8px 12px; background: var(--tour-info-bg); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 13px;"><b>📌 分组说明：</b><br/>不同分组可能有不同的服务质量和计费标准，请根据需要选择。</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">选择管理员为您分配的服务分组。</p><p style="font-size: 13px;"><b>分组说明：</b><br/>不同分组可能有不同的服务质量和计费标准，请根据需要选择。</p></div>',
         nextBtn: '下一步',
       },
       keySubmit: {
-        title: '🎉 完成创建',
+        title: '完成创建',
         description:
-          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击确认创建您的 API 密钥。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>⚠️ 重要：</b><ul style="margin: 8px 0 0 16px;"><li>创建后请立即复制密钥（sk-xxx）</li><li>密钥只显示一次，丢失需重新生成</li></ul></div><p style="padding: 8px 12px; background: var(--tour-success-bg); border-left: 3px solid #10b981; border-radius: 4px; font-size: 13px;"><b>🚀 如何使用：</b><br/>将密钥配置到支持 OpenAI 接口的任何客户端（如 ChatBox、OpenCat 等），即可开始使用！</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">👉 点击"创建"按钮</p></div>',
+          '<div style="line-height: 1.7;"><p style="margin-bottom: 12px;">点击确认创建您的 API 密钥。</p><div style="padding: 8px 12px; background: var(--tour-danger-bg); border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; margin-bottom: 12px;"><b>重要：</b><ul style="margin: 8px 0 0 16px;"><li>创建后请立即复制密钥（sk-xxx）</li><li>可以在密钥列表中再次复制。</li></ul></div><p style="font-size: 13px;"><b>如何使用：</b><br/>将密钥配置到支持 OpenAI 接口的任何客户端（如 ChatBox、OpenCat 等），即可开始使用！</p><p style="margin-top: 12px; color: var(--tour-action-color); font-weight: 600;">点击"创建"按钮</p></div>',
       },
     },
     // Team onboarding steps
@@ -704,6 +704,9 @@ export default {
       INVALID_STATUS: '当前订单状态不允许此操作',
       BALANCE_NOT_ENOUGH: '退款金额超过余额',
       REFUND_AMOUNT_EXCEEDED: '退款金额超过充值金额',
+      REFUND_RECOVERY_REQUIRED:
+        '退款结果尚未确认，请先在支付平台核实，再处理本地记录。请勿再次提交退款。',
+      REFUND_QUERY_UNSUPPORTED: '此支付渠道不支持退款状态查询，请在支付平台后台核实退款结果。',
       REFUND_FAILED: '退款失败',
       BILLING_INFO_REQUIRED: '请填写账单信息',
       BILLING_NAME_REQUIRED: '请填写账单抬头',
@@ -864,6 +867,7 @@ export default {
       groupId: '分组 ID',
       planGroups: '适用分组',
       planGroupsGlobalHint: '不选择分组时，该套餐适用于所有分组',
+      planGroupsRemoved: '已从套餐中移除 {count} 个已删除的分组，保存后生效。',
       subscriptionRateMultiplier: '订阅倍率',
       subscriptionRateMultiplierRequired: '所选分组的订阅倍率必须大于 0',
       features: '功能特性',

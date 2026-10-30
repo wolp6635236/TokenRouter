@@ -662,8 +662,8 @@ func TestModelsCatalogEmbeddingDefaultPricing(t *testing.T) {
 
 // TestModelsCatalogMediaSupplementAliases supplies an image token rate to one
 // first-party model. Bare and matching qualified records must receive the rate
-// and source label, while relay and snapshot identities retain separate pricing
-// fields.
+// and source label, while hosted service and snapshot identities retain
+// separate pricing fields.
 func TestModelsCatalogMediaSupplementAliases(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
@@ -676,7 +676,7 @@ func TestModelsCatalogMediaSupplementAliases(t *testing.T) {
 		require.InDelta(t, 0.008, cost.TotalCost, 1e-12, model)
 		require.Equal(t, "local_supplement", service.GetModelPricing(model).PriceSources["image_input"])
 	}
-	for _, model := range []string{"openrouter/gpt-image-2", "gpt-image-2-snapshot", "openai/gpt-image-2-snapshot"} {
+	for _, model := range []string{"google-vertex/gpt-image-2", "gpt-image-2-snapshot", "openai/gpt-image-2-snapshot"} {
 		require.Zero(t, service.GetModelPricing(model).InputCostPerImageToken, model)
 	}
 }
@@ -716,16 +716,16 @@ func TestModelsCatalogGeminiImageTextPricing(t *testing.T) {
 
 // TestModelsCatalogGeminiImageSupplementPrecedence adds a free text output rate
 // to an original Google image record. Existing catalog image pricing must win
-// over the custom image rate, while relay text prices remain separate.
+// over the custom image rate, while hosted service text prices remain separate.
 func TestModelsCatalogGeminiImageSupplementPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	supplement := filepath.Join(dir, "supplement.json")
-	// fixture gives the original Google record an image bucket and the relay
-	// a separate ordinary output rate for checking supplement precedence across
-	// those services.
+	// fixture gives the original Google record an image bucket and the hosted
+	// service a separate ordinary output rate for checking supplement precedence
+	// across those services.
 	const fixture = `{"providers":{
 		"google":{"models":{"gemini-image-test":{"cost":{"input":2,"output":150},"modalities":{"output":["text","image"]}}}},
-		"openrouter":{"models":{"gemini-image-test":{"cost":{"input":1,"output":9},"modalities":{"output":["text","image"]}}}}
+		"google-vertex":{"models":{"gemini-image-test":{"cost":{"input":1,"output":9},"modalities":{"output":["text","image"]}}}}
 	}}`
 	service := NewService(Options{
 		DataDir:      dir,
@@ -747,9 +747,9 @@ func TestModelsCatalogGeminiImageSupplementPrecedence(t *testing.T) {
 		require.InDelta(t, 150e-6, value.ImageOutputPricePerToken, 1e-12)
 	}
 	// The custom text rate belongs to the original Google identity and its
-	// equivalent qualified key, leaving this relay's separate ordinary output rate
-	// in its own record.
-	require.InDelta(t, 9e-6, catalogPriceForTest(t, service, "openrouter/gemini-image-test").OutputPricePerToken, 1e-12)
+	// equivalent qualified key. The hosted service keeps its ordinary output
+	// rate in its own record.
+	require.InDelta(t, 9e-6, catalogPriceForTest(t, service, "google-vertex/gemini-image-test").OutputPricePerToken, 1e-12)
 }
 
 // TestModelsCatalogImagePriceOverrideAcrossContextTiers applies one manual
@@ -951,9 +951,9 @@ func TestModelRulesReturnIndependentValues(t *testing.T) {
 }
 
 // TestJevOfflineCatalogPricesKeepProviderIdentity loads supplemented TypeSafe
-// identities alongside a free relay model. Asserted original rates and text
-// attributes remain available, relay rates stay free, and an unconfigured
-// version remains unresolved.
+// identities alongside a filtered relay model. Original rates and text
+// attributes remain available, while removed relay pricing and an unconfigured
+// version remain unavailable.
 func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 	service := newOfflinePricingFixture(t)
 	for _, model := range []string{"jev-latest", "jev-preview", "jev-1.13.0"} {
@@ -969,10 +969,12 @@ func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 		require.Equal(t, []string{"text"}, *attributes.InputModalities)
 		require.Equal(t, []string{"text"}, *attributes.OutputModalities)
 	}
-	free := service.GetModelPricing("opencode/jev-1.13-free")
-	require.NotNil(t, free)
-	require.Zero(t, free.InputCostPerToken)
-	require.Zero(t, free.OutputCostPerToken)
+	removed := service.GetModelPricing("opencode/jev-1.13-free")
+	require.NotNil(t, removed)
+	require.Equal(t, "unpriced", removed.Source)
+	require.True(t, removed.TokenPricingAbsent)
+	require.False(t, removed.InputPricePresent)
+	require.NotContains(t, service.ModelIDs(), "opencode/jev-1.13-free")
 	attributes := service.ModelAttributes("jev-latest")
 	require.NotNil(t, attributes.DisplayName)
 	require.Equal(t, "Jev", *attributes.DisplayName)
@@ -981,17 +983,18 @@ func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 }
 
 // TestJevCatalogPricesOverrideSupplement publishes original TypeSafe prices and
-// a separately priced relay record. Catalog input values, including zero, must
-// win over embedded supplementation while the relay keeps its own input price.
+// a separately priced hosted service record. Catalog input values, including
+// zero, must win over embedded supplementation while the hosted service keeps
+// its own input price.
 func TestJevCatalogPricesOverrideSupplement(t *testing.T) {
-	remote := &catalogRemoteFixture{body: []byte(`{"providers":{"typesafe":{"models":{"jev-latest":{"cost":{"input":0.084,"output":0}},"jev-preview":{"cost":{"input":0,"output":0}}}},"relay":{"models":{"jev-preview":{"cost":{"input":5,"output":2}}}}}}`)}
+	remote := &catalogRemoteFixture{body: []byte(`{"providers":{"typesafe":{"models":{"jev-latest":{"cost":{"input":0.084,"output":0}},"jev-preview":{"cost":{"input":0,"output":0}}}},"ollama-cloud":{"models":{"jev-preview":{"cost":{"input":5,"output":2}}}}}}`)}
 	service := NewService(Options{DataDir: t.TempDir(), RemoteURL: "https://models.dev/catalog.json?type=all"}, remote)
 	require.NoError(t, service.ForceUpdate())
 	require.InDelta(t, 8.4e-8, service.GetModelPricing("jev-latest").InputCostPerToken, 1e-15)
 	require.Equal(t, "models.dev", service.GetModelPricing("jev-latest").Source)
 	require.NotContains(t, service.GetModelPricing("jev-latest").PriceSources, "input")
 	require.Zero(t, service.GetModelPricing("jev-preview").InputCostPerToken)
-	require.InDelta(t, 5e-6, service.GetModelPricing("relay/jev-preview").InputCostPerToken, 1e-15)
+	require.InDelta(t, 5e-6, service.GetModelPricing("ollama-cloud/jev-preview").InputCostPerToken, 1e-15)
 }
 
 // TestUnifiedModelSupplementPublishesPriceAndAttributes initializes a model

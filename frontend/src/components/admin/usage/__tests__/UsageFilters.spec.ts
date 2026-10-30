@@ -1,12 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+// Import the compiler-enabled distribution explicitly so checked-in catalog
+// strings and selector labels are exercised independently of the application's runtime alias.
+import { createI18n } from '../../../../../node_modules/vue-i18n/dist/vue-i18n.mjs'
 
 import UsageFilters from '../UsageFilters.vue'
+import en from '@/i18n/locales/en'
+import zh from '@/i18n/locales/zh'
 
 // UsageFilters.spec.ts tests administrator autocomplete ordering, stale user responses,
 // and supplied filter choices. Mounted components use API substitutes and selected
 // control stubs, allowing assertions to observe shared filter mutation and emitted
-// changes without contacting the server.
+// changes without contacting the server. Request-source labels use the assembled
+// language catalogs so incorrect namespace placement remains observable.
+
+// catalogI18n resolves source labels through the real bilingual runtime catalogs;
+// autocomplete fixtures retain their independent deterministic labels below.
+const catalogI18n = createI18n({ legacy: false, locale: 'en', messages: { en, zh } })
 
 // messages fixes user-deletion badges and unfiltered selector labels so autocomplete
 // and option assertions compare actual rendered text.
@@ -45,14 +55,14 @@ const messages: Record<string, string> = {
   'usage.exportExcel': 'Export',
 }
 
-// Deterministic translation text lets dropdown assertions identify rendered labels
-// independently of the application locale catalog.
+// Existing autocomplete labels stay deterministic; unlisted keys resolve through
+// the real catalog so new request-source choices cannot pass as untranslated keys.
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => messages[key] ?? key,
+      t: (key: string) => messages[key] ?? catalogI18n.global.t(key),
     }),
   }
 })
@@ -142,6 +152,7 @@ function deferred<T>() {
 
 describe('UsageFilters — user search dropdown', () => {
   beforeEach(() => {
+    catalogI18n.global.locale.value = 'en'
     vi.useFakeTimers()
     mockSearchUsers.mockReset()
     mockSearchApiKeys.mockResolvedValue([])
@@ -156,6 +167,53 @@ describe('UsageFilters — user search dropdown', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
+
+  // The source selector reads dynamic keys from the assembled locale catalog.
+  // Both languages must supply visible labels for every option and the export headings.
+  it.each(['en', 'zh'] as const)(
+    'translates request sources with the %s catalog',
+    async (locale) => {
+      catalogI18n.global.locale.value = locale
+      const wrapper = mountFilters()
+      await flushPromises()
+      const source = wrapper
+        .findAllComponents({ name: 'Select' })
+        .find((select) =>
+          select
+            .props('options')
+            ?.some((option: { value: unknown }) => option.value === 'group_probe'),
+        )
+      expect(source).toBeDefined()
+      expect(source!.props('options').map((option: { label: string }) => option.label)).toEqual(
+        locale === 'zh'
+          ? [
+              '全部请求',
+              '用户请求',
+              '系统请求',
+              '分组探针',
+              '手动提供商测试',
+              '定时提供商测试',
+              '额度探测',
+            ]
+          : [
+              'All requests',
+              'User request',
+              'System request',
+              'Group probe',
+              'Manual provider test',
+              'Scheduled provider test',
+              'Quota probe',
+            ],
+      )
+      expect(catalogI18n.global.t('admin.usage.requestSource')).toBe(
+        locale === 'zh' ? '请求来源' : 'Request source',
+      )
+      expect(catalogI18n.global.t('admin.usage.costStatus')).toBe(
+        locale === 'zh' ? '费用完整性' : 'Cost completeness',
+      )
+      wrapper.unmount()
+    },
+  )
 
   // Active and deleted users arrive together in autocomplete results. The test protects
   // active-first ordering, translated deletion badges, and the selected user identifier

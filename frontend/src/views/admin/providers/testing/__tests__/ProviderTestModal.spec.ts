@@ -690,6 +690,36 @@ describe('ProviderTestModal', () => {
     expect(JSON.parse((global.fetch as any).mock.calls[0][1].body)).not.toHaveProperty('protocol')
   })
 
+  // An OpenCode provider has disabled Responses, Chat, and Gemini. The choices must list
+  // Auto followed only by the enabled protocols, because the server rejects tests for
+  // disabled ones; choosing SystemOne switches to the decision form by protocol.
+  it('offers OpenCode Auto plus enabled protocols and opens SystemOne by protocol', async () => {
+    getAvailableModels.mockResolvedValue([{ id: 'minimax-m3' }])
+    const wrapper = mountModal({
+      id: 9,
+      name: 'OpenCode',
+      platform: 'opencode',
+      type: 'apikey',
+      status: 'active',
+      credentials: { upstream_protocols: ['anthropic_messages', 'systemone'] },
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    expect(
+      (wrapper.vm as any).protocolOptions.map(
+        (item: { value: string /* selected option identifier */ }) => item.value,
+      ),
+    ).toEqual(['native', 'anthropic', 'systemone'])
+    expect((wrapper.vm as any).testProtocol).toBe('native')
+    expect(wrapper.find('[data-testid="systemone-test-form"]').exists()).toBe(false)
+
+    ;(wrapper.vm as any).testProtocol = 'systemone'
+    await flushPromises()
+    expect(wrapper.find('[data-testid="systemone-test-form"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   // Stream events report the actual model, status log, content, and
   // completion. The dialog records timings, displays the answer and mapped
   // model, and exposes the status in log view.

@@ -101,10 +101,12 @@ const (
 	PlatformKimi        = capability.PlatformKimi
 	PlatformZhipu       = capability.PlatformZhipu
 	PlatformDeepseek    = capability.PlatformDeepseek
+	PlatformOpenCode    = capability.PlatformOpenCode
 	PlatformJev         = capability.PlatformJev
 
-	// CN access modes select the provider's endpoint defaults and usage policy.
-	// Coding mode remains a supplier classification even through a custom relay.
+	// Kimi, Zhipu, and DeepSeek access modes select the provider's endpoint
+	// defaults and usage policy. Coding mode remains a supplier classification
+	// even through a custom relay.
 	ProviderModePayG   = "payg"   // usage-based payment access mode
 	ProviderModeCoding = "coding" // subscription coding-plan access mode
 
@@ -116,21 +118,9 @@ const (
 	APIProtocolAdaptive        = "adaptive"                           // automatic legacy protocol selection
 	APIProtocolSystemOne       = string(capability.ProtocolSystemOne) // synchronous SystemOne decision protocol
 
-	// Default OpenAI-compatible base URLs for each Chinese provider mode.
-	// Keep these values consistent with the frontend credentialsBuilder.ts presets.
-	DefaultKimiPayGBaseURL    = "https://api.moonshot.cn/v1"
-	DefaultKimiCodingBaseURL  = "https://api.kimi.com/coding/v1"
-	DefaultZhipuPayGBaseURL   = "https://open.bigmodel.cn/api/paas/v4"
-	DefaultZhipuCodingBaseURL = "https://open.bigmodel.cn/api/coding/paas/v4"
-	DefaultDeepseekBaseURL    = "https://api.deepseek.com"
-	DefaultJevBaseURL         = "https://api.typesafe.ai"
-
-	// Default Anthropic-compatible base URLs; requests append /v1/messages.
-	// Keep these values consistent with the frontend credentialsBuilder.ts presets.
-	DefaultKimiPayGAnthropicBaseURL   = "https://api.moonshot.cn/anthropic"
-	DefaultKimiCodingAnthropicBaseURL = "https://api.kimi.com/coding"
-	DefaultZhipuAnthropicBaseURL      = "https://open.bigmodel.cn/api/anthropic"
-	DefaultDeepseekAnthropicBaseURL   = "https://api.deepseek.com/anthropic"
+	// DefaultJevBaseURL supplies the SystemOne service root when a provider has
+	// no configured endpoint override; operation builders append their request path.
+	DefaultJevBaseURL = "https://api.typesafe.ai"
 
 	// Provider type aliases select the credential lifecycle and authentication
 	// implementation used by platform-specific token, signature, and request
@@ -500,19 +490,12 @@ func (r *Record) IsGrokOAuth() bool {
 	return r.IsGrok() && r.Type == ProviderTypeOAuth
 }
 
-// IsCNProvider reports whether this record uses Kimi, Zhipu, or DeepSeek. Nil
-// records return false, while the platform helper shares the same supplier
-// classification with other provider consumers.
-func (r *Record) IsCNProvider() bool {
-	return r != nil && IsCNProvider(r.Platform)
-}
-
-// IsOpenAICompatible identifies OpenAI, Grok, Kimi, Zhipu, and DeepSeek gateway
-// families. Nil records return false; the platform classification leaves
-// provider-type and endpoint eligibility to the route-specific checks.
+// IsOpenAICompatible identifies OpenAI, Grok, Kimi, Zhipu, and DeepSeek, and
+// OpenCode gateway families. Nil records return false; the platform
+// classification leaves provider-type and endpoint eligibility to the
+// route-specific checks.
 func (r *Record) IsOpenAICompatible() bool {
-	return r != nil && (r.Platform == PlatformOpenAI || r.Platform == PlatformGrok ||
-		r.Platform == PlatformKimi || r.Platform == PlatformZhipu || r.Platform == PlatformDeepseek)
+	return r != nil && IsOpenAICompatible(r.Platform)
 }
 
 // GeminiOAuthType returns the trimmed channel label for Gemini OAuth records.
@@ -1027,8 +1010,9 @@ func (r *Record) GetBaseURL() string {
 }
 
 // GetGeminiBaseURL returns the trimmed saved endpoint or the supplied default
-// URL. Missing and whitespace-only credentials use that default regardless of
-// platform or type, allowing each caller to choose its platform endpoint.
+// URL. The supplied default is used when the stored base is missing or
+// whitespace only; protocol-specific service endpoints are selected by
+// ProtocolTarget.BaseURL before constructing a request.
 func (r *Record) GetGeminiBaseURL(defaultBaseURL string) string {
 	baseURL := strings.TrimSpace(r.GetCredential("base_url"))
 	if baseURL == "" {
@@ -1407,104 +1391,29 @@ func (r *Record) IsOpenAIApiKey() bool {
 	return r.IsOpenAI() && r.Type == ProviderTypeAPIKey
 }
 
-// GetProviderMode returns payg or coding for a CN provider. Missing, invalid,
-// or whitespace-trimmed unknown modes select payg; nil records and other
-// platforms return empty, keeping their mode interpretation with
-// platform-specific code.
+// GetProviderMode returns the platform's interpreted access mode for endpoint
+// and usage lookup. Nil records and platforms without mode declarations return
+// empty; missing, blank, or unknown values select the platform's read default.
 func (r *Record) GetProviderMode() string {
-	if r == nil || !r.IsCNProvider() {
+	rules := r.rules().text
+	if rules == nil {
 		return ""
 	}
 	mode := strings.TrimSpace(r.GetCredential("provider_mode"))
-	if mode == ProviderModePayG || mode == ProviderModeCoding {
+	if _, found := rules.modes[mode]; found {
 		return mode
 	}
-	return ProviderModePayG
+	return rules.defaultMode
 }
 
-// IsCodingPlan reports whether this CN provider selects the coding access mode.
-// Nil records and other platforms return false, while an absent or unusable CN
-// mode uses the payg default through GetProviderMode.
+// IsCodingPlan reports whether the platform's interpreted access mode is
+// coding. Nil records and platforms without mode declarations return false;
+// mode reads retain historical compatibility independently of save validation.
 func (r *Record) IsCodingPlan() bool {
 	return r.GetProviderMode() == ProviderModeCoding
 }
 
-// SupportsNativeCNResponses identifies the Kimi and DeepSeek platform endpoint
-// presets. Nil and other platforms return false; this platform capability check
-// leaves authentication type and configured protocol eligibility to the route
-// resolver.
-func (r *Record) SupportsNativeCNResponses() bool {
-	if r == nil {
-		return false
-	}
-	switch r.Platform {
-	case PlatformDeepseek, PlatformKimi:
-		return true
-	default:
-		return false
-	}
-}
-
-// DefaultCNProtocolBaseURL chooses a built-in endpoint from CN platform, access
-// mode, and requested protocol. Kimi and Zhipu Chat or Responses defaults
-// distinguish coding from payg; Messages uses its registered platform presets.
-//
-// This selection supplies defaults for protocol-specific configuration, so it
-// returns empty when the platform/protocol pair has no preset. It does not test
-// whether that route is enabled or supported by the provider's authentication
-// type. Callers apply protocol eligibility and transport validation before
-// using the chosen address.
-func (r *Record) DefaultCNProtocolBaseURL(protocol string) string {
-	switch protocol {
-	case APIProtocolAnthropic:
-		switch r.Platform {
-		case PlatformKimi:
-			if r.GetProviderMode() == ProviderModeCoding {
-				return DefaultKimiCodingAnthropicBaseURL
-			}
-			return DefaultKimiPayGAnthropicBaseURL
-		case PlatformZhipu:
-			return DefaultZhipuAnthropicBaseURL
-		case PlatformDeepseek:
-			return DefaultDeepseekAnthropicBaseURL
-		}
-	case APIProtocolChatCompletions, APIProtocolResponses:
-		switch r.Platform {
-		case PlatformKimi:
-			if r.GetProviderMode() == ProviderModeCoding {
-				return DefaultKimiCodingBaseURL
-			}
-			return DefaultKimiPayGBaseURL
-		case PlatformZhipu:
-			if r.GetProviderMode() == ProviderModeCoding {
-				return DefaultZhipuCodingBaseURL
-			}
-			return DefaultZhipuPayGBaseURL
-		case PlatformDeepseek:
-			return DefaultDeepseekBaseURL
-		}
-	}
-	return ""
-}
-
-// IsDefaultCNAnthropicBaseURL matches a registered CN Messages endpoint after
-// trimming outer whitespace and trailing slashes. Matching remains
-// case-sensitive and includes the path, so sharing a hostname alone does not
-// qualify a custom URL.
-func IsDefaultCNAnthropicBaseURL(baseURL string) bool {
-	normalized := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	switch normalized {
-	case DefaultKimiPayGAnthropicBaseURL,
-		DefaultKimiCodingAnthropicBaseURL,
-		DefaultZhipuAnthropicBaseURL,
-		DefaultDeepseekAnthropicBaseURL:
-		return true
-	default:
-		return false
-	}
-}
-
-// StripCNAnthropicPathSuffix trims a relay address and removes a final decoded
+// StripAnthropicPathSuffix trims a relay address and removes a final decoded
 // anthropic path segment when present. Parse errors return the trimmed input;
 // callers still apply the request path's transport validation to the result.
 //
@@ -1514,7 +1423,7 @@ func IsDefaultCNAnthropicBaseURL(baseURL string) bool {
 // end of query or fragment text. A caller needing byte-for-byte retention of
 // those suffixes therefore keeps its original URL instead of using this
 // compatibility rewrite.
-func StripCNAnthropicPathSuffix(baseURL string) string {
+func StripAnthropicPathSuffix(baseURL string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	parsed, err := url.Parse(trimmed)
 	// Malformed compatibility input retains its trimmed text for the egress
@@ -1537,31 +1446,11 @@ func StripCNAnthropicPathSuffix(baseURL string) string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
-// GetCNAPIKey returns api_key for a Kimi, Zhipu, or DeepSeek record. Nil
-// records and other platforms return empty; this platform accessor leaves
-// authentication-type validation to the caller using the key.
-func (r *Record) GetCNAPIKey() string {
-	if r == nil || !r.IsCNProvider() {
-		return ""
-	}
-	return r.GetCredential("api_key")
-}
-
-// GetCodingPlanProvider identifies Kimi or Zhipu when CN mode is coding. Nil,
-// payg, and other platforms return empty; the platform owns supplier identity
-// even when the saved URL is a custom relay.
+// GetCodingPlanProvider returns the supplier identity declared for coding quota
+// windows. Nil records and modes without coding usage return empty, including
+// historical modes that remain readable but cannot be saved.
 func (r *Record) GetCodingPlanProvider() string {
-	if r == nil || r.GetProviderMode() != ProviderModeCoding {
-		return ""
-	}
-	switch r.Platform {
-	case PlatformKimi:
-		return PlatformKimi
-	case PlatformZhipu:
-		return PlatformZhipu
-	default:
-		return ""
-	}
+	return r.textMode().codingProvider
 }
 
 // GetOpenAIAccessToken reads access_token for the OpenAI platform and returns
@@ -1605,9 +1494,9 @@ func (r *Record) GetGrokRefreshToken() string {
 }
 
 // GetOpenAIApiKey reads api_key for an OpenAI API Key record. Other
-// platform/type combinations return empty; OpenAI-compatible CN forwarding uses
-// the separate GetOpenAIProtocolAPIKey accessor for its platform
-// classification.
+// platform/type combinations return empty; OpenAI-compatible Kimi, Zhipu, and
+// DeepSeek forwarding uses the separate GetOpenAIProtocolAPIKey accessor for
+// its platform classification.
 func (r *Record) GetOpenAIApiKey() string {
 	if !r.IsOpenAIApiKey() {
 		return ""
@@ -1615,14 +1504,15 @@ func (r *Record) GetOpenAIApiKey() string {
 	return r.GetCredential("api_key")
 }
 
-// GetOpenAIProtocolAPIKey returns an API Key for OpenAI or a supported CN
-// platform. Nil records and CN records using another authentication type return
-// empty; OpenAI delegates to its platform-specific API Key accessor.
+// GetOpenAIProtocolAPIKey returns an API Key for OpenAI, Kimi, Zhipu, and
+// DeepSeek, or OpenCode forwarding. Nil records and compatible records using
+// another authentication type return empty; OpenAI delegates to its
+// platform-specific API Key accessor.
 func (r *Record) GetOpenAIProtocolAPIKey() string {
 	if r == nil {
 		return ""
 	}
-	if r.IsCNProvider() {
+	if r.HasProtocolEndpointDefaults() || r.IsOpenCode() {
 		if r.Type != ProviderTypeAPIKey {
 			return ""
 		}
@@ -1967,8 +1857,9 @@ func (r *Record) IsAnthropicOAuthOrSetupToken() bool {
 }
 
 // SupportsTLSFingerprint classifies provider types whose outbound transport can
-// emulate a TLS profile. Anthropic OAuth/Setup Token, OpenAI OAuth, CN API Key,
-// and Qoder COSY records qualify; nil and other combinations return false.
+// emulate a TLS profile. Anthropic OAuth/Setup Token, OpenAI OAuth, Kimi,
+// Zhipu, and DeepSeek API Key, and Qoder COSY records qualify; nil and other
+// combinations return false.
 func (r *Record) SupportsTLSFingerprint() bool {
 	if r == nil {
 		return false
@@ -1977,7 +1868,7 @@ func (r *Record) SupportsTLSFingerprint() bool {
 		return true
 	}
 	return (r.Platform == PlatformOpenAI && r.Type == ProviderTypeOAuth) ||
-		(r.IsCNProvider() && r.Type == ProviderTypeAPIKey) ||
+		(r.rules().apiKeyTLSFingerprint && r.Type == ProviderTypeAPIKey) ||
 		r.IsQoderCosy()
 }
 
@@ -2658,14 +2549,7 @@ func (r *Record) IsQuotaExceeded() bool {
 	// A later billing increment owns resetting the counter and start together,
 	// so this reader leaves the persisted amount available for that writer.
 	if limit := r.GetQuotaDailyLimit(); limit > 0 {
-		start := r.GetExtraTime("quota_daily_start")
-		var expired bool
-		if r.GetQuotaDailyResetMode() == "fixed" {
-			expired = r.IsFixedDailyPeriodExpired(start)
-		} else {
-			expired = IsPeriodExpired(start, 24*time.Hour)
-		}
-		if !expired && r.GetQuotaDailyUsed() >= limit {
+		if !r.IsDailyQuotaPeriodExpired() && r.GetQuotaDailyUsed() >= limit {
 			return true
 		}
 	}
@@ -2673,14 +2557,7 @@ func (r *Record) IsQuotaExceeded() bool {
 	// separately so expiration of the daily window cannot release a still
 	// exhausted weekly allowance.
 	if limit := r.GetQuotaWeeklyLimit(); limit > 0 {
-		start := r.GetExtraTime("quota_weekly_start")
-		var expired bool
-		if r.GetQuotaWeeklyResetMode() == "fixed" {
-			expired = r.IsFixedWeeklyPeriodExpired(start)
-		} else {
-			expired = IsPeriodExpired(start, 7*24*time.Hour)
-		}
-		if !expired && r.GetQuotaWeeklyUsed() >= limit {
+		if !r.IsWeeklyQuotaPeriodExpired() && r.GetQuotaWeeklyUsed() >= limit {
 			return true
 		}
 	}
@@ -2713,12 +2590,9 @@ func (r *Record) QuotaDimensionOrDefault() string {
 	return r.QuotaDimension
 }
 
-// IsCNProvider classifies Kimi, Zhipu, and DeepSeek as CN provider platforms.
-func IsCNProvider(platform string) bool {
-	switch platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
-		return true
-	default:
-		return false
-	}
+// IsOpenAICompatible classifies OpenAI, Grok, Kimi, Zhipu, and DeepSeek, and
+// OpenCode as the platforms whose text requests use the OpenAI-compatible
+// gateway family.
+func IsOpenAICompatible(platform string) bool {
+	return platform == PlatformOpenAI || platform == PlatformGrok || platform == PlatformOpenCode || platformRuleRegistry[platform].text != nil
 }

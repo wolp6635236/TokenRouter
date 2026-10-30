@@ -19,7 +19,7 @@ import (
 // that current record, applies requested patches, and reconciles quota windows
 // at the caller's captured time. Protocol normalization runs after secret
 // inheritance, with the current fingerprint seed taking priority over the
-// desired snapshot. A changed CN monitoring identity discards its observation.
+// desired snapshot. A changed upstream usage monitoring identity discards its observation.
 // Storage supplies the row lock and durable transaction; conditional and patch
 // updates require a ConfigurationWriter so a plain whole-record adapter cannot
 // silently weaken those requirements.
@@ -125,7 +125,7 @@ type ConfigurationWriter interface {
 // retains the current valid fingerprint seed before consulting desired.
 //
 // Changing the Antigravity overages setting clears observations tied to its
-// prior state. Changing the CN monitoring fingerprint removes its saved
+// prior state. Changing the upstream usage monitoring fingerprint removes its saved
 // snapshot. The final CloneRecord isolates supported mutable data from both
 // inputs before storage receives the result.
 func ApplyConfigurationChange(current, desired *Record, change ConfigurationChange) (*Record, error) {
@@ -263,7 +263,7 @@ func ApplyConfigurationChange(current, desired *Record, change ConfigurationChan
 		// set. Keep the locked seed when present so editing routes cannot reset
 		// the provider identity used by outgoing fingerprinted requests.
 		ApplyLegacyProtocolPatch(out, change.CredentialInput, change.ProtocolExtra)
-		if err := NormalizeCNProviderCredentials(out, false); err != nil {
+		if err := NormalizeTextEndpointCredentials(out, false); err != nil {
 			return nil, err
 		}
 		if err := NormalizeOpenAIAPIKeyConfiguration(out); err != nil {
@@ -284,11 +284,11 @@ func ApplyConfigurationChange(current, desired *Record, change ConfigurationChan
 			out.Extra[CodexFingerprintSeedExtraKey] = seed
 		}
 	}
-	// CN observations identify credentials and transport. Once that identity
+	// Usage observations identify credentials and transport. Once that identity
 	// changes, a retained usage snapshot belongs to the former connection and
 	// must be removed before the merged configuration is returned.
-	if CNUsageMonitorIdentityFingerprint(current) != CNUsageMonitorIdentityFingerprint(out) {
-		delete(out.Extra, CNUsageMonitorSnapshotExtraKey)
+	if UsageMonitorIdentityFingerprint(current) != UsageMonitorIdentityFingerprint(out) {
+		delete(out.Extra, UsageMonitorSnapshotExtraKey)
 	}
 	if _, err := BalanceAlertConfiguration(out); err != nil {
 		return nil, err

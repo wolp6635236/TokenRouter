@@ -114,10 +114,10 @@ func (ResponsesExecutor) Execute(ctx context.Context, input upstream.AttemptInpu
 			return result, e
 		}
 	}
-	// Normalize billing pings before restoring client tools; bridge readers take
-	// the raw path because they interpret vendor events themselves.
+	// Restore client tools before response conversion. The shared Responses
+	// reader consumes billing pings with the same upstream heartbeat rules used
+	// for other providers; raw bridge readers interpret vendor events themselves.
 	if input.Stream && !t.PassRawStream {
-		resp.Body = NewGrokResponsesBillingPingFilterBody(resp.Body, t.MaxLineSize)
 		if len(t.ClientTools.CustomTools) > 0 || t.ClientTools.ToolSearch || len(t.ClientTools.NamespaceTools) > 0 {
 			resp.Body = upstream.NewResponsesClientToolStreamBody(resp.Body, t.ClientTools, t.MaxLineSize)
 		}

@@ -127,7 +127,6 @@ export default {
     apiKeys: 'API 密钥',
     team: '团队',
     teams: '团队管理',
-    batchImage: '批量生图',
     creative: '创作台',
     usage: '使用记录',
     redeem: '兑换',

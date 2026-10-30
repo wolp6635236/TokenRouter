@@ -100,7 +100,7 @@ API Key 和 Bedrock 可以配置本地的提供商配额和亲和策略。可用
 
 请求指纹由 `upstream/anthropic.RequestFingerprint` 和它的 Redis 适配层持有，app 直接注入 Messages 的执行器。提供商 ID、masking 开关和请求 Header 在每次执行时传入，用户的登录身份由 identity 负责。Redis 的 `fingerprint:` 和 `masked_session:` 键、TTL、UA 升级和遮罩规则都保持兼容。Claude 的授权会话和完成编排由 `provider.ClaudeAuthorization` 持有，app 直接构造它并绑定生命周期；provider 组合协议参数，OAuth 的 HTTP handler 在 `provider/httpapi`。管理、CRS 和刷新使用同一个授权实例；实际的交换和 usage 的 HTTP 客户端在平台包里。
 
-`gateway/forward` 安排请求准备、转换和错误策略的顺序；`gateway/httpapi` 负责同步输出和协议错误，`gateway/completion` 负责完成处理。动态设置、凭据和提供商观测，通过固定的单步适配层传入。流处理在事件的位置读取缓存分类数据，64 KiB 的 Scanner 缓冲由一个技术池复用。输出适配器带上已有的 Header 和提交状态，等待心跳之后，重试窗口仍然有效。应用登记每次同步的尝试，并等待它释放响应体；超时时不会报告已排空。
+`gateway/forward` 安排请求准备、转换和错误策略的顺序；`gateway/httpapi` 负责同步输出和协议错误，`gateway/completion` 负责完成处理。动态设置、凭据和提供商观测，通过固定的单步适配层传入。流处理在事件的位置读取缓存分类数据，64 KiB 的 Scanner 缓冲由一个技术池复用。输出适配器分别记录 HTTP 提交和正文交付，只有心跳时保留重试窗口；下游计时、Claude Code 空 delta 和上游心跳消费见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)。应用登记每次同步的尝试，并等待它释放响应体；超时时不会报告已排空。
 
 ### 请求规则与执行观测
 

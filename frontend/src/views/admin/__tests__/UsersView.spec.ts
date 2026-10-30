@@ -120,8 +120,8 @@ const mountUsersView = () =>
         UserPlatformQuotaModal: true,
         UserApiKeysModal: true,
         UserAllowedGroupsModal: true,
-        UserBalanceModal: true,
-        UserBalanceHistoryModal: true,
+        UserBalanceModal: UserBalanceModalStub,
+        UserBalanceHistoryModal: UserBalanceHistoryModalStub,
         GroupReplaceModal: true,
         Icon: true,
         Teleport: true,
@@ -172,6 +172,45 @@ const PaginationStub = {
   // while the visible user changes.
   emits: ['update:page'],
   template: '<button data-test="next-page" @click="$emit(\'update:page\', 2)">next</button>',
+}
+
+// UserBalanceModalStub exposes the layer and account requested for the balance editor,
+// and can report a close request or a completed edit so tests can check stacking and the
+// history refresh path.
+const UserBalanceModalStub = {
+  // show, user, and zIndex expose the parent's visibility state, target account, and
+  // requested modal layer.
+  props: ['show', 'user', 'zIndex'],
+  // close lets the test dismiss the editor, while success reports an adjusted account.
+  emits: ['close', 'success'],
+  template: `
+    <div v-if="show" data-test="balance-editor" :data-z-index="zIndex">
+      <button data-test="balance-editor-close" @click="$emit('close')">close</button>
+      <button
+        data-test="balance-editor-success"
+        @click="$emit('success', { id: user.id, balance: 77.5 })"
+      >
+        success
+      </button>
+    </div>
+  `,
+}
+
+// UserBalanceHistoryModalStub forwards the deposit and withdrawal actions and exposes the
+// account and refresh key received from the parent page.
+const UserBalanceHistoryModalStub = {
+  // show, user, and refreshKey expose the history surface state and parent updates.
+  props: ['show', 'user', 'refreshKey'],
+  // The parent listens for close, deposit, and withdraw from the history dialog.
+  emits: ['close', 'deposit', 'withdraw'],
+  template: `
+    <div v-if="show" data-test="balance-history" :data-refresh-key="refreshKey">
+      <span data-test="history-email">{{ user?.email ?? '' }}</span>
+      <span data-test="history-balance">{{ user?.balance ?? '' }}</span>
+      <button data-test="history-deposit" @click="$emit('deposit')">deposit</button>
+      <button data-test="history-withdraw" @click="$emit('withdraw')">withdraw</button>
+    </div>
+  `,
 }
 
 // BulkEditUserModalStub exposes selected identifiers and emits success, allowing the
@@ -496,5 +535,57 @@ describe('admin UsersView', () => {
     expect(wrapper.get('[data-test="row-order"]').text()).toBe('refreshed-page-two@example.com')
     expect(wrapper.find('[data-test="bulk-edit-limits"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="selected-keys"]').text()).toBe('')
+  })
+
+  // The balance cell opens the history dialog, and that dialog can open the deposit
+  // editor. The editor must request the nested modal layer in that path so it renders
+  // above the history surface, while the row deposit action keeps the shared layer.
+  it('opens deposit from balance history above the history dialog', async () => {
+    const wrapper = mountUsersView()
+    await flushPromises()
+
+    // The row deposit action works without an open history dialog.
+    const depositButton = wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'admin.users.deposit')
+    expect(depositButton).toBeDefined()
+    await depositButton!.trigger('click')
+    expect(wrapper.get('[data-test="balance-editor"]').attributes('data-z-index')).toBe('50')
+
+    await wrapper.get('[data-test="balance-editor-close"]').trigger('click')
+    expect(wrapper.find('[data-test="balance-editor"]').exists()).toBe(false)
+
+    // The formatted balance opens the history dialog, whose deposit action opens the
+    // editor one layer higher.
+    const historyTrigger = wrapper.findAll('button').find((button) => button.text() === '$0.00')
+    expect(historyTrigger).toBeDefined()
+    await historyTrigger!.trigger('click')
+    expect(wrapper.find('[data-test="balance-history"]').exists()).toBe(true)
+
+    await wrapper.get('[data-test="history-deposit"]').trigger('click')
+    expect(wrapper.get('[data-test="balance-editor"]').attributes('data-z-index')).toBe('60')
+  })
+
+  // A deposit completed from the history dialog returns the server-updated account. The
+  // page must publish that balance to the open history header, advance its refresh key,
+  // and still refresh the user table even though the history dialog opened the editor.
+  it('refreshes the open balance history after a deposit from it', async () => {
+    const wrapper = mountUsersView()
+    await flushPromises()
+
+    const historyTrigger = wrapper.findAll('button').find((button) => button.text() === '$0.00')
+    await historyTrigger!.trigger('click')
+    expect(wrapper.get('[data-test="history-balance"]').text()).toBe('0')
+
+    const callsBeforeEdit = listUsers.mock.calls.length
+    await wrapper.get('[data-test="history-deposit"]').trigger('click')
+    await wrapper.get('[data-test="balance-editor-success"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="history-balance"]').text()).toBe('77.5')
+    // The editor reports only the fields it changed; the page keeps the rest of the row.
+    expect(wrapper.get('[data-test="history-email"]').text()).toBe('scoped@example.com')
+    expect(wrapper.get('[data-test="balance-history"]').attributes('data-refresh-key')).toBe('1')
+    expect(listUsers.mock.calls.length).toBeGreaterThan(callsBeforeEdit)
   })
 })

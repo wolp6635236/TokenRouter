@@ -23,6 +23,7 @@ const messages: Record<string, string> = {
   'usage.providerCost': 'Cost',
   'usage.standardCost': 'Standard',
   'usage.avgDuration': 'Avg Duration',
+  'usage.incompleteCosts': '{count} requests have incomplete costs',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -30,7 +31,8 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => messages[key] ?? key,
+      t: (key: string, params?: { count: number }) =>
+        (messages[key] ?? key).replace('{count}', String(params?.count ?? '')),
     }),
   }
 })
@@ -59,6 +61,20 @@ const stats = {
 }
 
 describe('UsageStatsCards', () => {
+  // Some system requests have unknown or partial costs alongside a known total.
+  // The count must be visible with provider expenses and disappear when those expenses are hidden.
+  it('marks an incomplete provider cost total', async () => {
+    const wrapper = mount(UsageStatsCards, {
+      props: { stats: { ...stats, incomplete_cost_requests: 2 } },
+      global: { stubs: { BalanceIcon: true, Icon: true } },
+    })
+    expect(wrapper.text()).toContain('2 requests have incomplete costs')
+    await wrapper.setProps({ showProviderCost: false })
+    expect(wrapper.text()).not.toContain('requests have incomplete costs')
+    await wrapper.setProps({ showProviderCost: true, stats })
+    expect(wrapper.text()).not.toContain('requests have incomplete costs')
+  })
+
   // A summary contains separate cache creation and read counts. The test protects the
   // combined cache total and the individual counts displayed in its details.
   it('shows cache token breakdown values', () => {

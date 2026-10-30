@@ -361,16 +361,17 @@
               :title="t('admin.pricing.form.modelPricing')"
               :empty-text="t('admin.pricing.form.noPricingRules')"
               test-id="model-pricing-entries"
+              :removable="false"
               @add="addPricingEntry(sIdx)"
-              @remove="removePricingEntry(sIdx, $event)"
             >
               <template #row="{ item: entry, index: idx }">
                 <PricingEntryCard
                   :entry="entry"
-                  :removable="false"
+                  allow-reference
                   enable-time-pricing
                   enable-tier-multipliers
                   @update="updatePricingEntry(sIdx, idx, $event)"
+                  @remove="removePricingEntry(sIdx, idx)"
                 />
               </template>
             </RuleListEditor>
@@ -510,12 +511,12 @@
                     :empty-text="t('admin.pricing.form.noPricingRules')"
                     :test-id="`provider-rule-pricing-${ruleIndex}`"
                     @add="addRulePricingEntry(sIdx, ruleIndex)"
-                    @remove="removeRulePricingEntry(sIdx, ruleIndex, $event)"
+                    :removable="false"
                   >
-                    <template #row="{ item: entry }">
+                    <template #row="{ item: entry, index: idx }">
                       <PricingEntryCard
                         :entry="entry"
-                        :removable="false"
+                        @remove="removeRulePricingEntry(sIdx, ruleIndex, idx)"
                         @update="Object.assign(entry, $event)"
                       />
                     </template>

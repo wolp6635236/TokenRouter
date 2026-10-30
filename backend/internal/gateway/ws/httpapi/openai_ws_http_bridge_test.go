@@ -2759,6 +2759,73 @@ func TestOpenAIWSHTTPBridgeSSEErrorSideEffectsRunOncePerPlatform(t *testing.T) {
 	}
 }
 
+// TestOpenAIWSHTTPBridgeTerminalSideEffectsWithOptionalRequest sends both
+// failure event forms before output. It preserves request-scoped effect reuse
+// and the independent health evaluation used when no Gin request is present.
+func TestOpenAIWSHTTPBridgeTerminalSideEffectsWithOptionalRequest(t *testing.T) {
+	for _, event := range []string{"error", "response.failed"} {
+		for _, tt := range []struct {
+			name       string // request context scenario name
+			withGin    bool   // request context is available
+			wantHealth int    // expected provider health writes
+		}{
+			{name: "request", withGin: true, wantHealth: 1},
+			{name: "standalone", wantHealth: 2},
+		} {
+			t.Run(event+"/"+tt.name, func(t *testing.T) {
+				errorJSON := `"error":{"type":"authentication_error","code":"invalid_api_key","message":"credential rejected"}`
+				eventJSON := `{"type":"error",` + errorJSON + `}`
+				if event == "response.failed" {
+					eventJSON = `{"type":"response.failed","response":{` + errorJSON + `}}`
+				}
+				repo := &openAIStream403ProviderRepo{}
+				options := &wsFixtureOptions{}
+				upstream := &auxiliaryHTTPRecorder{resp: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("data: " + eventJSON + "\n\n")),
+				}}
+				svc := newWSFixture(wsFixtureInputs{options: options, providers: repo, transport: upstream})
+				setWSFixtureHealth(svc, newUpstreamHealthForTest(repo, options, nil, providercore.HealthOptions{}, nil))
+				provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+					LoadLocation: time.LoadLocation,
+					ID:           71,
+					Platform:     capability.PlatformOpenAI,
+					Type:         capability.ProviderTypeAPIKey,
+					Concurrency:  1,
+					Credentials: map[string]any{
+						"custom_error_codes_enabled": true,
+						"custom_error_codes":         []any{float64(http.StatusUnauthorized)},
+					},
+				}}
+				var c *gin.Context
+				if tt.withGin {
+					c, _ = gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+				}
+				payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi"}`)
+				writes := 0
+
+				result, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+					context.Background(), c, provider, "sk-test", payload, len(payload),
+					"gpt-5", "gpt-5", "", "", "", "", 1,
+					func([]byte) error {
+						writes++
+						return nil
+					},
+				)
+
+				require.Nil(t, result)
+				var failure *forwardcore.UpstreamFailoverError
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, http.StatusUnauthorized, failure.StatusCode)
+				require.Zero(t, writes)
+				require.Equal(t, tt.wantHealth, repo.setErrorCalls)
+			})
+		}
+	}
+}
+
 // TestOpenAIWSHTTPBridgeGrokExhaustedSuccessPersistsRateLimit completes an
 // HTTP 200 stream whose headers report zero remaining requests. The result
 // succeeds, but one cooldown retains the supplied reset timestamp and the

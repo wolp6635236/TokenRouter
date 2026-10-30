@@ -299,7 +299,26 @@
                       @update:models="onModelsUpdate(item, $event)"
                     />
                   </div>
+                  <div>
+                    <label class="input-label">{{ t('admin.pricing.ruleMode') }}</label>
+                    <Select
+                      :model-value="isReferenceRule(item) ? 'reference' : 'custom'"
+                      :aria-label="t('admin.pricing.ruleMode')"
+                      :options="[
+                        { value: 'custom', label: t('admin.pricing.customMode') },
+                        { value: 'reference', label: t('admin.pricing.referenceMode') },
+                      ]"
+                      @update:model-value="setReferenceMode(item, $event === 'reference')"
+                    />
+                  </div>
+                  <ModelReferenceInput
+                    v-if="isReferenceRule(item)"
+                    :model-value="item.reference_model || ''"
+                    @update:model-value="setReferenceModel(item, $event)"
+                    @change="loadRuleDefaults(item)"
+                  />
                   <ModelAttributesFields
+                    v-else
                     v-model="item.attributes"
                     :inherited="ruleDefaults.get(item)?.attributes"
                   />
@@ -366,6 +385,11 @@
                     >{{ tag }}</span
                   >
                 </div>
+                <p
+                  v-if="route.reference_model"
+                  class="break-all text-sm text-gray-500 dark:text-gray-400"
+                  >{{ route.target.model }} → {{ route.reference_model }}</p
+                >
                 <ModelAttributesSummary :attributes="route.attributes" />
                 <ModelAttributeDisclosure :title="t('admin.modelAttributes.fieldSource')">
                   <dl class="space-y-2 text-sm">
@@ -440,6 +464,8 @@ import GroupBadge from '@/components/common/GroupBadge.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
 import SettingsTabs from '@/components/common/settings/SettingsTabs.vue'
+import ModelReferenceInput from '@/components/admin/model-attributes/ModelReferenceInput.vue'
+import { validateModelReferences } from '@/components/admin/model-attributes/modelReferences'
 import ModelAttributeDisclosure from '@/components/admin/model-attributes/ModelAttributeDisclosure.vue'
 import ModelAttributesFields from '@/components/admin/model-attributes/ModelAttributesFields.vue'
 import ModelAttributeRouteFields from '@/components/admin/model-attributes/ModelAttributeRouteFields.vue'
@@ -534,12 +560,42 @@ const blank = (): AttributeConfig => ({
 // form owns a copied attribute configuration draft so rule and group edits are submitted
 // together through the editor save operation.
 const form = ref<AttributeConfig>(blank())
-// formPayload omits empty display-name overrides from preview and save requests. The editable
+// referenceModes retains each rule's mode separately from its editable target and fields.
+const referenceModes = reactive(new WeakMap<AttributeRule, boolean>())
+
+// isReferenceRule reads the selected draft mode for attribute rendering and serialization.
+// New rules default to custom until setReferenceMode is called; edit initializes saved
+// rules before their fields are rendered.
+function isReferenceRule(rule: AttributeRule): boolean {
+  return referenceModes.get(rule) ?? false
+}
+
+// setReferenceMode switches serialization while retaining both sets of draft values.
+function setReferenceMode(rule: AttributeRule, enabled: boolean) {
+  referenceModes.set(rule, enabled)
+  resetPreview()
+  void loadRuleDefaults(rule)
+}
+
+// setReferenceModel updates the target and clears its previous catalog comparison.
+// Removing the retained lookup identity also rejects a pending response for the
+// old target. The input's change event starts the next lookup after editing finishes.
+function setReferenceModel(rule: AttributeRule, model: string) {
+  rule.reference_model = model
+  // Discard old reference evidence immediately so typing cannot display another
+  // model's attributes or accept an earlier pending result under the new target.
+  ruleDefaults.delete(rule)
+}
+
+// formPayload sends reference targets or custom overrides for preview and saving. The editable
 // form retains translation revisions while its source is empty so clearing and retyping an
 // existing name can still pass the server's revision check.
 const formPayload = computed<AttributeConfig>(() => ({
   ...form.value,
-  rules: form.value.rules.map((rule) => {
+  rules: form.value.rules.map((draft) => {
+    const { reference_model, ...rule } = draft
+    if (isReferenceRule(draft))
+      return { ...rule, reference_model: reference_model?.trim(), attributes: {} }
     if (rule.attributes.display_name_localization?.source !== '') return rule
     const attributes = { ...rule.attributes }
     delete attributes.display_name
@@ -671,9 +727,13 @@ async function load() {
     if (current === sequence) loading.value = false
   }
 }
-// edit opens a copied configuration draft or a blank new configuration. It selects initial
-// preview values, requests reference attributes for existing rules, and loads group options;
-// group-loading failures remain visible in the editor.
+// edit opens a copied configuration draft or a blank new configuration. Saved reference
+// modes are captured for the copied rules before starting their catalog requests. Target
+// text can then be cleared for editing while preview and save still validate a reference.
+//
+// The dialog opens with initial preview selections and independently loaded catalog
+// comparisons. Group options load while the draft is editable, and group-loading failures
+// remain visible in the editor. Mutations apply to the copied draft until save succeeds.
 async function edit(config?: AttributeConfig) {
   form.value = config ? JSON.parse(JSON.stringify(config)) : blank()
   previewGroup.value = config?.group_ids[0] ? String(config.group_ids[0]) : ''
@@ -682,7 +742,12 @@ async function edit(config?: AttributeConfig) {
   formError.value = ''
   showEditor.value = true
   void tabsRef.value?.selectTab('basic')
-  for (const rule of form.value.rules) void loadRuleDefaults(rule)
+  for (const rule of form.value.rules) {
+    // Capture the stored mode before typing changes the target, keeping an empty
+    // reference in reference mode until validation or an explicit mode selection.
+    referenceModes.set(rule, Boolean(rule.reference_model))
+    void loadRuleDefaults(rule)
+  }
   groupsLoading.value = true
   try {
     groups.value = await adminAPI.groups.getAll()
@@ -704,7 +769,7 @@ function onModelsUpdate(rule: AttributeRule, models: string[]) {
   void loadRuleDefaults(rule)
 }
 
-// loadRuleDefaults fetches reference attributes for a rule's first non-wildcard model. A
+// loadRuleDefaults fetches the mapped target or first concrete source model. A
 // matching stored model skips repeat lookup, and a rule with no concrete model loses its
 // reference entry. The WeakMap entry records the requested model before awaiting the API.
 //
@@ -712,7 +777,9 @@ function onModelsUpdate(rule: AttributeRule, models: string[]) {
 // Failed lookup leaves manual editing available with no loaded reference attributes. The stored
 // model also prevents immediate automatic retries for that same reference.
 async function loadRuleDefaults(rule: AttributeRule) {
-  const model = rule.models.find((item) => !item.includes('*'))
+  const model = isReferenceRule(rule)
+    ? rule.reference_model?.trim()
+    : rule.models.find((item) => !item.includes('*'))
   if (model === ruleDefaults.get(rule)?.model) return
   if (!model) {
     ruleDefaults.delete(rule)
@@ -754,6 +821,10 @@ function resetPreview() {
 // previous result. Null routes represent an unrequested or reset preview, while a returned
 // empty array represents a completed lookup with no matched routes.
 async function preview() {
+  if (validateModelReferences(form.value.rules.filter(isReferenceRule))) {
+    previewError.value = t('admin.pricing.referenceInvalid')
+    return
+  }
   if (!previewGroup.value || !previewModel.value.trim() || previewLoading.value) return
   // Capture this preview generation before starting the request so completion handlers can
   // reject its result after a reset or a newer preview begins.
@@ -827,6 +898,11 @@ function addRule() {
 async function save() {
   if (saving.value) return
   formError.value = ''
+  if (validateModelReferences(form.value.rules.filter(isReferenceRule))) {
+    formError.value = t('admin.pricing.referenceInvalid')
+    void tabsRef.value?.selectTab('rules')
+    return
+  }
   if (tabsRef.value && !(await tabsRef.value.validate())) return
   // Tag controls do not participate in native input validation, so check their model lists
   // before persisting attribute rules.

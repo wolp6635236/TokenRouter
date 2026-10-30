@@ -75,6 +75,22 @@ func TryCustomRules(
 	rules []ProviderStatsPricingRule, providerID, groupID int64,
 	model string, tokens UsageTokens, requestCount int,
 ) *float64 {
+	cost, _ := tryCustomRulesWithMode(rules, providerID, groupID, model, tokens, requestCount)
+	return cost
+}
+
+// tryCustomRulesWithMode resolves a provider card together with its billing unit.
+// A present zero amount remains a priced result; no matching calculable card
+// returns nil and an empty mode so callers can apply their ordinary fallback.
+//
+// The card selection uses the same ordered provider and group rules as normal
+// cost reporting. Keeping the selected mode beside its amount lets system
+// callers reject operation prices when only incomplete token evidence survived,
+// without guessing the mode from the model name or a numeric amount.
+func tryCustomRulesWithMode(
+	rules []ProviderStatsPricingRule, providerID, groupID int64,
+	model string, tokens UsageTokens, requestCount int,
+) (*float64, BillingMode) {
 	modelLower := strings.ToLower(model)
 	for _, rule := range rules {
 		if !MatchProviderStatsRule(&rule, providerID, groupID) {
@@ -89,10 +105,10 @@ func TryCustomRules(
 		// These configured statistics amounts supply a separate provider cost base;
 		// catalog and user-facing modifiers would change that independent amount.
 		if cost := CalculateStatsCost(pricing, tokens, requestCount); cost != nil {
-			return cost
+			return cost, pricing.BillingMode
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 // MatchProviderStatsRule reports whether either selector list contains its
@@ -310,12 +326,26 @@ func HasAnyStatsTokenUsage(tokens UsageTokens) bool {
 // selection as a handled free override. If every candidate misses, the caller
 // can continue to catalog pricing.
 func ResolveProviderStatsOverride(input ProviderStatsInput) (*float64, bool) {
-	// Candidate order leads rule order: a calculable earlier model wins even when
-	// a later model could match a different, more specific card.
+	cost, _ := ResolveProviderStatsOverrideWithMode(input)
+	return cost, cost != nil
+}
+
+// ResolveProviderStatsOverrideWithMode preserves the selected cost card's unit.
+// Candidate model order still precedes configured rule order, and a zero cost
+// remains a successful selection. Missing costs return nil and an empty mode.
+//
+// Internal usage may survive an interrupted operation with only partial token
+// evidence. Returning the unit with its calculated amount allows that caller
+// to reject per-request or image prices while retaining valid token costs.
+// Customer settlement continues using the same amount through the existing API.
+func ResolveProviderStatsOverrideWithMode(input ProviderStatsInput) (*float64, BillingMode) {
 	for _, model := range input.Models {
-		if cost := TryCustomRules(input.Rules, input.ProviderID, input.GroupID, model, input.Tokens, input.RequestCount); cost != nil {
-			return cost, true
+		if cost, mode := tryCustomRulesWithMode(input.Rules, input.ProviderID, input.GroupID, model, input.Tokens, input.RequestCount); cost != nil {
+			if mode == "" {
+				mode = BillingModeToken
+			}
+			return cost, mode
 		}
 	}
-	return nil, false
+	return nil, ""
 }

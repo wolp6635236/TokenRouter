@@ -5,13 +5,14 @@ import (
 	"strings"
 )
 
-// platform.go applies platform capability patches and protocol adapter
-// restrictions to resolved routes.
+// platform.go combines service policies with model encoding rules and protocol
+// adapter restrictions for resolved routes.
 // Model metadata and request encoding rules have different sources. Catalog
-// attributes describe the complete model, while platform patches supply
-// service-specific sampling conditions, authentication restrictions, thinking
-// encodings, and registered media parameters. These patches run before
-// administrator overrides so configured values can replace attribute fields.
+// attributes describe the complete model. Model encoding rules select sampling
+// conditions and payload restrictions, while service policies supply authentication
+// restrictions, converted thinking limits, and registered media parameters.
+// These patches run before administrator overrides so configured values can
+// replace attribute fields.
 //
 // Adapter restrictions apply after those overrides because the chosen
 // converter still determines which modalities and media parameters it can
@@ -33,8 +34,8 @@ const (
 // service and route. It normalizes metadata lookup spellings locally, while
 // retaining the target's outbound model and resolved protocol identifiers.
 //
-// Service authentication and endpoint variants select sampling, thinking,
-// signature, and media behavior independently of catalog prices. Platform
+// Model encoding rules run before service authentication and endpoint variants
+// select their own sampling, thinking, signature, and media behavior. Platform
 // attribute sources are recorded when the patch is merged; later administrator
 // overrides can replace them before adapter restrictions run. Qoder unknown
 // routes retain a fixed input limit labeled execution_default, and nonpositive
@@ -42,49 +43,12 @@ const (
 // @project-doc docs/interfaces/model_catalog_and_marketplace.md#model_attributes
 func (r *Resolution) applyPlatform() {
 	t := r.Target
-	model := normalize(t.Model)
-	if t.Platform == "gemini" || t.Platform == "antigravity" {
-		model = googleResourceModel(model)
-	}
-	if t.ServiceID() != "" {
-		model = strings.TrimPrefix(model, t.ServiceID()+"/")
-	}
+	_, model := t.modelEncodingIdentity()
 	patch := Attributes{}
 	conditions := ParameterConditions{}
+	r.applyModelEncoding(&patch, conditions)
 	switch t.servicePlatform() {
 	case "openai":
-		switch model {
-		case "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-2024-05-13", "gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4o-mini", "gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max", "gpt-5.2", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5.2-codex":
-			// These registered identities declare verbosity unavailable. The
-			// OpenAI forwarding transformer reads this flag when removing
-			// text.verbosity from their request bodies.
-			r.Rules.Verbosity = valuePointer(false)
-		}
-		if t.ServiceID() == "openai" && r.Attributes.Temperature != nil && !*r.Attributes.Temperature {
-			// An official OpenAI route with unavailable temperature also
-			// restricts top_p, allowing ApplyModelAttributeParameters to
-			// remove both sampling parameters from the request.
-			patch.TopP = valuePointer(false)
-		}
-		if t.ServiceID() == "openai" && slices.Contains([]string{"gpt-5.2", "gpt-5.4"}, model) {
-			// These registered sampling controls depend on none effort. Keep
-			// their request condition so ForRequest evaluates the same model
-			// with each supplied reasoning state.
-			conditions["temperature"] = ParameterCondition{Efforts: []string{"none"}}
-			conditions["top_p"] = ParameterCondition{Efforts: []string{"none"}}
-			patch.TopP = valuePointer(true)
-		}
-		if t.UpstreamProtocol == "openai_chat_completions" && t.ServiceID() == "openai" {
-			// Tool capability can differ between Chat and Responses for one
-			// model. Apply the registered Chat restriction here so route
-			// attributes retain that protocol distinction.
-			switch model {
-			case "gpt-6-astra", "gpt-6.1-sol":
-				patch.ToolCall = valuePointer(false)
-			case "gpt-6-sol", "gpt-6-luna":
-				conditions["tool_call"] = ParameterCondition{Efforts: []string{"none"}}
-			}
-		}
 		if t.ProviderType == "oauth" || t.ProviderType == "setup-token" {
 			// OAuth route encoders use their own output and sampling controls.
 			// Mark unsupported attributes and dropped fields so forwarding
@@ -120,19 +84,6 @@ func (r *Resolution) applyPlatform() {
 		}
 	case "antigravity":
 		r.antigravityPatch(&patch)
-	case "grok":
-		// Grok model-specific removals accompany its control declarations. The
-		// forwarding parameter pass consumes DropFields even when the base
-		// catalog contains other capability metadata.
-		if slices.Contains([]string{"grok-composer", "grok-composer-2.5-fast", "composer-2.5"}, model) {
-			patch.ReasoningOptions = valuePointer([]ReasoningOption{})
-		}
-		if strings.HasPrefix(model, "grok-4.20") {
-			r.Rules.DropFields = append(r.Rules.DropFields, "logprobs", "top_logprobs")
-		}
-		if model == "grok-4.5" {
-			r.Rules.DropFields = append(r.Rules.DropFields, "presence_penalty", "presencePenalty", "frequency_penalty", "frequencyPenalty", "stop")
-		}
 	case "qoder":
 		limit, selectable := QoderInputLimit(t.Site, model)
 		patch.InputLimit = valuePointer(limit)
@@ -150,26 +101,8 @@ func (r *Resolution) applyPlatform() {
 		}
 	case "deepseek":
 		r.Rules.SignatureMode = "passback"
-		if slices.Contains([]string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-flash-vision-exp"}, model) {
-			// These sampling controls select opposite thinking states. Keep
-			// both conditions so ForRequest disables whichever parameter
-			// conflicts with the request's evaluated thinking choice.
-			conditions["temperature"] = ParameterCondition{Thinking: valuePointer(false)}
-			conditions["top_p"] = ParameterCondition{Thinking: valuePointer(true)}
-			patch.TopP = valuePointer(true)
-		}
 	}
-	// The Messages protocol selects legacy signature and thinking representations
-	// even on a compatible service route. Catalog attributes continue to
-	// describe that model's supported controls.
-	if t.UpstreamProtocol == "anthropic_messages" {
-		if signature := thinkingSignatureMode(model); signature != "" {
-			r.Rules.SignatureMode = signature
-		}
-		if strings.HasPrefix(model, "minimax-m") {
-			r.Rules.ThinkingMode = "adaptive"
-		}
-	}
+	r.applyMessagesEncoding(conditions)
 	if len(conditions) > 0 {
 		patch.Conditions = &conditions
 	}

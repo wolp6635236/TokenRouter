@@ -1,9 +1,12 @@
 package payment_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,6 +14,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/billing"
 	"github.com/TokenFlux/TokenRouter/internal/payment"
 	paymenttestkit "github.com/TokenFlux/TokenRouter/internal/payment/testkit"
+	"github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 )
 
 // Callback association uses merchant-order lookup outcome, saved provider
@@ -19,7 +23,236 @@ import (
 // helpers with immutable parallel fixtures. Redeem-action cases distinguish
 // lookup failure, previously used code and existing unused code, while rebate
 // cases use credited balance or configured subscription quotas as their
-// asserted base.
+// asserted base. Executor cases record storage calls to check status admission,
+// subscription plan validation, and the dispatcher's separate eligibility read.
+
+// fulfillmentEntryStore records order reads and lease attempts at public
+// fulfillment entries.
+type fulfillmentEntryStore struct {
+	// FulfillmentStore remains nil so any persistence beyond the two configured
+	// entry operations fails the test instead of silently changing fixture state.
+	payment.FulfillmentStore
+	// order and claim supply each test's observations and record calls in local
+	// counters or traces. Tests invoke the fixture synchronously and inspect
+	// those observations after the entry returns.
+	order func(context.Context, int64) (*payment.Order, error)            // configured order read callback
+	claim func(context.Context, int64, time.Time, time.Time) (int, error) // configured lease attempt callback
+}
+
+// TestExecuteFulfillmentEntriesEligibility compares public balance and
+// subscription entries across stored statuses and plan identities. It preserves
+// status-first errors, completed no-ops, and plan validation before lease attempts.
+func TestExecuteFulfillmentEntriesEligibility(t *testing.T) {
+	t.Parallel()
+
+	leaseErr := errors.New("lease storage unavailable")
+	statuses := []struct {
+		status  string // persisted order status
+		message string // expected rejection message
+		claim   bool   // eligibility for lease attempt
+	}{
+		{status: payment.OrderStatusCompleted},
+		{status: payment.OrderStatusPaid, claim: true},
+		{status: payment.OrderStatusFailed, claim: true},
+		{status: payment.OrderStatusRecharging, claim: true},
+		{status: payment.OrderStatusPending, message: "order cannot fulfill in status PENDING"},
+		{status: payment.OrderStatusProcessing, message: "order cannot fulfill in status PROCESSING"},
+		{status: payment.OrderStatusExpired, message: "order cannot fulfill in status EXPIRED"},
+		{status: payment.OrderStatusCancelled, message: "order cannot fulfill in status CANCELLED"},
+		{status: payment.OrderStatusRefundRequested, message: "refund-related order cannot fulfill"},
+		{status: payment.OrderStatusRefunding, message: "refund-related order cannot fulfill"},
+		{status: payment.OrderStatusRefundPending, message: "refund-related order cannot fulfill"},
+		{status: payment.OrderStatusPartiallyRefunded, message: "refund-related order cannot fulfill"},
+		{status: payment.OrderStatusRefunded, message: "refund-related order cannot fulfill"},
+		{status: payment.OrderStatusRefundFailed, message: "refund-related order cannot fulfill"},
+		{status: "UNKNOWN", message: "order cannot fulfill in status UNKNOWN"},
+		{message: "order cannot fulfill in status "},
+	}
+	plans := []struct {
+		name string // named plan identity case
+		id   *int64 // supplied subscription plan identity
+	}{
+		{name: "missing"},
+		{name: "zero", id: new(int64(0))},
+		{name: "negative", id: new(int64(-1))},
+		{name: "positive", id: new(int64(7))},
+	}
+	for _, orderType := range []string{payment.OrderTypeBalance, payment.OrderTypeSubscription} {
+		for _, status := range statuses {
+			for _, plan := range plans {
+				t.Run(orderType+"/"+status.status+"/"+plan.name, func(t *testing.T) {
+					var calls []string
+					order := &payment.Order{ID: 41, OrderType: orderType, Status: status.status, PlanID: plan.id}
+					store := &fulfillmentEntryStore{
+						order: func(_ context.Context, id int64) (*payment.Order, error) {
+							require.Equal(t, order.ID, id)
+							calls = append(calls, "read")
+							return order, nil
+						},
+						claim: func(_ context.Context, id int64, _, _ time.Time) (int, error) {
+							require.Equal(t, order.ID, id)
+							calls = append(calls, "claim")
+							return 0, leaseErr
+						},
+					}
+					svc := payment.NewFulfillment(store, nil, nil, nil, nil, payment.FulfillmentRuntime{})
+					execute := svc.ExecuteBalanceFulfillment
+					if orderType == payment.OrderTypeSubscription {
+						execute = svc.ExecuteSubscriptionFulfillment
+					}
+					err := execute(t.Context(), order.ID)
+					wantMessage := status.message
+					wantClaim := status.claim
+					if wantClaim && orderType == payment.OrderTypeSubscription && (plan.id == nil || *plan.id <= 0) {
+						wantMessage = "missing subscription info"
+						wantClaim = false
+					}
+					switch {
+					case wantClaim:
+						require.ErrorIs(t, err, leaseErr)
+						require.EqualError(t, err, "acquire fulfillment lease: lease storage unavailable")
+						require.Equal(t, []string{"read", "claim"}, calls)
+					case wantMessage != "":
+						require.Equal(t, apperror.CategoryBadRequest, apperror.CategoryOf(err))
+						require.Equal(t, "INVALID_STATUS", apperror.Reason(err))
+						require.Equal(t, wantMessage, apperror.Message(err))
+						require.Equal(t, []string{"read"}, calls)
+					default:
+						require.NoError(t, err)
+						require.Equal(t, []string{"read"}, calls)
+					}
+					require.Nil(t, order.PaidAt)
+					require.Equal(t, status.status, order.Status)
+				})
+			}
+		}
+	}
+}
+
+// TestExecuteFulfillmentEntriesReadErrors supplies storage absence and arbitrary
+// read failures to both public executors. Each error becomes NOT_FOUND before
+// status or plan checks, without exposing the original cause.
+func TestExecuteFulfillmentEntriesReadErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, orderType := range []string{payment.OrderTypeBalance, payment.OrderTypeSubscription} {
+		for _, readErr := range []error{payment.ErrOrderNotFound, errors.New("database unavailable")} {
+			for _, order := range []*payment.Order{nil, {ID: 41, Status: payment.OrderStatusCompleted}} {
+				t.Run(orderType+"/"+readErr.Error()+"/"+fmt.Sprint(order != nil), func(t *testing.T) {
+					reads := 0
+					store := &fulfillmentEntryStore{
+						order: func(_ context.Context, id int64) (*payment.Order, error) {
+							require.Equal(t, int64(41), id)
+							reads++
+							return order, readErr
+						},
+					}
+					svc := payment.NewFulfillment(store, nil, nil, nil, nil, payment.FulfillmentRuntime{})
+					execute := svc.ExecuteBalanceFulfillment
+					if orderType == payment.OrderTypeSubscription {
+						execute = svc.ExecuteSubscriptionFulfillment
+					}
+					err := execute(t.Context(), 41)
+					require.Equal(t, apperror.CategoryNotFound, apperror.CategoryOf(err))
+					require.Equal(t, "NOT_FOUND", apperror.Reason(err))
+					require.Equal(t, "order not found", apperror.Message(err))
+					require.NotErrorIs(t, err, readErr)
+					require.Equal(t, 1, reads)
+				})
+			}
+		}
+	}
+}
+
+// TestExecuteFulfillmentDispatchReads changes the order between dispatch and
+// executor reads and injects failures at each boundary. It protects the second
+// observation, error conversion boundary, and subscription-only plan requirement.
+func TestExecuteFulfillmentDispatchReads(t *testing.T) {
+	t.Parallel()
+
+	readErr := errors.New("database unavailable")
+	leaseErr := errors.New("lease storage unavailable")
+	tests := []struct {
+		name         string // named dispatch read scenario
+		firstStatus  string // status seen by dispatcher
+		secondStatus string // status seen by executor
+		readErrorAt  int    // failing read or zero
+		wantReads    int    // expected order read count
+		wantClaim    bool   // expected lease attempt presence
+	}{
+		{name: "first_read_error", readErrorAt: 1, wantReads: 1},
+		{name: "second_read_error", firstStatus: payment.OrderStatusPaid, readErrorAt: 2, wantReads: 2},
+		{name: "completed_during_dispatch", firstStatus: payment.OrderStatusPaid, secondStatus: payment.OrderStatusCompleted, wantReads: 2},
+		{name: "paid_after_dispatch", firstStatus: payment.OrderStatusCompleted, secondStatus: payment.OrderStatusPaid, wantReads: 2, wantClaim: true},
+	}
+	for _, orderType := range []string{payment.OrderTypeBalance, payment.OrderTypeSubscription, "UNKNOWN"} {
+		for _, tt := range tests {
+			t.Run(orderType+"/"+tt.name, func(t *testing.T) {
+				reads := 0
+				var calls []string
+				store := &fulfillmentEntryStore{
+					order: func(_ context.Context, id int64) (*payment.Order, error) {
+						require.Equal(t, int64(41), id)
+						reads++
+						calls = append(calls, "read")
+						if reads == tt.readErrorAt {
+							return nil, readErr
+						}
+						status := tt.firstStatus
+						if reads > 1 {
+							status = tt.secondStatus
+						}
+						return &payment.Order{ID: id, OrderType: orderType, Status: status}, nil
+					},
+					claim: func(_ context.Context, id int64, _, _ time.Time) (int, error) {
+						require.Equal(t, int64(41), id)
+						calls = append(calls, "claim")
+						return 0, leaseErr
+					},
+				}
+				svc := payment.NewFulfillment(store, nil, nil, nil, nil, payment.FulfillmentRuntime{})
+				err := svc.ExecuteFulfillment(t.Context(), 41)
+				switch {
+				case tt.readErrorAt == 1:
+					require.ErrorIs(t, err, readErr)
+					require.EqualError(t, err, "get order: database unavailable")
+				case tt.readErrorAt == 2:
+					require.Equal(t, apperror.CategoryNotFound, apperror.CategoryOf(err))
+					require.Equal(t, "NOT_FOUND", apperror.Reason(err))
+					require.Equal(t, "order not found", apperror.Message(err))
+					require.NotErrorIs(t, err, readErr)
+				case tt.wantClaim && orderType == payment.OrderTypeSubscription:
+					require.Equal(t, apperror.CategoryBadRequest, apperror.CategoryOf(err))
+					require.Equal(t, "INVALID_STATUS", apperror.Reason(err))
+					require.Equal(t, "missing subscription info", apperror.Message(err))
+				case tt.wantClaim:
+					require.ErrorIs(t, err, leaseErr)
+				default:
+					require.NoError(t, err)
+				}
+				require.Equal(t, tt.wantReads, reads)
+				wantCalls := []string{"read"}
+				if tt.wantReads == 2 {
+					wantCalls = append(wantCalls, "read")
+				}
+				if tt.wantClaim && orderType != payment.OrderTypeSubscription {
+					wantCalls = append(wantCalls, "claim")
+				}
+				require.Equal(t, wantCalls, calls)
+			})
+		}
+	}
+}
+
+// Order delegates the configured read for the supplied local order ID.
+func (s *fulfillmentEntryStore) Order(ctx context.Context, id int64) (*payment.Order, error) {
+	return s.order(ctx, id)
+}
+
+// ClaimFulfillment delegates the configured lease attempt with its timestamps.
+func (s *fulfillmentEntryStore) ClaimFulfillment(ctx context.Context, id int64, now, staleBefore time.Time) (int, error) {
+	return s.claim(ctx, id, now, staleBefore)
+}
 
 // TestParseLegacyPaymentOrderID supplies early numeric, current and malformed
 // callback labels with true and false notFound flags. It permits positive

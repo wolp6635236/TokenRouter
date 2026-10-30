@@ -9,18 +9,18 @@ import (
 )
 
 // openai_responses_tool_schema.go applies platform-specific repairs to
-// Responses function-tool schemas.
-// Function-tool schemas are repaired according to the selected upstream
-// platform before Responses forwarding. Root parameter type repair applies to
-// OpenAI, Anthropic, Grok, and CN providers, while regex-pattern sanitization
-// is limited to OpenAI; each stage returns the original body if it fails.
+// Responses function-tool schemas. Function-tool schemas are repaired according
+// to the selected upstream platform before Responses forwarding. Root parameter
+// type repair applies to OpenAI, Anthropic, Grok, and Kimi, Zhipu, and DeepSeek
+// providers, while regex-pattern sanitization is limited to OpenAI; each stage
+// returns the original body if it fails.
 
 // ShouldRepairOpenAIResponsesNullToolSchemaType selects parameter-root type
-// repair for OpenAI, Anthropic, Grok, and CN provider paths. Other platform
-// names return false, leaving their schema values for that path's own
-// handling.
+// repair for OpenAI, Anthropic, Grok, and Kimi, Zhipu, and DeepSeek provider
+// paths. Other platform names return false, leaving their schema values for
+// that path's own handling.
 func ShouldRepairOpenAIResponsesNullToolSchemaType(platform string) bool {
-	return platform == capability.PlatformOpenAI || platform == capability.PlatformAnthropic || platform == capability.PlatformGrok || provider.IsCNProvider(platform)
+	return provider.SupportsToolSchemaRepair(platform)
 }
 
 // ShouldSanitizeOpenAIResponsesToolSchemaPatterns enables Responses

@@ -30,7 +30,7 @@ const (
 			"gpt-image-2":{"cost":{"input":5,"output":30}},
 			"gpt-image-2-snapshot":{"canonical_model_id":"openai/gpt-image-2","cost":{"input":4,"output":20}}
 		}},
-		"openrouter":{"models":{"gpt-image-2":{"canonical_model_id":"openai/gpt-image-2","cost":{"input":1,"output":2}}}}
+		"google-vertex":{"models":{"gpt-image-2":{"canonical_model_id":"openai/gpt-image-2","cost":{"input":1,"output":2}}}}
 	}
 }`
 

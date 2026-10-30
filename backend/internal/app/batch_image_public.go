@@ -51,7 +51,17 @@ func provideBatchPublic(attributes *routing.ModelAttributeService, repo batchima
 	}
 	if cfg != nil {
 		c := cfg.BatchImage
-		core.Options = batchimage.PublicOptions{Enabled: c.Enabled, StaleActiveAfterSeconds: c.StaleActiveAfterSeconds, MaxItemsPerJobDefault: c.MaxItemsPerJobDefault, MaxOutputImagesPerJob: c.MaxOutputImagesPerJob, MaxOutputImagesPerItem: c.MaxOutputImagesPerItem, MaxPromptCharsPerItem: c.MaxPromptCharsPerItem, MaxReferenceImagesPerJob: c.MaxReferenceImagesPerJob, MaxReferenceInlineBytesPerJob: c.MaxReferenceInlineBytesPerJob, DefaultResponseMimeType: c.DefaultResponseMimeType, DefaultImageSize: c.DefaultImageSize}
+		core.Options = batchimage.PublicOptions{
+			StaleActiveAfterSeconds:       c.StaleActiveAfterSeconds,
+			MaxItemsPerJobDefault:         c.MaxItemsPerJobDefault,
+			MaxOutputImagesPerJob:         c.MaxOutputImagesPerJob,
+			MaxOutputImagesPerItem:        c.MaxOutputImagesPerItem,
+			MaxPromptCharsPerItem:         c.MaxPromptCharsPerItem,
+			MaxReferenceImagesPerJob:      c.MaxReferenceImagesPerJob,
+			MaxReferenceInlineBytesPerJob: c.MaxReferenceInlineBytesPerJob,
+			DefaultResponseMimeType:       c.DefaultResponseMimeType,
+			DefaultImageSize:              c.DefaultImageSize,
+		}
 	}
 	core.ProviderExists = func(name string) bool {
 		selected, ok := registry.Get(name)

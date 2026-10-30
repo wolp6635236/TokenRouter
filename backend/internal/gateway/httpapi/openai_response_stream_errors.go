@@ -34,13 +34,24 @@ import (
 // error fields rather than the transport status.
 //
 // A converted reader may already have applied health before constructing its
-// failover error. NewStreamPolicyFailureWithModel consumes that request-local
-// evidence when present and otherwise performs terminal effects itself.
+// failover error. NewStreamPolicyFailureWithModel accepts that applied-effects
+// evidence directly and otherwise performs terminal effects itself.
 // Retained response headers support retry and request identifiers, while
 // semantic 429 classification avoids treating successful stream-establishment
 // quota headers as fresh global failure evidence. Caller-visible error bodies
 // retain classified credential or transient evidence and rebuild other
 // failures into a generic protocol envelope.
+
+// AppliedOpenAIResponseEffects carries provider effects already evaluated for
+// the terminal event supplied to the failure builder.
+type AppliedOpenAIResponseEffects struct {
+	// StatusCode preserves the applied policy status. Values below HTTP 400 make
+	// the builder infer status from the payload without repeating provider effects.
+	StatusCode int
+	// StopScheduling carries the health decision for this event. It prevents the
+	// builder from granting OAuth 429 retries when scheduling was already disabled.
+	StopScheduling bool
+}
 
 // writeSanitizedOpenAIPassthroughError delegates status-based fixed client
 // messages with Compact SSE support. Its callback can terminate an
@@ -496,8 +507,8 @@ func (p *OpenAIResponseOutput) NewStreamFailure(
 
 // NewStreamFailureWithModel delegates stream failover construction using the
 // canonical scheduling model and first optional headers. Missing headers pass
-// nil, and the shared builder applies or consumes terminal health evidence
-// before choosing the final classified response body.
+// nil, and the shared builder applies terminal health effects before choosing
+// the final classified response body. This entry supplies no applied evidence.
 func (p *OpenAIResponseOutput) NewStreamFailureWithModel(
 	c *gin.Context,
 	provider *gatewayprovider.ExecutionProvider,
@@ -513,14 +524,14 @@ func (p *OpenAIResponseOutput) NewStreamFailureWithModel(
 		headers = responseHeaders[0]
 	}
 	return p.NewStreamPolicyFailureWithModel(
-		c, provider, passthrough, upstreamRequestID, headers, payload, message, canonicalModel,
+		c, provider, passthrough, upstreamRequestID, headers, payload, message, nil, canonicalModel,
 	)
 }
 
 // NewStreamPolicyFailure delegates stream failure construction using captured
-// event evidence. The model-aware builder derives status from applied-health
-// or terminal classification and computes retryability from the provider and
-// event payload.
+// event evidence. The model-aware builder applies terminal provider effects
+// and computes retryability from the provider and event payload; callers with
+// applied evidence use that builder directly.
 func (p *OpenAIResponseOutput) NewStreamPolicyFailure(
 	c *gin.Context,
 	provider *gatewayprovider.ExecutionProvider,
@@ -530,14 +541,15 @@ func (p *OpenAIResponseOutput) NewStreamPolicyFailure(
 	payload []byte,
 	message string,
 ) *forwardcore.UpstreamFailoverError {
-	return p.NewStreamPolicyFailureWithModel(c, provider, passthrough, upstreamRequestID, responseHeaders, payload, message)
+	return p.NewStreamPolicyFailureWithModel(c, provider, passthrough, upstreamRequestID, responseHeaders, payload, message, nil)
 }
 
 // NewStreamPolicyFailureWithModel constructs a classified failover error from
 // terminal event and applied-health evidence. It sanitizes failure text,
-// clones supplied response headers and consumes the request-local effects
-// slot. Present evidence supplies the status and disablement already applied;
-// otherwise TerminalProviderEffects computes them.
+// clones supplied response headers and uses appliedEffects for this event when
+// nonnil. Nil evidence makes TerminalProviderEffects compute the status and
+// scheduling decision. Callers supply evidence only after evaluating provider
+// effects for this same terminal; the builder does not retain it for later calls.
 //
 // Event retryability follows the provider and payload. Semantic 429
 // classification omits stream-establishment headers while retaining them
@@ -553,6 +565,7 @@ func (p *OpenAIResponseOutput) NewStreamPolicyFailureWithModel(
 	responseHeaders http.Header,
 	payload []byte,
 	message string,
+	appliedEffects *AppliedOpenAIResponseEffects,
 	canonicalModel ...string,
 ) *forwardcore.UpstreamFailoverError {
 	message = logredact.SanitizeUpstreamQueries(strings.TrimSpace(message))
@@ -563,12 +576,16 @@ func (p *OpenAIResponseOutput) NewStreamPolicyFailureWithModel(
 	if len(responseHeaders) > 0 {
 		headers = responseHeaders.Clone()
 	}
-	// Conversion may already have applied health for this terminal. Consume
-	// that evidence once before deciding whether another health application is needed.
-	statusCode, shouldDisable, sideEffectsApplied := consumeOpenAIResponseFailureEffects(c)
-	if !sideEffectsApplied {
+	var statusCode int
+	var shouldDisable bool
+	if appliedEffects != nil {
+		statusCode = appliedEffects.StatusCode
+		shouldDisable = appliedEffects.StopScheduling
+	} else {
 		statusCode, shouldDisable = p.TerminalProviderEffects(c, provider, payload, message, headers, canonicalModel...)
 	}
+	// Applied effects can omit a usable status. Recover it from the same event
+	// while preserving the supplied scheduling decision and avoiding another health update.
 	if statusCode < http.StatusBadRequest {
 		statusCode = openai.OpenAIStreamFailureStatus(payload, message)
 	}

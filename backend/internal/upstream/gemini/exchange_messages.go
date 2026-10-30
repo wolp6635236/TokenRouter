@@ -3,7 +3,6 @@ package gemini
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -12,20 +11,19 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 )
 
-// exchange_messages.go executes Gemini requests for Messages clients and
-// coordinates signature recovery with status retries.
-// Messages compatibility retries rebuild a Gemini request using caller-owned
-// conversion state. Signature-related 400 responses can first discard thinking
-// history and then tool history, and each successful downgrade consumes one
-// slot from the same total attempt budget as ordinary retries.
+// exchange_messages.go executes Gemini requests and coordinates signature
+// repair with provider retry policy. Messages compatibility can first discard
+// thinking history and then tool history after signature-related failures.
+// Google retries share a total attempt budget with these repairs. Providers
+// using an external retry budget retain the two repair stages inside their
+// current attempt, while ordinary HTTP failures return to the caller.
 //
-// For an eligible 400, signature handling precedes general error policy and
-// reconstructs the consumed response body when recovery stops. Other statuses
-// apply policy before status-based retry selection. Retry waits use
-// SleepGeminiBackoff, so caller cancellation is observed by request
-// construction or transport rather than interrupting that sleep. Responses
-// selected for the caller retain the chosen request-ID header name beside
-// them.
+// External provider policy runs before signature repair, allowing configured
+// error rules to stop an attempt. Each discarded response body is captured and
+// closed before replacement or another dispatch. Selected responses retain a
+// readable body and their request-ID header name for final client conversion.
+// Backoff waits stop when the request context is cancelled, and cancellation
+// errors propagate without creating a client error response or another request.
 
 // ExchangeNotice identifies an upstream exchange observation and its selected
 // diagnostic fields.
@@ -48,9 +46,12 @@ type ExchangeOptions struct {
 	// ProviderName labels provider; Platform labels platform; RequestIDHeader
 	// selects the initial request-ID header.
 	ProviderName, Platform, RequestIDHeader string
-	// MaxRetries is the total attempt count and should be positive. Zero performs
-	// no exchange and returns a result with no response.
+	// MaxRetries is the local attempt count when ExternalRetry is false. Zero
+	// performs no exchange and returns a result with no response.
 	MaxRetries int // total request attempt budget
+	// ExternalRetry selects one ordinary attempt and leaves retryable HTTP or
+	// transport failures to the caller. Messages retains two signature repairs.
+	ExternalRetry bool // caller-owned ordinary retry policy
 	// CountFallback enables an estimate after native retry exhaustion.
 	// EstimateCount is required when this flag is used, and the estimate remains
 	// separate from usage.
@@ -101,6 +102,8 @@ type ExchangeOptions struct {
 // ExchangeResult carries a selected response or a separate native token
 // estimate.
 type ExchangeResult struct {
+	CandidateCount int // final request candidate count
+
 	// Response and EstimatedTokens represent alternative outcomes. A nonnil
 	// response body belongs to the caller; a native estimate outcome has no
 	// response body to close.
@@ -109,36 +112,51 @@ type ExchangeResult struct {
 	EstimatedTokens *int           // independent native token estimate
 }
 
-// ExchangeMessages returns the selected Messages-compatible upstream response
-// and request-ID header after provider-local retries. Callers supply required
-// ExchangeOptions callbacks and close selected bodies; discarded HTTP error
-// bodies close before retry or reconstruction.
+// ExchangeMessages returns the selected response and request-ID header after
+// permitted retry and signature repair. Callers supply the callbacks used by
+// their selected paths and close the returned body.
 //
-// Signature recovery runs before general policy for eligible 400 responses,
-// trying thinking downgrade before tool downgrade and consuming the total
-// attempt budget. Other statuses apply policy before retry rules, report 429
-// early, and stop retrying recognized scope failures. A downgrade conversion
-// on the final attempt can leave the previously closed response selected when
-// the loop ends; later body handling then observes that selected response.
+// Google signature repairs consume its local attempt budget. ExternalRetry
+// keeps two bounded repairs inside the current provider attempt and evaluates
+// provider policy before either repair. Each repair closes its captured error
+// body before rebuilding the payload. Cancellation ends backoff and request
+// execution immediately; exhausted repairs retain readable error evidence for
+// the caller's final policy and protocol output.
 func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeResult, error) {
+	maxAttempts := options.MaxRetries
+	// External retry ownership limits this exchange to one ordinary attempt.
+	// Protocol repairs remain bounded separately so they cannot expand provider retries.
+	if options.ExternalRetry {
+		maxAttempts = 1
+	}
 	requestIDHeader := options.RequestIDHeader
 	var resp *http.Response
+	candidateCount := 1
 	signatureRetryStage := 0
 	// Rebuild the request and its ID-header selection for every attempt,
 	// including after caller body replacement. Captured HTTP error bytes survive
 	// stream closing before another request or final error mapping.
-	for attempt := 1; attempt <= options.MaxRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ExchangeResult{}, err
+		}
 		upstreamReq, idHeader, err := options.Build(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return ExchangeResult{}, err
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
 			}
 			return ExchangeResult{}, options.BuildError(err)
 		}
 		requestIDHeader = idHeader
+		candidateCount = requestCandidateCount(upstreamReq)
 
 		resp, err = options.Do(upstreamReq)
 		if err != nil {
+			// Caller cancellation ends the exchange. Transport-local deadlines leave
+			// the caller alive and must reach retry or final-error classification.
+			if ctx.Err() != nil {
+				return ExchangeResult{}, ctx.Err()
+			}
 			safeErr := options.Sanitize(err.Error())
 			options.Observe(ExchangeNotice{
 				Platform:           options.Platform,
@@ -151,19 +169,31 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 			// Transport failures share the total attempt budget with HTTP retries;
 			// wait before rebuilding so repeated failures cannot form an immediate
 			// dispatch loop.
-			if attempt < options.MaxRetries {
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, options.MaxRetries, err)
-				SleepGeminiBackoff(attempt)
+			if attempt < maxAttempts {
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream request failed, retry %d/%d: %v", options.ProviderID, attempt, maxAttempts, err)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			options.SetError(0, safeErr, "")
 			return ExchangeResult{}, options.FinalError("Upstream request failed after retries: " + safeErr)
 		}
 
-		// Inspect an eligible 400 before general policy so signature recovery can
-		// rebuild the request from progressively downgraded Claude history using its
-		// existing attempt budget.
-		if resp.StatusCode == http.StatusBadRequest && signatureRetryStage < 2 {
+		// External provider policies take precedence over protocol repair. A custom
+		// status or pool rule can therefore return the original failure immediately.
+		if options.ExternalRetry {
+			matched, rebuilt := options.CheckPolicy(ctx, resp)
+			resp = rebuilt
+			if matched {
+				break
+			}
+		}
+
+		// Google signature repair precedes general policy; external provider policy
+		// has already run. Eligible failures rebuild progressively downgraded Claude
+		// history within the selected retry budget.
+		if resp.StatusCode == http.StatusBadRequest && signatureRetryStage < 2 && (options.ExternalRetry || attempt < maxAttempts) {
 			respBody := options.ReadError(resp)
 			_ = resp.Body.Close()
 
@@ -214,10 +244,17 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 				if txErr == nil {
 					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", options.ProviderID, stageName)
 					options.ReplaceBody(retryGeminiReq)
+					// External budgets count ordinary attempts, while the two-stage signature
+					// counter bounds protocol repair even when this attempt counter is reused.
+					if options.ExternalRetry {
+						attempt--
+					}
 					// Publish the converted body for the next Build call and consume this
-					// attempt slot. The shared counter still limits signature and ordinary
-					// retries together.
-					SleepGeminiBackoff(1)
+					// attempt slot for Google. External provider attempts keep signature
+					// repair bounded by its own stage counter before returning ordinary failures.
+					if !SleepGeminiBackoff(ctx, 1) {
+						return ExchangeResult{}, ctx.Err()
+					}
 					continue
 				}
 			}
@@ -241,7 +278,7 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 			break
 		}
 
-		if resp.StatusCode >= 400 && options.ShouldRetry(resp.StatusCode) {
+		if resp.StatusCode >= 400 && !options.ExternalRetry && options.ShouldRetry(resp.StatusCode) {
 			respBody := options.ReadError(resp)
 			_ = resp.Body.Close()
 			// A scope-rejected 403 requires authorization changes. Rebuild its captured
@@ -263,7 +300,7 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 			// Retry this classified HTTP failure while attempt slots remain; its body
 			// is already captured and closed before waiting and constructing another
 			// request.
-			if attempt < options.MaxRetries {
+			if attempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -282,8 +319,10 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 					Detail:             upstreamDetail,
 				})
 
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, options.MaxRetries)
-				SleepGeminiBackoff(attempt)
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini provider %d: upstream status %d, retry %d/%d", options.ProviderID, resp.StatusCode, attempt, maxAttempts)
+				if !SleepGeminiBackoff(ctx, attempt) {
+					return ExchangeResult{}, ctx.Err()
+				}
 				continue
 			}
 			// Return a readable copy after exhausting retries because the original
@@ -299,5 +338,5 @@ func ExchangeMessages(ctx context.Context, options ExchangeOptions) (ExchangeRes
 		break
 	}
 
-	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader}, nil
+	return ExchangeResult{Response: resp, RequestIDHeader: requestIDHeader, CandidateCount: candidateCount}, nil
 }

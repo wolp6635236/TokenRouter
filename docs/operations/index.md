@@ -15,6 +15,6 @@
 - [提供商维护](provider_maintenance.md)：凭据刷新、管理操作、临时不可调度、提供商测试、自动恢复、额度和能力探测、OAuth 用量查询。读取时机：修改 token refresh、提供商状态、计划测试、quota 和 endpoint capability 探测或恢复策略时读取。
 - [上游传输安全](upstream_transport_security.md)：代理生命周期、连接池隔离、TLS 指纹路由、目标和重定向校验、Header 安全。读取时机：修改代理、HTTP client、TLS profile 和 router、base URL 或直连回退时读取。
 - [运维监控与告警](ops_monitoring_and_alerting.md)：Ops 信号、实时和历史查询、告警规则、静默、邮件通知和计划报告。读取时机：修改 Ops collector、dashboard、错误采集、告警评估或报告任务时读取。
-- [开发、验证与上游同步](development_workflow.md)：工具链、依赖规则、编码约定、后端文件组织、生成代码、测试分层、发布和 fork 同步。读取时机：准备开发环境、修改 schema 或依赖、新增或改名后端文件、运行验证、发布或同步上游时读取。
+- [开发、验证与上游同步](development_workflow.md)：工具链、依赖规则、编码约定、后端文件组织、生成代码、测试分层、Issue 与 PR 模板、发布和 fork 同步。读取时机：准备开发环境、修改 schema 或依赖、新增或改名后端文件、运行验证、创建 Issue 或 PR、发布或同步上游时读取。
 - [边缘与 HTTP 入口安全](edge_security.md)：长连接场景下的入口限制、可信代理、流式传输，以及应用和网络边缘在 DDoS 防护上的分工。读取时机：修改 HTTP server、反向代理、请求限制、客户端 IP 解析、SSE 或 WebSocket 时读取。
 - [使用记录与运维预聚合](pre_aggregation.md)：Usage 和运维查询的预聚合、回填、降级和清理规则。读取时机：修改聚合任务、Usage 和仪表盘的查询路由、时间桶或历史回填时读取。

@@ -77,7 +77,7 @@ func (s Probe) Select(ctx context.Context, due routing.GroupAvailabilityProbeDue
 	} else if s.gatewaySvc != nil {
 		routingModel = s.gatewaySvc.groupMappedModelForGroup(ctx, &due.GroupID, model)
 	}
-	return routing.GroupProbeTarget{GroupID: due.GroupID, ProviderID: provider.Record.ID, ModelID: routingModel}, nil
+	return routing.GroupProbeTarget{RequestedModel: model, GroupID: due.GroupID, ProviderID: provider.Record.ID, ModelID: routingModel}, nil
 }
 
 // Test delegates one provider probe and converts its timings, status, and error
@@ -87,7 +87,7 @@ func (s Probe) Test(ctx context.Context, target routing.GroupProbeTarget, prompt
 	if target.Attributes != nil {
 		ctx = target.Attributes.WithContext(ctx)
 	}
-	result, err := s.ProviderTest.RunTestBackgroundRequest(ctx, provider.TestRequest{GroupID: target.GroupID, ProviderID: target.ProviderID, Model: target.ModelID, Prompt: prompt, UserAgent: userAgent, ProtocolRoute: target.ProtocolRoute})
+	result, err := s.ProviderTest.RunTestBackgroundRequest(ctx, provider.TestRequest{RequestedModel: target.RequestedModel, RequestSource: "group_probe", GroupID: target.GroupID, ProviderID: target.ProviderID, Model: target.ModelID, Prompt: prompt, UserAgent: userAgent, ProtocolRoute: target.ProtocolRoute})
 	if result == nil {
 		return nil, err
 	}
@@ -145,10 +145,10 @@ func (s Probe) selectProtocolTarget(ctx context.Context, due routing.GroupAvaila
 		}
 		candidate, ok := plan.ResolveCandidate(gatewayprovider.ExecutionSnapshot(selected))
 		route := provider.TestProtocolRoute{ClientProtocol: candidate.ClientProtocol, UpstreamProtocol: candidate.UpstreamProtocol}
-		if ok && route.SupportsProvider(gatewayprovider.ExecutionSnapshot(selected)) {
+		if ok && route.SupportsProvider(gatewayprovider.ExecutionSnapshot(selected), plan.Models().GroupMappedModel) {
 			return routing.GroupProbeTarget{
-				Attributes: routing.ModelAttributesFromContext(ctx),
-				GroupID:    due.GroupID, ProviderID: selected.Record.ID,
+				RequestedModel: model, Attributes: routing.ModelAttributesFromContext(ctx),
+				GroupID: due.GroupID, ProviderID: selected.Record.ID,
 				ModelID: plan.Models().GroupMappedModel, ProtocolRoute: route,
 			}, nil
 		}

@@ -1047,3 +1047,15 @@ func TestParseAPIErrorBodyAgentLimitNumericCode(t *testing.T) {
 		t.Fatalf("body = %q, want numeric code preserved", apiErr.Body)
 	}
 }
+
+// TestParseSSELineEmptyData consumes empty upstream heartbeat payloads without
+// attempting JSON decoding. Whitespace-only data lines must yield neither
+// events nor errors, leaving later business frames available for normal parsing.
+func TestParseSSELineEmptyData(t *testing.T) {
+	for _, line := range []string{"data:", "data: \t\r\n"} {
+		events, err := ParseSSELine(line)
+		if err != nil || len(events) != 0 {
+			t.Fatalf("empty heartbeat produced events=%v err=%v", events, err)
+		}
+	}
+}

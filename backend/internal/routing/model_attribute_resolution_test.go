@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/modelcatalog"
+	"github.com/TokenFlux/TokenRouter/internal/modelcatalog/testkit"
 )
 
 // Attribute sessions hold one catalogue and group profile across repeated route
@@ -127,4 +128,66 @@ func TestModelAttributeSessionCachesRouteValues(t *testing.T) {
 	_, err = session.Resolve(context.Background(), 1, target)
 	require.NoError(t, err)
 	require.Equal(t, 2, lookups)
+}
+
+// TestAttributeReferencesRetainRouteAndSnapshot compares preview and request resolution.
+// A wildcard alias borrows explicit false and empty values, retains the outbound
+// model, and observes target edits only after a new request session starts.
+func TestAttributeReferencesRetainRouteAndSnapshot(t *testing.T) {
+	limit, disabled, empty := 100, false, []string{}
+	profile := &ModelAttributeConfig{Status: StatusActive, Rules: []ModelAttributeRule{
+		{Models: []string{"custom-*"}, ReferenceModel: "target"},
+		{Models: []string{"target"}, Match: &ModelAttributeMatch{Platform: "openai"}, Attributes: modelcatalog.Attributes{OutputLimit: &limit, ToolCall: &disabled, OutputModalities: &empty}},
+	}}
+	repo := &attributeSessionRepo{config: profile}
+	service := &ModelAttributeService{Repo: repo, Catalog: ModelAttributeCatalog{View: func() modelcatalog.View { return modelcatalog.View{} }}}
+	target := modelcatalog.Target{Model: "custom-image", Platform: "openai", ProviderType: "apikey", ClientProtocol: "openai_images_generations", UpstreamProtocol: "openai_images_generations"}
+	session := service.NewSession()
+	actual, err := session.Resolve(t.Context(), 7, target)
+	require.NoError(t, err)
+	require.Equal(t, target.Model, actual.Target.Model)
+	require.Equal(t, "target", actual.ReferenceModel)
+	require.Equal(t, 100, *actual.Attributes.OutputLimit)
+	require.False(t, *actual.Attributes.ToolCall)
+	require.Empty(t, *actual.Attributes.OutputModalities)
+	preview, err := service.Preview(t.Context(), 7, []modelcatalog.Target{target}, profile)
+	require.NoError(t, err)
+	require.Equal(t, actual, preview[0])
+	limit = 200
+	retained, err := session.Resolve(t.Context(), 7, target)
+	require.NoError(t, err)
+	require.Equal(t, 100, *retained.Attributes.OutputLimit)
+	refreshed, err := service.NewSession().Resolve(t.Context(), 7, target)
+	require.NoError(t, err)
+	require.Equal(t, 200, *refreshed.Attributes.OutputLimit)
+	profile.Rules[0].ReferenceModel = "missing"
+	missing, err := service.NewSession().Resolve(t.Context(), 7, target)
+	require.NoError(t, err)
+	require.Nil(t, missing.Attributes.OutputLimit)
+	require.Nil(t, missing.Attributes.OutputModalities)
+}
+
+// TestAttributeReferencesReplaceSourceCatalogData borrows a different known model.
+// Removing target data stays unknown even though the source has catalog values;
+// disabling the profile restores that source's ordinary route attributes.
+func TestAttributeReferencesReplaceSourceCatalogData(t *testing.T) {
+	view := testkit.OfflineView()
+	profile := &ModelAttributeConfig{Status: StatusActive, Rules: []ModelAttributeRule{{Models: []string{"gpt-5.4"}, ReferenceModel: "gpt-image-2"}}}
+	service := &ModelAttributeService{Repo: &attributeRepoFixture{config: profile}, Catalog: ModelAttributeCatalog{View: func() modelcatalog.View { return view }}}
+	target := modelcatalog.Target{Model: "gpt-5.4", Platform: "openai", ProviderType: "apikey"}
+	actual, err := service.NewSession().Resolve(t.Context(), 1, target)
+	require.NoError(t, err)
+	lookup := target
+	lookup.Model = "gpt-image-2"
+	require.Equal(t, view.Resolve(lookup, modelcatalog.Attributes{}).Attributes, actual.Attributes)
+	require.Equal(t, "gpt-5.4", actual.Target.Model)
+	profile.Rules[0].ReferenceModel = "missing-reference-target"
+	absent, err := service.NewSession().Resolve(t.Context(), 1, target)
+	require.NoError(t, err)
+	require.Nil(t, absent.Attributes.Context)
+	require.Nil(t, absent.Attributes.OutputModalities)
+	profile.Status = StatusDisabled
+	disabled, err := service.NewSession().Resolve(t.Context(), 1, target)
+	require.NoError(t, err)
+	require.Equal(t, view.Resolve(target, modelcatalog.Attributes{}).Attributes, disabled.Attributes)
 }

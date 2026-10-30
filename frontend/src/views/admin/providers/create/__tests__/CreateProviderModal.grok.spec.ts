@@ -1,55 +1,33 @@
-import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import {
-  calls,
-  descendants,
-  expression,
-  initializer,
-  loadProviderSource,
-  printNode,
-} from '../../__tests__/providerSource'
+import { apiKeyPreset } from '@/components/provider/form/providerEndpoints'
+import { calls, expression, initializer, loadProviderSource } from '../../__tests__/providerSource'
 
 // CreateProviderModal.grok.spec.ts checks Grok creation controls and handler wiring.
-// Parsed Vue attributes and named TypeScript handlers protect the API-key defaults,
+// Parsed Vue attributes and named TypeScript handlers protect the API-key option,
 // OAuth choices, and upstream configuration calls while allowing the component
-// formatter to change whitespace and quote styles.
+// formatter to change whitespace and quote styles; the API-key defaults come from the
+// shared platform preset.
 
 // component supplies parsed template controls and script declarations for all Grok structural assertions below.
 const component = loadProviderSource('src/views/admin/providers/create/CreateProviderModal.vue')
 
 describe('CreateProviderModal Grok provider types', () => {
   // Grok creation includes an API-key option with xAI defaults. The option keeps
-  // its category assignment and both placeholder expressions return their documented Grok values.
+  // its category assignment, and the shared preset that both dialogs read supplies the
+  // xAI forwarding address and key placeholder.
   it('offers API-key setup alongside OAuth with the official xAI default', () => {
     const option = component.elements.find(
       (node) => node['data-testid'] === 'grok-provider-type-api-key',
     )
     expect(option?.['on:click']).toBe(expression("providerCategory = 'apikey'"))
-    const grokDefault = descendants(component.script, ts.isConditionalExpression).find(
-      (node) => expression(printNode(node.condition)) === expression("newPlatform === 'grok'"),
+    expect(apiKeyPreset('grok')).toEqual(
+      expect.objectContaining({
+        defaultBaseUrl: 'https://api.x.ai/v1',
+        baseUrlPlaceholder: 'https://api.x.ai/v1',
+        apiKeyPlaceholder: 'xai-...',
+        baseUrlHintKey: '',
+      }),
     )
-    expect(grokDefault).toBeDefined()
-    expect(ts.isStringLiteral(grokDefault!.whenTrue) && grokDefault!.whenTrue.text).toBe(
-      'https://api.x.ai/v1',
-    )
-    for (const [name, expected] of [
-      ['apiKeyBaseUrlPlaceholder', 'https://api.x.ai/v1'],
-      ['apiKeyPlaceholder', 'xai-...'],
-    ]) {
-      const branch = descendants(initializer(component.script, name), ts.isCaseClause).find(
-        (node) => ts.isStringLiteral(node.expression) && node.expression.text === 'grok',
-      )
-      expect(branch).toBeDefined()
-      const returns = descendants(branch!, ts.isReturnStatement)
-      expect(
-        returns.some(
-          (node) =>
-            node.expression &&
-            ts.isStringLiteral(node.expression) &&
-            node.expression.text === expected,
-        ),
-      ).toBe(true)
-    }
   })
 
   // OAuth creation exposes its optional relay controls under the Grok condition.

@@ -86,6 +86,10 @@ type updatePricingConfigRequest struct {
 // modelPricingRequest carries optional model-card amounts, billing modifiers,
 // and interval inputs.
 type modelPricingRequest struct {
+	// ReferenceModel selects a concrete target in the same profile. Empty values
+	// retain custom prices; populated references reject supplied price overrides.
+	ReferenceModel string `json:"reference_model,omitempty"`
+
 	// Models supplies complete IDs or trailing-star patterns for card matching;
 	// configuration validation checks the submitted patterns and overlapping
 	// model rules.
@@ -240,6 +244,10 @@ type pricingConfigResponse struct {
 // modelPricingResponse exposes one card's optional amounts, modifiers, and
 // ordered intervals.
 type modelPricingResponse struct {
+	// ReferenceModel selects a concrete target in the same profile. Empty values
+	// retain custom prices; populated references reject supplied price overrides.
+	ReferenceModel string `json:"reference_model,omitempty"`
+
 	ID int64 `json:"id"` // stored model-card row identifier
 	// Models supplies complete IDs or trailing-star patterns for card matching;
 	// configuration validation checks the submitted patterns and overlapping
@@ -470,6 +478,7 @@ func pricingToResponse(p *routing.ModelPricingEntry) modelPricingResponse {
 		ID: p.ID,
 
 		Models:                       models,
+		ReferenceModel:               p.ReferenceModel,
 		BillingMode:                  billingMode,
 		PriceMultiplier:              p.PriceMultiplier,
 		FastModeMultiplier:           p.FastModeMultiplier,
@@ -572,6 +581,7 @@ func pricingRequestToService(reqs []modelPricingRequest) []routing.ModelPricingE
 		}
 		result = append(result, routing.ModelPricingEntry{
 			Models:                       r.Models,
+			ReferenceModel:               r.ReferenceModel,
 			BillingMode:                  billingMode,
 			PriceMultiplier:              r.PriceMultiplier,
 			FastModeMultiplier:           r.FastModeMultiplier,

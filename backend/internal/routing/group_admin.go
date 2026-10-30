@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -202,29 +203,9 @@ func (s *GroupAdmin) CreateGroup(ctx context.Context, input *CreateGroupInput) (
 	// Read source membership before opening the mutation so validation and
 	// copy-read failures return before allocating or writing the destination
 	// group.
-	var providerIDsToCopy []int64
-	if len(input.CopyProvidersFromGroupIDs) > 0 {
-		seen := make(map[int64]struct{})
-		uniqueSourceGroupIDs := make([]int64, 0, len(input.CopyProvidersFromGroupIDs))
-		for _, srcGroupID := range input.CopyProvidersFromGroupIDs {
-			if _, exists := seen[srcGroupID]; !exists {
-				seen[srcGroupID] = struct{}{}
-				uniqueSourceGroupIDs = append(uniqueSourceGroupIDs, srcGroupID)
-			}
-		}
-
-		for _, srcGroupID := range uniqueSourceGroupIDs {
-			_, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
-			if err != nil {
-				return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
-			}
-		}
-
-		var err error
-		providerIDsToCopy, err = s.groupRepo.GetProviderIDsByGroupIDs(ctx, uniqueSourceGroupIDs)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get providers from source groups: %w", err)
-		}
+	providerIDsToCopy, err := s.resolveProviderCopySources(ctx, input.CopyProvidersFromGroupIDs)
+	if err != nil {
+		return nil, err
 	}
 	availabilityProbeConfig, err := NormalizeGroupAvailabilityProbeConfigForAdminWrite(input.AvailabilityProbeConfig)
 	if err != nil {
@@ -302,24 +283,9 @@ func (s *GroupAdmin) CreateGroup(ctx context.Context, input *CreateGroupInput) (
 	// Filter copied memberships using credential type before binding; API-key
 	// source records cannot be carried into a group configured for OAuth-only
 	// admission.
-	if group.RequireOAuthOnly && len(providerIDsToCopy) > 0 {
-		providers, err := s.providerRepo.GetByIDs(ctx, providerIDsToCopy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch providers for oauth filter: %w", err)
-		}
-		oauthIDs := make(map[int64]struct{}, len(providers))
-		for _, acc := range providers {
-			if acc.Type != capability.ProviderTypeAPIKey {
-				oauthIDs[acc.ID] = struct{}{}
-			}
-		}
-		var filtered []int64
-		for _, aid := range providerIDsToCopy {
-			if _, ok := oauthIDs[aid]; ok {
-				filtered = append(filtered, aid)
-			}
-		}
-		providerIDsToCopy = filtered
+	providerIDsToCopy, err = s.filterProviderCopyForDestination(ctx, group, providerIDsToCopy)
+	if err != nil {
+		return nil, err
 	}
 
 	// Allocate the optional tail position, create the row, and bind copied
@@ -701,51 +667,21 @@ func (s *GroupAdmin) UpdateGroup(ctx context.Context, id int64, input *UpdateGro
 	// optionally inserting the selected IDs.
 	var providerIDsToCopy []int64
 	if len(input.CopyProvidersFromGroupIDs) > 0 {
-		seen := make(map[int64]struct{})
-		uniqueSourceGroupIDs := make([]int64, 0, len(input.CopyProvidersFromGroupIDs))
-		for _, srcGroupID := range input.CopyProvidersFromGroupIDs {
-			if srcGroupID == id {
-				return nil, fmt.Errorf("cannot copy providers from self")
-			}
-			if _, exists := seen[srcGroupID]; !exists {
-				seen[srcGroupID] = struct{}{}
-				uniqueSourceGroupIDs = append(uniqueSourceGroupIDs, srcGroupID)
-			}
+		if slices.Contains(input.CopyProvidersFromGroupIDs, id) {
+			return nil, fmt.Errorf("cannot copy providers from self")
 		}
 
-		for _, srcGroupID := range uniqueSourceGroupIDs {
-			_, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
-			if err != nil {
-				return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
-			}
-		}
-
-		providerIDsToCopy, err = s.groupRepo.GetProviderIDsByGroupIDs(ctx, uniqueSourceGroupIDs)
+		providerIDsToCopy, err = s.resolveProviderCopySources(ctx, input.CopyProvidersFromGroupIDs)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get providers from source groups: %w", err)
+			return nil, err
 		}
 
 		// Apply the destination's authentication restriction to source IDs before
 		// replacement so API-key memberships are excluded even when the source group
 		// allowed them.
-		if group.RequireOAuthOnly && len(providerIDsToCopy) > 0 {
-			providers, err := s.providerRepo.GetByIDs(ctx, providerIDsToCopy)
-			if err != nil {
-				return nil, fmt.Errorf("failed to fetch providers for oauth filter: %w", err)
-			}
-			oauthIDs := make(map[int64]struct{}, len(providers))
-			for _, acc := range providers {
-				if acc.Type != capability.ProviderTypeAPIKey {
-					oauthIDs[acc.ID] = struct{}{}
-				}
-			}
-			var filtered []int64
-			for _, aid := range providerIDsToCopy {
-				if _, ok := oauthIDs[aid]; ok {
-					filtered = append(filtered, aid)
-				}
-			}
-			providerIDsToCopy = filtered
+		providerIDsToCopy, err = s.filterProviderCopyForDestination(ctx, group, providerIDsToCopy)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -778,6 +714,67 @@ func (s *GroupAdmin) UpdateGroup(ctx context.Context, id int64, input *UpdateGro
 	}
 
 	return group, nil
+}
+
+// resolveProviderCopySources reads memberships after validating each distinct
+// source in first-seen order. Empty input returns nil without storage reads;
+// the first failed source stops validation before the membership query. The
+// repository's membership slice and order are returned unchanged on success.
+func (s *GroupAdmin) resolveProviderCopySources(ctx context.Context, sourceGroupIDs []int64) ([]int64, error) {
+	if len(sourceGroupIDs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{})
+	uniqueSourceGroupIDs := make([]int64, 0, len(sourceGroupIDs))
+	for _, srcGroupID := range sourceGroupIDs {
+		if _, exists := seen[srcGroupID]; !exists {
+			seen[srcGroupID] = struct{}{}
+			uniqueSourceGroupIDs = append(uniqueSourceGroupIDs, srcGroupID)
+		}
+	}
+	for _, srcGroupID := range uniqueSourceGroupIDs {
+		_, err := s.groupRepo.GetByIDLite(ctx, srcGroupID)
+		if err != nil {
+			return nil, fmt.Errorf("source group %d not found: %w", srcGroupID, err)
+		}
+	}
+	providerIDs, err := s.groupRepo.GetProviderIDsByGroupIDs(ctx, uniqueSourceGroupIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get providers from source groups: %w", err)
+	}
+	return providerIDs, nil
+}
+
+// filterProviderCopyForDestination applies the destination's OAuth-only rule
+// while retaining source membership order, including repeated IDs. Pass the
+// validated destination; unrestricted destinations and empty memberships return
+// the supplied slice without reading providers.
+//
+// Provider hydration can return a different order or omit records, so accepted
+// identities are matched back to the source slice. Only API-key records are
+// excluded by credential type. A fully filtered result is nil; update callers
+// still use the original source request to decide whether to clear bindings.
+func (s *GroupAdmin) filterProviderCopyForDestination(ctx context.Context, destination *Group, providerIDs []int64) ([]int64, error) {
+	if !destination.RequireOAuthOnly || len(providerIDs) == 0 {
+		return providerIDs, nil
+	}
+	providers, err := s.providerRepo.GetByIDs(ctx, providerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch providers for oauth filter: %w", err)
+	}
+	oauthIDs := make(map[int64]struct{}, len(providers))
+	for _, acc := range providers {
+		if acc.Type != capability.ProviderTypeAPIKey {
+			oauthIDs[acc.ID] = struct{}{}
+		}
+	}
+	var filtered []int64
+	for _, aid := range providerIDs {
+		if _, ok := oauthIDs[aid]; ok {
+			filtered = append(filtered, aid)
+		}
+	}
+	return filtered, nil
 }
 
 // DeleteGroup removes a group through repository cascade cleanup and requests

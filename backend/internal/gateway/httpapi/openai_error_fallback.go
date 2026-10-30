@@ -53,11 +53,11 @@ func (h OpenAIErrorOutput) EnsureResponse(c *gin.Context, streamStarted bool, er
 	imageKeepalivePaddingOnly := false
 	imageKeepaliveResponseWritten := false
 	if imageKeepalivePresent {
-		adjustedSize := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+		adjustedSize := HeartbeatAdjustedWrittenSize(c)
 		imageKeepalivePaddingOnly = adjustedSize < 0
 		imageKeepaliveResponseWritten = adjustedSize >= 0
 	}
-	compactKeepaliveHasMeaningfulOutput := compactKeepaliveCommitted && OpenAICompactKeepaliveAdjustedWrittenSize(c) > 0
+	compactKeepaliveHasMeaningfulOutput := compactKeepaliveCommitted && HeartbeatAdjustedWrittenSize(c) > 0
 	// Dedicated commitment suppresses replacement after meaningful output, but
 	// a keepalive-only Compact commitment still needs its terminal Responses event.
 	if (IsResponseCommitted(c) && (!compactKeepaliveCommitted || compactKeepaliveHasMeaningfulOutput)) ||
@@ -114,9 +114,9 @@ func OpenAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	if err == nil || c == nil || c.Writer == nil {
 		return false
 	}
-	// Compare the attempt's starting size against each heartbeat-adjusted count;
+	// Compare the attempt's starting size against the total adjusted byte count;
 	// keepalives alone provide no evidence that the returned error reached the client.
-	if OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward || OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
+	if HeartbeatAdjustedWrittenSize(c) == writerSizeBeforeForward {
 		return false
 	}
 	if GetOpsCyberPolicy(c) != nil {

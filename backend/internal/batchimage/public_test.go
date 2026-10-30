@@ -108,6 +108,116 @@ type submitCompensationError struct {
 	onError func() // diagnostic formatting observation
 }
 
+// admissionProvider combines real creation eligibility with recorded local submissions.
+type admissionProvider struct {
+	*publicBatchImageProvider                                       // local execution and observation
+	readiness                 batchimageprovider.BatchImageProvider // real credential and storage checks
+}
+
+// SupportsSubmission delegates creation eligibility to the real backend adapter.
+// Recorded execution stays local so an admission regression is observable without
+// making a network request or exchanging service-account credentials.
+func (p *admissionProvider) SupportsSubmission(record *providercore.Record) bool {
+	return p.readiness.SupportsSubmission(record)
+}
+
+// TestBatchImageCatalogueAndSubmissionAdmission closes a provider protocol or omits
+// Vertex storage. Unavailable routes must be rejected before any job side
+// effects, while a configured Gemini route remains usable without Vertex storage.
+func TestBatchImageCatalogueAndSubmissionAdmission(t *testing.T) {
+	for _, scenario := range []string{"protocol closed", "Vertex storage missing", "Gemini without Vertex storage"} {
+		t.Run(scenario, func(t *testing.T) {
+			svc, repo, queue, gemini, vertex, _ := newTestBatchImagePublicService()
+			fixture := testassert.MustType[*batchProviderFixture](svc.ProviderRepo)
+			source := testassert.MustType[*publicBatchImageProviderRepo](fixture.source)
+			record := testBatchImageMappedProvider(101, capability.ProviderTypeAPIKey, map[string]any{
+				"gemini-2.5-flash-image": "gemini-2.5-flash-image",
+			})
+			if scenario == "protocol closed" {
+				record.Credentials["upstream_protocols"] = []string{}
+			} else {
+				record.Type = capability.ProviderTypeServiceAccount
+				record.Credentials["service_account_json"] = map[string]any{
+					"type": "service_account", "project_id": "test-project",
+					"private_key": "fixture-key", "client_email": "test@example.com",
+				}
+			}
+			source.providers = []providercore.Record{record}
+			vertexAdapter := batchimageprovider.NewVertexBatchImageProvider(batchimageprovider.VertexBatchImageProviderOptions{}, nil, nil, nil)
+			if scenario != "protocol closed" {
+				require.True(t, vertexAdapter.SupportsProvider(&record))
+			}
+			if scenario == "Gemini without Vertex storage" {
+				source.providers = append(source.providers, testBatchImageMappedProvider(202, capability.ProviderTypeAPIKey, map[string]any{
+					"gemini-2.5-flash-image": "gemini-2.5-flash-image",
+				}))
+			}
+			fixture.registry = batchimage.NewRegistry[batchimageprovider.BatchImageProvider](
+				&admissionProvider{gemini, batchimageprovider.NewGeminiAPIBatchImageProvider(nil)},
+				&admissionProvider{vertex, vertexAdapter},
+			)
+			models, err := svc.ListModels(context.Background(), testBatchImageOwner())
+			require.NoError(t, err)
+			if scenario == "Gemini without Vertex storage" {
+				require.Len(t, models.Data, 1)
+				require.Equal(t, batchimage.BatchImageProviderGeminiAPI, models.Data[0].Platform)
+				job, err := svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "")
+				require.NoError(t, err)
+				require.Equal(t, batchimage.BatchImageProviderGeminiAPI, job.Platform)
+				require.Len(t, gemini.submits, 1)
+				require.Empty(t, vertex.submits)
+				return
+			}
+			require.Empty(t, models.Data)
+			_, err = svc.Submit(context.Background(), testBatchImageOwner(), validBatchImageSubmitRequest(), "")
+			require.ErrorIs(t, err, batchimage.ErrBatchImageNoProviderAvailable)
+			require.Empty(t, repo.jobs)
+			require.Empty(t, testassert.MustType[*fakeBatchImageBillingRepo](taskFixtureBilling(svc)).reserves)
+			require.Empty(t, queue.enqueued)
+			require.Empty(t, gemini.submits)
+			require.Empty(t, vertex.submits)
+		})
+	}
+}
+
+// TestBatchImageSubmissionRanksBothBackends supplies competing Gemini and Vertex
+// records. New jobs follow ascending priority and ID across authentication types,
+// while an explicit platform restricts selection to that backend.
+func TestBatchImageSubmissionRanksBothBackends(t *testing.T) {
+	for _, tc := range []struct {
+		name           string // selection scenario name
+		geminiPriority int    // API key numeric priority
+		vertexPriority int    // service account numeric priority
+		geminiID       int64  // API key provider identity
+		vertexID       int64  // service account provider identity
+		platform       string // requested backend restriction
+		wantID         int64  // expected bound provider identity
+		wantPlatform   string // expected bound backend identity
+	}{
+		{"Vertex priority", 20, 10, 101, 202, "", 202, batchimage.BatchImageProviderVertex},
+		{"Gemini priority", 10, 20, 101, 202, "", 101, batchimage.BatchImageProviderGeminiAPI},
+		{"ID tie", 10, 10, 202, 101, "", 101, batchimage.BatchImageProviderVertex},
+		{"explicit Gemini", 20, 10, 101, 202, batchimage.BatchImageProviderGeminiAPI, 101, batchimage.BatchImageProviderGeminiAPI},
+		{"explicit Vertex", 10, 20, 101, 202, batchimage.BatchImageProviderVertex, 202, batchimage.BatchImageProviderVertex},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, repo, _, _, _, _ := newTestBatchImagePublicService()
+			source := testassert.MustType[*publicBatchImageProviderRepo](testassert.MustType[*batchProviderFixture](svc.ProviderRepo).source)
+			apiKey := testBatchImageProvider(tc.geminiID, capability.ProviderTypeAPIKey)
+			apiKey.Priority = tc.geminiPriority
+			serviceAccount := testBatchImageProvider(tc.vertexID, capability.ProviderTypeServiceAccount)
+			serviceAccount.Priority = tc.vertexPriority
+			source.providers = []providercore.Record{serviceAccount, apiKey}
+			req := validBatchImageSubmitRequest()
+			req.Platform = tc.platform
+			job, err := svc.Submit(context.Background(), testBatchImageOwner(), req, "")
+			require.NoError(t, err)
+			require.Equal(t, tc.wantPlatform, job.Platform)
+			require.Equal(t, tc.wantID, *repo.jobs[job.ID].ProviderID)
+		})
+	}
+}
+
 // TestBatchImagePublicService_SubmitCompensation exercises item persistence errors,
 // upstream errors and unusable upstream names after funds have been reserved.
 // It checks compensation order, cancelled context reuse, error precedence and
@@ -174,7 +284,7 @@ func TestBatchImagePublicService_SubmitCompensation(t *testing.T) {
 				{name: "release and queue failure", releaseErr: errors.New("funding unavailable"), queueErr: errors.New("queue unavailable")},
 			} {
 				t.Run(failure.name, func(t *testing.T) {
-					svc, repo, queue, gemini, _, authCache := newTestBatchImagePublicService(true)
+					svc, repo, queue, gemini, _, authCache := newTestBatchImagePublicService()
 					ctx, cancel := context.WithCancel(routing.WithModelAttributes(context.Background(), svc.Attributes))
 					defer cancel()
 					var calls []string
@@ -353,7 +463,7 @@ func (e submitCompensationError) Unwrap() error {
 func TestBatchImageCatalogueIncludesGroupMappingTargets(t *testing.T) {
 	for _, source := range []string{"draw-alias", "draw-*"} {
 		t.Run(source, func(t *testing.T) {
-			service, _, _, _, _, _ := newTestBatchImagePublicService(true)
+			service, _, _, _, _, _ := newTestBatchImagePublicService()
 			service.ProviderExists = func(name string) bool { return name == batchimage.BatchImageProviderGeminiAPI }
 			owner := testBatchImageOwner()
 			value := testBatchImageMappedProvider(303, "apikey", nil)
@@ -405,7 +515,7 @@ func TestBatchImageCatalogueIncludesGroupMappingTargets(t *testing.T) {
 // creation and provider submission, protecting the bound-group requirement
 // for batch admission.
 func TestBatchImageUnboundKeyCannotUseGlobalProviders(t *testing.T) {
-	svc, repo, _, platform, _, _ := newTestBatchImagePublicService(true)
+	svc, repo, _, platform, _, _ := newTestBatchImagePublicService()
 	owner := testBatchImageOwner()
 	owner.GroupID = nil
 	_, err := svc.Submit(context.Background(), owner, validBatchImageSubmitRequest(), "")
@@ -435,7 +545,7 @@ func TestBatchImageCatalogueResolvesBeforeModalities(t *testing.T) {
 		{name: "provider restriction", providerMapping: map[string]any{"gpt-*": "catalog-image"}, whitelist: []string{"catalog-text"}, final: "catalog-image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+			svc, _, _, _, _, _ := newTestBatchImagePublicService()
 			owner := testBatchImageOwner()
 			group := *owner.GroupID
 			value := testBatchImageMappedProvider(303, "apikey", tc.providerMapping)
@@ -482,7 +592,7 @@ func TestBatchImageCatalogueResolvesBeforeModalities(t *testing.T) {
 func TestBatchImageCatalogueUsesOnePolicySnapshot(t *testing.T) {
 	for _, stage := range []string{routing.BillingModelSourceRequested, routing.BillingModelSourceGroupMapped, routing.BillingModelSourceUpstream} {
 		t.Run(stage, func(t *testing.T) {
-			svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+			svc, _, _, _, _, _ := newTestBatchImagePublicService()
 			owner := testBatchImageOwner()
 			group := *owner.GroupID
 			allowed := map[string]string{routing.BillingModelSourceRequested: "gpt-5.4", routing.BillingModelSourceGroupMapped: "route-model", routing.BillingModelSourceUpstream: "catalog-image"}[stage]
@@ -520,7 +630,7 @@ func TestBatchImageCatalogueUsesOnePolicySnapshot(t *testing.T) {
 // returns successfully with no entries, protecting price admission alongside
 // output-modality checks.
 func TestBatchImageCatalogueRejectsMissingPrice(t *testing.T) {
-	svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+	svc, _, _, _, _, _ := newTestBatchImagePublicService()
 	value := testBatchImageMappedProvider(303, "apikey", map[string]any{"gpt-*": "catalog-image"})
 	svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 	image := []string{"image"}
@@ -537,7 +647,7 @@ func TestBatchImageCatalogueRejectsMissingPrice(t *testing.T) {
 // protecting finite configured candidates and checks against the final
 // model's output.
 func TestBatchImageAutomaticCandidates(t *testing.T) {
-	svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+	svc, _, _, _, _, _ := newTestBatchImagePublicService()
 	value := testBatchImageMappedProvider(303, "apikey", map[string]any{"source-image": "final-text"})
 	svc.ProviderRepo = rebindBatchFixtureProviders(svc, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})
 	image, text := []string{"image"}, []string{"text"}
@@ -586,14 +696,15 @@ func TestBatchImagePricingSnapshotUsesOneGroupVersion(t *testing.T) {
 func TestBatchImagePublicService_Submit(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("rejects when disabled", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(false)
+	t.Run("rejects when storage is unavailable", func(t *testing.T) {
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
+		svc.Repo = nil
 		_, err := svc.Submit(ctx, testBatchImageOwner(), validBatchImageSubmitRequest(), "")
 		require.ErrorIs(t, err, batchimage.ErrBatchImageDisabled)
 	})
 
 	t.Run("accepts valid request stores refs and enqueues once", func(t *testing.T) {
-		svc, repo, queue, gemini, _, authCache := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, authCache := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.SessionID = batchimage.BatchImageStringPtr("batch-session-123")
 
@@ -620,7 +731,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		require.Equal(t, "files/gemini_api/input", batchimage.BatchImageDerefString(job.ProviderInputRef))
 		require.Equal(t, "files/gemini_api/output", batchimage.BatchImageDerefString(job.ProviderOutputRef))
 		require.NotNil(t, job.ProviderID)
-		require.Equal(t, int64(202), *job.ProviderID)
+		require.Equal(t, int64(101), *job.ProviderID)
 		require.Equal(t, 3, job.PricingSnapshotVersion)
 		require.InDelta(t, 0.25, job.BaseUnitPrice, 1e-12)
 		require.InDelta(t, 1.0, job.GroupRateMultiplier, 1e-12)
@@ -633,7 +744,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("persists composite route identity and separates idempotency", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		otherGroupID := int64(8)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
@@ -675,7 +786,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("applies channel and provider model mappings before platform submit", func(t *testing.T) {
-		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {
@@ -746,11 +857,11 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("combines user group image rate provider rate discount and hold margin", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		providerMultiplier := 1.25
 		providerRepo := testassert.MustType[*publicBatchImageProviderRepo](testassert.MustType[*batchProviderFixture](svc.ProviderRepo).source)
-		providerRepo.providers[1].RateMultiplier = &providerMultiplier
+		providerRepo.providers[0].RateMultiplier = &providerMultiplier
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {
 				ID:                           groupID,
@@ -785,7 +896,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("uses subscription plan group rate before user balance rate", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {
@@ -827,7 +938,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("uses configured group 1k image price for batch image base price", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		imagePrice := 0.134
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
@@ -854,7 +965,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("pricing missing rejects before platform submit", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		svc.Pricing = &fakeBatchImagePricingResolver{err: batchimage.ErrBatchImageSettlementPricingMissing}
 
 		_, err := svc.Submit(ctx, testBatchImageOwner(), validBatchImageSubmitRequest(), "")
@@ -865,7 +976,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("group batch image disabled rejects before platform submit", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {
@@ -885,7 +996,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("group pricing load failure rejects before platform submit", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		groupID := int64(404)
 
 		_, err := svc.Submit(ctx, batchimage.BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}, validBatchImageSubmitRequest(), "")
@@ -896,7 +1007,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("generates custom ids deterministically", func(t *testing.T) {
-		svc, _, _, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, gemini, _, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.Items[0].CustomID = ""
 		req.Items[1].CustomID = ""
@@ -909,7 +1020,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("expands output count into separate billable items", func(t *testing.T) {
-		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.Items = []batchimage.BatchImageSubmitItem{
 			{CustomID: "cover", Prompt: "hero", OutputCount: 3, ReferenceImages: []batchimage.BatchImageReferenceInput{{MimeType: "image/png", Data: []byte("ref")}}},
@@ -967,7 +1078,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+				svc, _, _, _, _, _ := newTestBatchImagePublicService()
 				req := validBatchImageSubmitRequest()
 				tt.mutate(&req)
 
@@ -978,7 +1089,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("rejects too many items", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.Items = append(req.Items, batchimage.BatchImageSubmitItem{CustomID: "too_many", Prompt: "x"})
 
@@ -987,7 +1098,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("rejects too many output images", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		svc.Options.MaxOutputImagesPerJob = 3
 		req := validBatchImageSubmitRequest()
 		req.Items[0].OutputCount = 2
@@ -998,7 +1109,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("rejects too many reference images across request", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		svc.Options.MaxReferenceImagesPerJob = 3
 		req := validBatchImageSubmitRequest()
 		req.Model = "gemini-2.5-flash-image"
@@ -1016,7 +1127,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("rejects too much inline reference image data across request", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		svc.Options.MaxReferenceImagesPerJob = 10
 		svc.Options.MaxReferenceInlineBytesPerJob = 4
 		req := validBatchImageSubmitRequest()
@@ -1029,7 +1140,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("selects requested platform", func(t *testing.T) {
-		svc, _, _, gemini, vertex, _ := newTestBatchImagePublicService(true)
+		svc, _, _, gemini, vertex, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.Platform = batchimage.BatchImageProviderVertex
 
@@ -1041,7 +1152,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("insufficient balance rejects before platform submit", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		billing := &fakeBatchImageBillingRepo{err: batchimage.ErrBatchImageInsufficientBalance}
 		svc.Funding = nativeTaskFundingFixture(billing)
 
@@ -1071,7 +1182,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
-				svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+				svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 				billing := &fakeBatchImageBillingRepo{err: test.err}
 				svc.Funding = nativeTaskFundingFixture(billing)
 				preferredSubscriptionID := int64(301)
@@ -1099,7 +1210,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("platform failure marks failed and does not enqueue", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		gemini.submitErr = errors.New("projects/secret-platform-job failed")
 		billing := testassert.MustType[*fakeBatchImageBillingRepo](taskFixtureBilling(svc))
 
@@ -1119,7 +1230,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("platform failure with release failure enqueues billing retry", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		gemini.submitErr = errors.New("projects/secret-platform-job failed")
 		billing := testassert.MustType[*fakeBatchImageBillingRepo](taskFixtureBilling(svc))
 		billing.releaseErr = errors.New("billing database timeout")
@@ -1137,7 +1248,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("queue failure is recorded after platform submit", func(t *testing.T) {
-		svc, repo, queue, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, _, _, _ := newTestBatchImagePublicService()
 		queue.err = errors.New("redis unavailable")
 		billing := testassert.MustType[*fakeBatchImageBillingRepo](taskFixtureBilling(svc))
 
@@ -1154,7 +1265,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("idempotency returns same batch without platform resubmit", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		req.SessionID = batchimage.BatchImageStringPtr("original-session")
 
@@ -1171,7 +1282,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("idempotency conflict rejects changed request", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		req := validBatchImageSubmitRequest()
 		first, err := svc.Submit(ctx, testBatchImageOwner(), req, "client-key")
 		require.NoError(t, err)
@@ -1184,7 +1295,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 	})
 
 	t.Run("public response does not expose internals", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		got, err := svc.Submit(ctx, testBatchImageOwner(), validBatchImageSubmitRequest(), "")
 		require.NoError(t, err)
 
@@ -1199,7 +1310,7 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 // reports a short page with no more-data indicator.
 func TestBatchImagePublicService_List(t *testing.T) {
 	ctx := context.Background()
-	svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+	svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 	visibleKeyID := int64(22)
 	otherKeyID := int64(23)
 
@@ -1240,7 +1351,7 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("requires explicit provider model mapping", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 
 		got, err := svc.ListModels(ctx, testBatchImageOwner())
 		require.NoError(t, err)
@@ -1249,7 +1360,7 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 	})
 
 	t.Run("returns priced models from selected provider group", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {
@@ -1271,15 +1382,11 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 			ID:       "gemini-2.5-flash-image",
 			Object:   "image.batch.model",
 			Platform: batchimage.BatchImageProviderGeminiAPI,
-		}, {
-			ID:       "gemini-2.5-flash-image",
-			Object:   "image.batch.model",
-			Platform: batchimage.BatchImageProviderVertex,
 		}}, got.Data)
 	})
 
 	t.Run("wildcard mappings enumerate configured targets", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		providerRepo := testassert.MustType[*publicBatchImageProviderRepo](testassert.MustType[*batchProviderFixture](svc.ProviderRepo).source)
 		providerRepo.providers = []providercore.Record{testBatchImageMappedProvider(303, capability.ProviderTypeAPIKey, map[string]any{
 			"gemini-3.1-*": "gemini-3.1-flash-lite-image",
@@ -1298,7 +1405,7 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 	})
 
 	t.Run("filters models without batch image pricing", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		svc.Pricing = &fakeBatchImagePricingResolver{
 			unitPrice:     0.25,
 			missingModels: map[string]bool{"gemini-3.1-flash-lite-image": true},
@@ -1320,7 +1427,7 @@ func TestBatchImagePublicService_ListModels(t *testing.T) {
 	})
 
 	t.Run("rejects when group disables batch image", func(t *testing.T) {
-		svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, _, _, _, _, _ := newTestBatchImagePublicService()
 		groupID := int64(7)
 		svc.GroupRepo = batchGroupReader{&publicBatchImageGroupRepo{groups: map[int64]*batchimage.GroupView{
 			groupID: {ID: groupID, AllowBatchImageGeneration: false},
@@ -1339,7 +1446,7 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("status is owner scoped and maps public status", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		apiKeyID := int64(22)
 		providerID := int64(101)
 		repo.jobs["imgbatch_status"] = &batchimage.BatchImageJob{
@@ -1366,7 +1473,7 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	})
 
 	t.Run("items are filtered paginated and sanitized", func(t *testing.T) {
-		svc, repo, _, _, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, _, _, _ := newTestBatchImagePublicService()
 		apiKeyID := int64(22)
 		repo.jobs["imgbatch_items"] = &batchimage.BatchImageJob{
 			BatchID:   "imgbatch_items",
@@ -1412,7 +1519,7 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	})
 
 	t.Run("cancel active job calls platform and waits for confirmed terminal state", func(t *testing.T) {
-		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, queue, gemini, _, _ := newTestBatchImagePublicService()
 		apiKeyID := int64(22)
 		providerID := int64(101)
 		holdAmount := 0.5
@@ -1444,7 +1551,7 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	})
 
 	t.Run("cancel terminal job is idempotent", func(t *testing.T) {
-		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService()
 		apiKeyID := int64(22)
 		repo.jobs["imgbatch_done"] = &batchimage.BatchImageJob{
 			BatchID:   "imgbatch_done",
@@ -1463,7 +1570,7 @@ func TestBatchImagePublicService_StatusItemsAndCancel(t *testing.T) {
 	})
 
 	t.Run("cancel hides platform raw errors behind public error", func(t *testing.T) {
-		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService(true)
+		svc, repo, _, gemini, _, _ := newTestBatchImagePublicService()
 		gemini.cancelErr = errors.New("projects/secret-platform-job not found")
 		apiKeyID := int64(22)
 		providerID := int64(101)
@@ -1501,7 +1608,7 @@ func TestBatchImageServiceAccountErrorCode(t *testing.T) {
 func TestBatchImageConfiguredAlias(t *testing.T) {
 	for _, allowed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("allowed=%t", allowed), func(t *testing.T) {
-			svc, _, _, _, _, _ := newTestBatchImagePublicService(true)
+			svc, _, _, _, _, _ := newTestBatchImagePublicService()
 			repo := testassert.MustType[*publicBatchImageProviderRepo](testassert.MustType[*batchProviderFixture](svc.ProviderRepo).source)
 			value := testBatchImageMappedProvider(303, capability.ProviderTypeAPIKey, map[string]any{"public-image": "nano-banana-pro"})
 			if !allowed {
@@ -1622,10 +1729,10 @@ func testImageModelPricing(prices map[string]*float64) []routing.ModelPricingEnt
 }
 
 // newTestBatchImagePublicService builds shared recording dependencies and a
-// public service with the requested enable flag. Tight item and prompt caps
+// public service with configured request limits. Tight item and prompt caps
 // keep validation cases small, while two registered backends expose provider
 // selection.
-func newTestBatchImagePublicService(enabled bool) (*batchimage.Public, *fakeBatchImageRepository, *publicBatchImageQueue, *publicBatchImageProvider, *publicBatchImageProvider, *fakeBatchImageAuthCacheInvalidator) {
+func newTestBatchImagePublicService() (*batchimage.Public, *fakeBatchImageRepository, *publicBatchImageQueue, *publicBatchImageProvider, *publicBatchImageProvider, *fakeBatchImageAuthCacheInvalidator) {
 	repo := newFakeBatchImageRepository()
 	queue := &publicBatchImageQueue{}
 	gemini := &publicBatchImageProvider{name: batchimage.BatchImageProviderGeminiAPI}
@@ -1641,7 +1748,6 @@ func newTestBatchImagePublicService(enabled bool) (*batchimage.Public, *fakeBatc
 		&fakeBatchImageBillingRepo{},
 		authCache,
 		&config.Config{BatchImage: config.BatchImageConfig{
-			Enabled:                 enabled,
 			MaxItemsPerJobDefault:   2,
 			MaxPromptCharsPerItem:   8,
 			DefaultResponseMimeType: "image/png",
@@ -1683,7 +1789,7 @@ func testBatchImageMappedProvider(id int64, providerType string, mapping map[str
 // work while asserting that only the fixture's image-capable request name
 // remains visible.
 func BenchmarkBatchImageConfiguredCatalogue(b *testing.B) {
-	service, _, _, _, _, _ := newTestBatchImagePublicService(true)
+	service, _, _, _, _, _ := newTestBatchImagePublicService()
 	rows := &publicBatchImageProviderRepo{}
 	whitelist := make([]any, 186)
 	mapping := map[string]any{}
@@ -1728,7 +1834,7 @@ func BenchmarkBatchImageConfiguredCatalogue(b *testing.B) {
 // catalogue returns entries for that declared name, protecting the
 // configured-name admission path.
 func TestBatchImageCustomListDeclaresUnknownModality(t *testing.T) {
-	service, _, _, _, _, _ := newTestBatchImagePublicService(true)
+	service, _, _, _, _, _ := newTestBatchImagePublicService()
 	owner := testBatchImageOwner()
 	value := testBatchImageMappedProvider(303, "apikey", nil)
 	service.ProviderRepo = rebindBatchFixtureProviders(service, &publicBatchImageProviderRepo{providers: []providercore.Record{value}})

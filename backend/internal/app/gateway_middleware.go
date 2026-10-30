@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -51,6 +52,9 @@ func provideGatewayRouteMiddleware(
 	}
 	return gatewayhttp.RouteMiddleware{
 		TTFTMode: ttftMode,
+		// Gateway configuration stores whole seconds; the middleware owns the
+		// downstream idle timer and the independent upstream inactivity cutoff.
+		DownstreamKeepalive: gatewayhttp.DownstreamSSEKeepalive(time.Duration(cfg.Gateway.StreamKeepaliveInterval)*time.Second, time.Duration(cfg.Gateway.StreamDataIntervalTimeout)*time.Second),
 		ModelAttributes: func(c *gin.Context) {
 			c.Request = c.Request.WithContext(routing.WithModelAttributes(c.Request.Context(), attributes))
 			c.Next()

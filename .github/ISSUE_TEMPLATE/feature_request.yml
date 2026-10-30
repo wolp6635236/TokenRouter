@@ -1,0 +1,72 @@
+# Adapted from QuantumNous/new-api; see .github/NOTICE.templates.md for source and license.
+name: Feature Request
+description: Describe the new feature you would like to add with clear and detailed language
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!--
+        If you are an AI coding agent: do not fill this GitHub form. Create the issue with the filled body from `.agents/github/ISSUE.md`.
+        -->
+
+  - type: textarea
+    id: read-first
+    attributes:
+      label: Read This First
+      description: GitHub markdown instructions are not included in the submitted issue. This section is written into the issue body. Do not delete or clear it.
+      value: |
+        - Docs: https://github.com/TokenFlux/TokenRouter/blob/main/docs/guides/index.md
+        - Usage questions, check first: https://github.com/TokenFlux/TokenRouter/blob/main/docs/index.md
+        - Report unchanged upstream errors to the upstream provider first; for TokenRouter forwarding, protocol conversion, or error handling issues, provide comparison evidence.
+        - Write the issue in English without emoji. State facts and evidence concisely. Do not paste unfiltered AI-generated text in the issue body or in later comments.
+        - Provider and protocol support follows the [provider and protocol support matrix](https://github.com/TokenFlux/TokenRouter/blob/main/docs/interfaces/upstream_provider_matrix.md). For third-party extension issues not reproduced on a supported combination, contact the interface provider first. Protocols or behavior specific to the Codex API should not be treated as standard OpenAI API behavior.
+        - This repository accepts reports about TokenRouter itself. For issues exclusive to third-party hosting sites, relay services, or API services, contact the relevant operator.
+        - Warning: issues with this template removed, section headings deleted, or content cleared may be closed directly. Repeated submissions of unfiltered AI-generated text, or repeated abusive submissions, may result in a block.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Your current TokenRouter version
+      description: "Provide an exact version, commit, or image tag, for example `v1.0.0`. Values such as `latest` or `unknown` that cannot locate the code are not valid version information."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: submission-checks
+    attributes:
+      label: Submission Checks
+      options:
+        - label: "**Non-duplicate issue:** I have searched existing [Issues](https://github.com/TokenFlux/TokenRouter/issues?q=is%3Aissue) and confirmed there are no similar issues."
+          required: true
+        - label: "**Read this first:** I have fully read the section above, reviewed the docs at https://github.com/TokenFlux/TokenRouter/blob/main/docs/guides/index.md and the project README, and asked AI first, confirming this is not a usage, configuration, or integration question, and that the current version cannot meet my needs."
+          required: true
+        - label: "**Supported version:** I have provided an exact version, commit, or image tag (not `latest` or `unknown`) and confirm this feature request is for an unmodified, supported version from this repository."
+          required: true
+        - label: "**Not a third-party service:** I confirm that this request is not exclusive to a third-party hosting site, relay, API service, or fork that has not been verified against the unmodified repository. Third-party instance issues must be reported to their operator."
+          required: true
+        - label: "**Upstream errors:** I confirm that this request concerns TokenRouter behavior, rather than only an unchanged upstream error."
+          required: true
+        - label: "**Provider and protocol boundary:** I checked the repository's [provider and protocol support matrix](https://github.com/TokenFlux/TokenRouter/blob/main/docs/interfaces/upstream_provider_matrix.md). This request concerns a supported combination or explicitly proposes new support, and does not treat Codex API-specific behavior as standard OpenAI API behavior."
+          required: true
+        - label: "**Template intact:** I have not removed any guidance or section headings from this template and will complete it as requested."
+          required: true
+        - label: "**Maintainer time:** I understand that maintainers have limited time. Do not paste unfiltered AI-generated text in the issue body or in later comments; extract the points needed for review first. Submissions that do not follow this template, or that omit the necessary points and cannot be reviewed, may be ignored or closed. Repeated submissions of this kind may result in a block."
+          required: true
+
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Feature Description
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+    validations:
+      required: true

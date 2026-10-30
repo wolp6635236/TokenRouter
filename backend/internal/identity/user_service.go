@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/TokenFlux/TokenRouter/internal/billing"
+	"github.com/TokenFlux/TokenRouter/internal/identity/authconfig"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/locale"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/pagination"
@@ -1690,14 +1691,7 @@ func (s *UserService) SendNotifyVerifyEmail(ctx context.Context, sender NotifyVe
 // and scope callers the common default mode for absent or unrecognized
 // settings.
 func NormalizeWeChatConnectModeSetting(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "mp":
-		return "mp"
-	case "mobile":
-		return "mobile"
-	default:
-		return "open"
-	}
+	return authconfig.NormalizeWeChatConnectMode(raw)
 }
 
 // ParseWeChatConnectCapabilitySettings returns the open, official-account and

@@ -9,12 +9,11 @@
     >
       <Icon name="bell" size="md" />
       <!-- Unread indicator. -->
-      <span v-if="unreadCount > 0" class="absolute right-1 top-1 flex h-2 w-2">
-        <span
-          class="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75"
-        ></span>
-        <span class="relative inline-flex h-2 w-2 rounded-full bg-red-500"></span>
-      </span>
+      <span
+        v-if="unreadCount > 0"
+        class="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500"
+        aria-hidden="true"
+      ></span>
     </button>
 
     <!-- The list and detail dialogs share the announcement card styling. -->
@@ -107,22 +106,18 @@
                     class="group grid min-h-[72px] w-full grid-cols-[2.25rem_minmax(0,1fr)_1.25rem] items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-gray-50 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-black/10 dark:hover:bg-dark-800 dark:focus-visible:ring-primary-500/50 sm:px-6"
                     @click="openDetail(item)"
                   >
-                    <!-- Unread rows use a small animated dot. -->
+                    <!-- A static dot identifies unread announcements beside the row icon. -->
                     <span
                       v-if="!item.read_at"
                       data-testid="announcement-list-status-unread"
                       class="relative flex h-9 w-9 items-center justify-center rounded-control bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400"
                     >
                       <Icon name="bell" size="sm" :stroke-width="1.75" />
-                      <span class="absolute -right-0.5 -top-0.5 flex h-2 w-2" aria-hidden="true">
-                        <span
-                          data-testid="announcement-list-unread-pulse"
-                          class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary-500 opacity-60 motion-reduce:animate-none"
-                        ></span>
-                        <span
-                          class="relative inline-flex h-2 w-2 rounded-full bg-primary-500"
-                        ></span>
-                      </span>
+                      <span
+                        data-testid="announcement-list-unread-marker"
+                        class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-primary-500"
+                        aria-hidden="true"
+                      ></span>
                     </span>
                     <span
                       v-else

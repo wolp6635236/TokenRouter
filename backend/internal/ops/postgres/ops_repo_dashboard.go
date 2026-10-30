@@ -905,7 +905,7 @@ func (r *Store) queryRawPartial(ctx context.Context, filter *ops.OpsDashboardFil
 func (r *Store) rawOpsDataExists(ctx context.Context, filter *ops.OpsDashboardFilter, start, end time.Time) (bool, error) {
 	{
 		join, where, args, _ := buildUsageWhere(filter, start, end, 1)
-		q := `SELECT EXISTS(SELECT 1 FROM usage_logs ul ` + join + ` ` + where + ` LIMIT 1)`
+		q := `SELECT EXISTS(SELECT 1 FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul ` + join + ` ` + where + ` LIMIT 1)`
 		var exists bool
 		if err := r.db.QueryRowContext(ctx, q, args...).Scan(&exists); err != nil {
 			return false, err
@@ -1048,7 +1048,7 @@ func (r *Store) queryUsageCounts(ctx context.Context, filter *ops.OpsDashboardFi
 SELECT
   COALESCE(COUNT(*), 0) AS success_count,
   COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_consumed
-FROM usage_logs ul
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
 ` + join + `
 ` + where
 
@@ -1090,7 +1090,7 @@ SELECT
   AVG(` + usageTTFTSQL("") + `) FILTER (WHERE ` + usageTTFTSQL("") + ` IS NOT NULL) AS ttft_avg,
   MAX(` + usageTTFTSQL("") + `) AS ttft_max,
   COUNT(` + usageTTFTSQL("") + `) AS ttft_sample_count
-FROM usage_logs ul
+FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
 ` + join + `
 ` + where
 
@@ -1200,7 +1200,7 @@ WITH usage_buckets AS (
     date_trunc('minute', ul.created_at) AS bucket,
     COUNT(*) AS req_cnt,
     COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_cnt
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   ` + usageJoin + `
   ` + usageWhere + `
   GROUP BY 1

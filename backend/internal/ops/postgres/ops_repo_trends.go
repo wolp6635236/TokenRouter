@@ -80,7 +80,7 @@ WITH usage_buckets AS (
   SELECT ` + usageBucketExpr + ` AS bucket,
          COUNT(*) AS success_count,
          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_consumed
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   ` + usageJoin + `
   ` + usageWhere + `
   GROUP BY 1
@@ -244,7 +244,7 @@ WITH usage_totals AS (
   SELECT ul.platform AS platform,
          COUNT(*) AS success_count,
          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_consumed
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   WHERE ul.created_at >= $1 AND ul.created_at < $2
   GROUP BY 1
 ),
@@ -328,7 +328,7 @@ WITH usage_totals AS (
          g.name AS group_name,
          COUNT(*) AS success_count,
          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_consumed
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   JOIN groups g ON g.id = ul.group_id
   WHERE ul.created_at >= $1 AND ul.created_at < $2
     AND ul.platform = $3

@@ -11,19 +11,16 @@
         class="rounded-surface border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-800"
       >
         <div class="flex items-center gap-3">
-          <div
-            :class="[
-              'flex h-10 w-10 items-center justify-center rounded-control bg-gradient-to-br',
-              isOpenAILike
-                ? 'from-green-500 to-green-600'
-                : isGemini
-                  ? 'from-blue-500 to-blue-600'
-                  : isAntigravity
-                    ? 'from-purple-500 to-purple-600'
-                    : 'from-orange-500 to-orange-600',
-            ]"
-          >
-            <Icon name="sparkles" size="md" class="text-white" />
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center">
+            <!-- Antigravity uses the existing platform glyph because the shared brand catalog does not provide artwork for this platform. -->
+            <PlatformIcon
+              v-if="isAntigravity"
+              :platform="provider.platform"
+              size="lg"
+              class="text-gray-500 dark:text-dark-400"
+              aria-hidden="true"
+            />
+            <ProviderIcon v-else :brand="provider.platform" size="22px" />
           </div>
           <div>
             <span class="block font-semibold text-gray-900 dark:text-white">{{
@@ -185,6 +182,8 @@ import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type { Provider } from '@/api/admin/providers.types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import ProviderIcon from '@/components/common/ProviderIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import OAuthAuthorizationFlow from './OAuthAuthorizationFlow.vue'
 

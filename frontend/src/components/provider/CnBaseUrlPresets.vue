@@ -23,6 +23,7 @@ import { computed } from 'vue'
 import {
   CN_BASE_URL_PRESETS,
   type CnBaseUrlPreset,
+  type ProviderMode,
 } from '@/components/provider/form/providerEndpoints'
 
 // CnBaseUrlPresets.vue offers platform endpoint presets for the provider address fields.
@@ -36,7 +37,7 @@ const props = defineProps<{
 
   // Provider billing mode used for highlighting presets; selecting a preset can change
   // this mode.
-  mode?: 'payg' | 'coding'
+  mode?: ProviderMode
 
   // When supplied, restricts visible presets to this protocol while retaining both
   // billing modes.

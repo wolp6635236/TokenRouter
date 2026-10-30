@@ -27,6 +27,7 @@ import (
 // dashboardTrendCacheKey identifies a trend query by its recorded range and
 // selectors.
 type dashboardTrendCacheKey struct {
+	RequestSource string `json:"request_source"` // customer or system request selector
 	// StartTime and EndTime serialize UTC bounds at RFC3339 second precision.
 	// Queries differing solely in fractional seconds can therefore share an
 	// entry despite retaining exact loader bounds.
@@ -51,6 +52,7 @@ type dashboardTrendCacheKey struct {
 // dashboardModelGroupCacheKey identifies model or group queries within their
 // separate caches.
 type dashboardModelGroupCacheKey struct {
+	RequestSource string `json:"request_source"` // customer or system request selector
 	// StartTime and EndTime serialize UTC bounds at RFC3339 second precision.
 	// Queries differing solely in fractional seconds can therefore share an
 	// entry despite retaining exact loader bounds.
@@ -136,8 +138,15 @@ func (h *DashboardService) GetUsageTrendCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]TrendDataPoint, bool, error) {
+	requestSource := SourceUser
+	if len(requestSources) > 0 {
+		requestSource = requestSources[0]
+	}
+
 	key := mustMarshalDashboardCacheKey(dashboardTrendCacheKey{
+		RequestSource:      requestSource,
 		StartTime:          startTime.UTC().Format(time.RFC3339),
 		EndTime:            endTime.UTC().Format(time.RFC3339),
 		Granularity:        granularity,
@@ -154,7 +163,8 @@ func (h *DashboardService) GetUsageTrendCached(
 	})
 	entry, hit, err := h.queryCaches.dashboardTrendCache.GetOrLoadContext(ctx, key, func(shared context.Context) (any, error) {
 		return h.GetUsageTrendWithUsageFilters(shared, startTime, endTime, granularity, UsageLogFilters{
-			UserID: userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
+			RequestSource: requestSource,
+			UserID:        userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
 			Model: model, RequestType: requestType, Stream: stream, BillingType: billingType,
 			NativeCompactionV2: nativeCompactionV2,
 		})
@@ -179,8 +189,15 @@ func (h *DashboardService) GetModelStatsCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]ModelStat, bool, error) {
+	requestSource := SourceUser
+	if len(requestSources) > 0 {
+		requestSource = requestSources[0]
+	}
+
 	key := mustMarshalDashboardCacheKey(dashboardModelGroupCacheKey{
+		RequestSource:      requestSource,
 		StartTime:          startTime.UTC().Format(time.RFC3339),
 		EndTime:            endTime.UTC().Format(time.RFC3339),
 		UserID:             userID,
@@ -196,7 +213,8 @@ func (h *DashboardService) GetModelStatsCached(
 	})
 	entry, hit, err := h.queryCaches.dashboardModelStatsCache.GetOrLoadContext(ctx, key, func(shared context.Context) (any, error) {
 		return h.GetModelStatsWithUsageFiltersBySource(shared, startTime, endTime, UsageLogFilters{
-			UserID: userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
+			RequestSource: requestSource,
+			UserID:        userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
 			RequestType: requestType, Stream: stream, BillingType: billingType,
 			NativeCompactionV2: nativeCompactionV2,
 		}, modelSource)
@@ -226,8 +244,15 @@ func (h *DashboardService) GetGroupStatsCached(
 	stream *bool,
 	billingType *int8,
 	nativeCompactionV2 *bool,
+	requestSources ...string,
 ) ([]GroupStat, bool, error) {
+	requestSource := SourceUser
+	if len(requestSources) > 0 {
+		requestSource = requestSources[0]
+	}
+
 	key := mustMarshalDashboardCacheKey(dashboardModelGroupCacheKey{
+		RequestSource:      requestSource,
 		StartTime:          startTime.UTC().Format(time.RFC3339),
 		EndTime:            endTime.UTC().Format(time.RFC3339),
 		UserID:             userID,
@@ -247,7 +272,8 @@ func (h *DashboardService) GetGroupStatsCached(
 	}
 	entry, hit, err := h.queryCaches.dashboardGroupStatsCache.GetOrLoadContext(ctx, key, func(shared context.Context) (any, error) {
 		return h.GetGroupStatsWithUsageFilters(shared, startTime, endTime, UsageLogFilters{
-			UserID: userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
+			RequestSource: requestSource,
+			UserID:        userID, APIKeyID: apiKeyID, ProviderID: providerID, GroupID: groupID, TeamID: teamID,
 			RequestType: requestType, Stream: stream, BillingType: billingType,
 			NativeCompactionV2: nativeCompactionV2,
 		})

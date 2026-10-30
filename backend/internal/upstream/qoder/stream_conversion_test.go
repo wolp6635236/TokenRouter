@@ -644,7 +644,7 @@ func TestQoderGatewayReadsWrappedSSE(t *testing.T) {
 		)),
 	}
 
-	events, err := ReadQoderSSEEventsContext(context.Background(), resp, nil)
+	events, err := ReadQoderSSEEventsContext(context.Background(), resp)
 	require.NoError(t, err)
 	require.Len(t, events, 4)
 	require.Equal(t, "reasoning_delta", events[0].Type)
@@ -699,7 +699,7 @@ func TestQoderGatewayReadsWrappedSSEUpstreamError(t *testing.T) {
 		)),
 	}
 
-	events, err := ReadQoderSSEEventsContext(context.Background(), resp, nil)
+	events, err := ReadQoderSSEEventsContext(context.Background(), resp)
 	require.Error(t, err)
 	require.Empty(t, events)
 	var apiErr *APIError

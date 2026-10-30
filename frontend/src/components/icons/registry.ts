@@ -57,7 +57,6 @@ import HandshakeIcon from './artwork/handshake'
 import HistoryIcon from './artwork/history'
 import HomeIcon from './artwork/home'
 import ImageIcon from './artwork/image'
-import ImagesIcon from './artwork/images'
 import InboxIcon from './artwork/inbox'
 import InfoIcon from './artwork/info'
 import KeyIcon from './artwork/key'
@@ -223,7 +222,6 @@ export const icons = {
   dashboard: LayoutDashboardIcon,
   modelMarketplace: StoreIcon,
   ranking: TrophyIcon,
-  batchImage: ImagesIcon,
   creative: PaletteIcon,
   affiliate: HandshakeIcon,
   folder: FolderIcon,

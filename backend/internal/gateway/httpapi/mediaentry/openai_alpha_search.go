@@ -170,7 +170,7 @@ func (p *alphaRequestAdapter) AcquireAlpha(_ context.Context, _ gatewaymedia.Alp
 func (p *alphaRequestAdapter) ForwardAlpha(ctx context.Context, _ gatewaymedia.AlphaSelection, body []byte) gatewaymedia.AlphaOutcome {
 	selected := telemetry.RequestProvider(p.c.Request.Context())
 	ctx = telemetry.WithRequestProvider(ctx, selected.ProviderID, selected.Header)
-	size := p.c.Writer.Size()
+	size := gatewayhttp.HeartbeatAdjustedWrittenSize(p.c)
 	provider := p.selection.Provider
 	match := p.h.bindings.Common.Forward.MatchOpenAITLSFingerprintRouterForRequest(p.c, provider)
 	var result *forwardcore.OpenAIResult
@@ -178,7 +178,7 @@ func (p *alphaRequestAdapter) ForwardAlpha(ctx context.Context, _ gatewaymedia.A
 	if err == nil {
 		result, err = p.h.bindings.Platform.AlphaSearch(ctx, p.c, provider, body, match)
 	}
-	outcome := gatewaymedia.AlphaOutcome{Result: alphaResultView(result), Err: err, OutputChanged: p.c.Writer.Size() != size}
+	outcome := gatewaymedia.AlphaOutcome{Result: alphaResultView(result), Err: err, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(p.c) != size}
 	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failure = failure.RetryFailure()
 	}

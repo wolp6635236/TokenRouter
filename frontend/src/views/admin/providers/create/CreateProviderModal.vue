@@ -102,7 +102,7 @@
           </SettingsSection>
 
           <SettingsSection :title="t('admin.providers.sections.platformAndType')">
-            <!-- Platform choices keep international and CN providers on separate rows. -->
+            <!-- Platform choices fill two balanced rows and wrap within each row on narrow screens. -->
             <div class="space-y-2">
               <span class="input-label">{{ t('admin.providers.platform') }}</span>
               <div
@@ -132,15 +132,11 @@
                     :class="platformIconClass(item.value)"
                   />
                   <span :class="form.platform === item.value && platformTextClass(item.value)">{{
-                    item.label
+                    platformLabel(item.value)
                   }}</span>
                 </button>
               </div>
             </div>
-
-            <SettingsNotice v-if="form.platform === 'jev'" data-testid="jev-provider-type-api-key">
-              {{ t('admin.providers.jev.description') }}
-            </SettingsNotice>
 
             <!-- Anthropic provider authentication category. -->
             <div v-if="form.platform === 'anthropic'" v-content-reveal class="space-y-2">
@@ -243,8 +239,8 @@
               </div>
             </div>
 
-            <!-- CN provider billing mode selection. -->
-            <div v-if="isCNPlatform" class="space-y-2">
+            <!-- Provider mode selection for platforms with billing or service modes. -->
+            <div v-if="modeChoices.length > 0" class="space-y-2">
               <span class="input-label">{{
                 t('admin.providers.cnProviders.providerMode.title')
               }}</span>
@@ -254,22 +250,15 @@
                 data-tour="provider-form-mode"
               >
                 <ProviderChoiceCard
+                  v-for="choice in modeChoices"
+                  :key="choice.value"
                   :accent="form.platform"
-                  :selected="providerMode === 'payg'"
-                  icon="creditCard"
-                  :title="t('admin.providers.cnProviders.providerMode.payg')"
-                  :description="t('admin.providers.cnProviders.providerMode.paygDesc')"
-                  @click="providerMode = 'payg'"
-                />
-                <!-- Kimi and Zhipu offer Coding Plan mode. -->
-                <ProviderChoiceCard
-                  :accent="form.platform"
-                  v-if="form.platform !== 'deepseek'"
-                  :selected="providerMode === 'coding'"
-                  icon="bolt"
-                  :title="t('admin.providers.cnProviders.providerMode.coding')"
-                  :description="t('admin.providers.cnProviders.providerMode.codingDesc')"
-                  @click="providerMode = 'coding'"
+                  :selected="providerMode === choice.value"
+                  :icon="choice.icon"
+                  :title="t(choice.titleKey)"
+                  :description="t(choice.descriptionKey)"
+                  :data-testid="`provider-mode-${choice.value}`"
+                  @click="providerMode = choice.value"
                 />
               </div>
             </div>
@@ -837,26 +826,6 @@
                   @select="onCnPresetSelect"
                 />
               </div>
-              <div v-else class="space-y-4">
-                <p class="input-label mb-0">
-                  {{ t('admin.providers.cnProviders.apiProtocol.endpoints') }}
-                </p>
-                <div v-for="item in cnAdaptiveProtocolOptions" :key="item.value">
-                  <label :for="`create-provider-endpoint-${item.value}`" class="input-label">
-                    {{ t(`admin.providers.cnProviders.apiProtocol.${item.labelKey}`) }}
-                  </label>
-                  <input
-                    :id="`create-provider-endpoint-${item.value}`"
-                    v-model="adaptiveBaseUrls[item.value]"
-                    type="text"
-                    class="input"
-                    :data-testid="`cn-adaptive-base-url-${item.value}`"
-                  />
-                </div>
-                <p v-if="!cnSupportsNativeResponses(form.platform)" class="input-hint">
-                  {{ t('admin.providers.cnProviders.apiProtocol.responsesFallbackDesc') }}
-                </p>
-              </div>
               <div class="grid gap-4 md:grid-cols-2">
                 <div
                   data-provider-field="api-key"
@@ -1003,8 +972,16 @@
             :source-placeholder="isBedrockCategory ? t('admin.providers.fromModel') : undefined"
             :target-placeholder="isBedrockCategory ? t('admin.providers.toModel') : undefined"
             @update:allowed-models="setAllowedModels"
+            @synced="storeModelProtocolSuggestions"
             @add="touchQoderModelRestriction"
             @remove="touchQoderModelRestriction"
+          />
+
+          <OpenCodeFields
+            v-if="form.platform === 'opencode'"
+            v-model="openCodeProtocols"
+            :mode="providerMode"
+            :protocols="upstreamProtocols"
           />
 
           <!-- Antigravity whitelist and mappings separately control final model admission and request rewriting. -->
@@ -1201,13 +1178,12 @@
           />
 
           <UpstreamUsageConfigEditor
-            v-if="form.type === 'apikey'"
+            v-if="resolvedUpstreamUsageAdapter"
             :enabled="upstreamUsageEnabled"
-            :adapter="upstreamUsageAdapter"
+            :adapter="resolvedUpstreamUsageAdapter"
             :base-url="upstreamUsageBaseUrl"
             :wallet-access-token="upstreamUsageWalletAccessToken"
             :wallet-user-id="upstreamUsageWalletUserId"
-            :automatic-adapter="isCNPlatform"
             @update:enabled="upstreamUsageEnabled = $event"
             @update:adapter="upstreamUsageAdapter = $event"
             @update:base-url="upstreamUsageBaseUrl = $event"
@@ -1236,6 +1212,28 @@
                   : ''
             "
           />
+
+          <SettingsSection
+            v-if="isApiKeyCredentials && endpointSlots.length > 0"
+            :title="t('admin.providers.cnProviders.apiProtocol.endpoints')"
+          >
+            <div v-for="item in endpointSlots" :key="item.slot">
+              <label :for="`create-provider-endpoint-${item.slot}`" class="input-label">
+                {{ item.label }}
+              </label>
+              <input
+                :id="`create-provider-endpoint-${item.slot}`"
+                v-model="adaptiveBaseUrls[item.slot]"
+                type="text"
+                class="input"
+                :placeholder="item.placeholder"
+                :data-testid="`provider-endpoint-${item.slot}`"
+              />
+            </div>
+            <p v-if="isCNPlatform && !cnSupportsNativeResponses(form.platform)" class="input-hint">
+              {{ t('admin.providers.cnProviders.apiProtocol.responsesFallbackDesc') }}
+            </p>
+          </SettingsSection>
 
           <SettingsSection :title="t('admin.providers.sections.requestHeaders')">
             <UpstreamRequestIdHeaderField
@@ -1352,6 +1350,25 @@
                   v-model="codexFingerprintMode"
                   data-testid="create-codex-fingerprint-mode-select"
                   :options="codexFingerprintModeOptions"
+                />
+              </SettingRow>
+            </SettingsSection>
+
+            <SettingsSection v-if="isOpenAIOAuthCategory">
+              <SettingRow
+                id="create-image-responses-model"
+                label-for="create-image-responses-model-input"
+                :label="t('admin.providers.openai.imageResponsesModel')"
+                :hint="t('admin.providers.openai.imageResponsesModelDesc')"
+                field
+              >
+                <input
+                  id="create-image-responses-model-input"
+                  v-model="codexImageResponsesModel"
+                  data-testid="create-image-responses-model-input"
+                  type="text"
+                  class="input"
+                  :placeholder="t('admin.providers.openai.imageResponsesModelDefault')"
                 />
               </SettingRow>
             </SettingsSection>
@@ -1782,9 +1799,15 @@ import {
   buildQoderCreateExtra,
   buildAnthropicCreateExtra,
 } from './providerCreatePayload'
+import OpenCodeFields from '@/components/provider/form/OpenCodeFields.vue'
+import { openCodeDraft, openCodeCredentials } from '@/components/provider/form/openCodeDraft'
 import ProviderProtocolSelector from '../../../../components/provider/ProviderProtocolSelector.vue'
 import { readImageStreamModes } from '@/components/provider/form/imageStreamModes'
-import { loadProtocolCatalog, nativeProtocolOptions } from '@/api/admin/protocolCapabilities'
+import {
+  loadProtocolCatalog,
+  nativeProtocolOptions,
+  protocolName,
+} from '@/api/admin/protocolCapabilities'
 import type { ProtocolID } from '@/api/protocols.types'
 import OpenAICompactionToggle from '../../../../components/provider/OpenAICompactionToggle.vue'
 import { ref, reactive, computed, watch } from 'vue'
@@ -1868,7 +1891,9 @@ import {
   type RpmStrategy,
 } from '@/components/provider/form/providerFormOptions'
 import { vSegmented } from '@/directives/segmented'
-import { platformIconClass, platformTextClass } from '@/utils/platformColors'
+import { platformIconClass, platformLabel, platformTextClass } from '@/utils/platformColors'
+import { resolveUpstreamUsageConfig } from '@/utils/upstreamUsage'
+import type { SyncUpstreamModelsResult } from '@/api/admin/providers'
 import {
   applyAntigravityProjectID,
   applyInterceptWarmup,
@@ -1880,12 +1905,19 @@ import {
   type HeaderOverrideRow,
 } from '@/components/provider/form/headerOverrides'
 import {
+  apiKeyPreset,
   cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
-  type CnProviderMode,
+  derivedEndpointOverrides,
+  derivedEndpointSlots,
+  ENDPOINT_SLOT_PROTOCOLS,
+  providerModeChoices,
   type CnApiProtocol,
   type CnNativeApiProtocol,
+  type CnProviderMode,
+  type EndpointSlotAddresses,
+  type ProviderMode,
 } from '@/components/provider/form/providerEndpoints'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import {
@@ -1954,6 +1986,8 @@ const oauthStepTitle = computed(() => {
 // upstreamRequestIdHeader selects the upstream response header captured in request
 // diagnostics and usage records; a blank field uses the backend X-Request-ID default.
 const upstreamRequestIdHeader = ref('')
+// codexImageResponsesModel selects an OAuth image driver; blank uses the backend default.
+const codexImageResponsesModel = ref('')
 // withUpstreamRequestIdHeader applies the trimmed diagnostic header override to
 // optional metadata. Blank input preserves the supplied base unchanged,
 // allowing the backend default header to remain effective for the created
@@ -1966,16 +2000,14 @@ const withUpstreamRequestIdHeader = <T extends Record<string, unknown> | undefin
   return { ...(extra || {}), upstream_request_id_header: name }
 }
 
-// baseUrlHint and apiKeyHint describe the selected platform and Gemini source
-// beside credential inputs; Grok uses empty hints for both displayed fields.
+// baseUrlHint describes the selected platform's address and Gemini connection source.
+// apiKeyHint supplies credential guidance for Anthropic, OpenAI, and Gemini.
 const baseUrlHint = computed(() => {
-  if (form.platform === 'openai') return t('admin.providers.openai.baseUrlHint')
   if (form.platform === 'gemini' && geminiProviderType.value === 'third_party') {
     return t('admin.providers.gemini.connectionSource.thirdPartyBaseUrlHint')
   }
-  if (form.platform === 'gemini') return t('admin.providers.gemini.baseUrlHint')
-  if (form.platform === 'grok') return ''
-  return t('admin.providers.baseUrlHint')
+  const hintKey = platformApiKeyPreset.value.baseUrlHintKey
+  return hintKey ? t(hintKey) : ''
 })
 
 const apiKeyHint = computed(() => {
@@ -1984,8 +2016,8 @@ const apiKeyHint = computed(() => {
     return t('admin.providers.gemini.connectionSource.thirdPartyApiKeyHint')
   }
   if (form.platform === 'gemini') return t('admin.providers.gemini.apiKeyHint')
-  if (form.platform === 'grok') return ''
-  return t('admin.providers.apiKeyHint')
+  if (form.platform === 'anthropic') return t('admin.providers.apiKeyHint')
+  return ''
 })
 
 // Gemini tier and source options keep submitted identifiers stable while
@@ -2127,15 +2159,22 @@ const upstreamUsageBaseUrl = ref('')
 const upstreamUsageWalletAccessToken = ref('')
 const upstreamUsageWalletUserId = ref('')
 
-// CN billing mode and API protocol select the default endpoints written into the credential draft.
-const providerMode = ref<CnProviderMode>('payg')
+// OpenCode model protocol tables belong to this dialog and are saved with its credential payload.
+const openCodeProtocols = ref(openCodeDraft())
+
+// Provider mode selects the CN billing mode or OpenCode service; with the CN API protocol
+// it also selects the default endpoints written into the credential draft.
+const providerMode = ref<ProviderMode>('payg')
+// modeChoices lists the provider modes offered by the selected platform; empty hides the selector.
+const modeChoices = computed(() => providerModeChoices(form.platform))
 // Zhipu organization and project drafts are submitted for Coding Plan providers when their trimmed values are nonempty.
 const zhipuOrganization = ref('')
 const zhipuProject = ref('')
 // API protocol selects native forwarding endpoints independently of provider type.
 // Adaptive mode retains per-protocol URLs; Responses is available for DeepSeek and Kimi.
+// adaptiveBaseUrls also holds the optional address overrides of root-derived platforms.
 const apiProtocol = ref<CnApiProtocol>('adaptive')
-const adaptiveBaseUrls = ref<Record<CnNativeApiProtocol, string>>({
+const adaptiveBaseUrls = ref<EndpointSlotAddresses>({
   chat_completions: '',
   anthropic: '',
   responses: '',
@@ -2151,39 +2190,41 @@ const cnPresetPlatform = computed<'kimi' | 'zhipu' | 'deepseek'>(() => {
   return 'kimi'
 })
 // CN protocol choices include native Responses only for platforms whose preset metadata declares that endpoint.
-const cnAdaptiveProtocolOptions = computed<
-  Array<{
-    value: CnNativeApiProtocol // native endpoint selector
-    labelKey: string // protocol translation suffix
-  }>
->(() => {
-  const opts: Array<{
-    value: CnNativeApiProtocol // native endpoint selector
-    labelKey: string // protocol translation suffix
-  }> = [
-    { value: 'chat_completions', labelKey: 'chatCompletions' },
-    { value: 'anthropic', labelKey: 'anthropic' },
+const cnAdaptiveProtocolOptions = computed<Array<{ value: CnNativeApiProtocol }>>(() => {
+  const opts: Array<{ value: CnNativeApiProtocol }> = [
+    { value: 'chat_completions' },
+    { value: 'anthropic' },
   ]
-  if (cnSupportsNativeResponses(form.platform))
-    opts.push({ value: 'responses', labelKey: 'responses' })
+  if (cnSupportsNativeResponses(form.platform)) opts.push({ value: 'responses' })
   return opts
+})
+// endpointSlots lists the per-protocol address inputs with catalog protocol names. CN
+// adaptive mode edits every native slot prefilled from presets; root-derived platforms
+// edit optional overrides whose placeholders follow the entered or official root.
+const endpointSlots = computed(() => {
+  const slots =
+    isCNPlatform.value && apiProtocol.value === 'adaptive'
+      ? cnAdaptiveProtocolOptions.value.map(({ value }) => ({ slot: value, placeholder: '' }))
+      : derivedEndpointSlots(form.platform, apiKeyBaseUrl.value, providerMode.value)
+  return slots.map((item) => ({
+    ...item,
+    label: protocolName(ENDPOINT_SLOT_PROTOCOLS[item.slot]),
+  }))
 })
 // resetAdaptiveBaseUrls restores the CN endpoint family for the selected
 // billing mode.
-function resetAdaptiveBaseUrls(platform: 'kimi' | 'zhipu' | 'deepseek', mode: CnProviderMode) {
+function resetAdaptiveBaseUrls(platform: 'kimi' | 'zhipu' | 'deepseek', mode: ProviderMode) {
   adaptiveBaseUrls.value = defaultCNAdaptiveBaseUrls(platform, mode)
 }
 
 // selectCNPlatform selects API Key authentication and resets CN endpoint drafts.
-// DeepSeek uses pay-as-you-go mode, while other CN platforms retain the selected billing mode before adaptive defaults are restored.
+// The caller has already restricted the billing mode to the platform's choices, so
+// adaptive defaults are restored for that mode.
 function selectCNPlatform(platform: 'kimi' | 'zhipu' | 'deepseek') {
   form.platform = platform
   form.type = 'apikey'
   providerCategory.value = 'apikey'
   apiProtocol.value = 'adaptive'
-  if (platform === 'deepseek') {
-    providerMode.value = 'payg'
-  }
   if (platform !== 'zhipu') {
     zhipuOrganization.value = ''
     zhipuProject.value = ''
@@ -2248,6 +2289,7 @@ function onCnPresetSelect(preset: {
 
 // syncPreviewCredentials supplies entered API Key credentials to model discovery;
 // absent keys disable preview, and adaptive CN discovery uses the Chat endpoint.
+// Platforms with provider modes also send the drafted mode.
 const syncPreviewCredentials = computed(() => {
   if (!apiKeyValue.value) return undefined
   const baseUrl =
@@ -2259,8 +2301,29 @@ const syncPreviewCredentials = computed(() => {
     type: form.type,
     base_url: baseUrl || undefined,
     api_key: apiKeyValue.value,
+    provider_mode: modeChoices.value.length > 0 ? providerMode.value : undefined,
   }
 })
+
+// storeModelProtocolSuggestions keeps per-model protocol suggestions returned by a model
+// sync as the current mode's accepted catalog table. Responses without suggestions leave
+// the table unchanged; manual overrides stay separate in either case.
+function storeModelProtocolSuggestions(result: SyncUpstreamModelsResult) {
+  if (result.model_protocols)
+    openCodeProtocols.value.suggestions[providerMode.value] = { ...result.model_protocols }
+}
+
+// resolvedUpstreamUsageAdapter resolves the usage adapter for the drafted provider, or
+// null when its type and mode support no usage query and the editor stays hidden.
+const resolvedUpstreamUsageAdapter = computed(
+  () =>
+    resolveUpstreamUsageConfig({
+      type: form.type,
+      platform: form.platform,
+      credentials: { provider_mode: providerMode.value },
+      extra: { upstream_usage_query: { adapter: upstreamUsageAdapter.value } },
+    }).adapter,
+)
 
 // Local quota limits use USD amounts and optional reset schedules. Null fields
 // remain unconfigured until createProviderAndFinish selects the applicable
@@ -2696,38 +2759,49 @@ const isManualInputMethod = computed(() => {
   return oauthFlowRef.value?.inputMethod === 'manual'
 })
 
-// Platform rows preserve the rendered international and CN grouping; CN selection also resets authentication and endpoint defaults.
+// platformRows distributes the platform choices across rows of six and five;
+// labels and brand colors come from the shared platform catalog.
 const platformRows: Array<
   Array<{
     value: ProviderPlatform // selected upstream platform
-    label: string // visible platform name
     testid?: string // optional test selector
   }>
 > = [
   [
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'gemini', label: 'Gemini', testid: 'create-provider-platform-gemini' },
-    { value: 'antigravity', label: 'Antigravity' },
-    { value: 'qoder', label: 'Qoder', testid: 'create-provider-platform-qoder' },
-    { value: 'grok', label: 'Grok' },
-    { value: 'jev', label: 'Jev', testid: 'create-provider-platform-jev' },
+    { value: 'anthropic' },
+    { value: 'openai' },
+    { value: 'gemini', testid: 'create-provider-platform-gemini' },
+    { value: 'antigravity' },
+    { value: 'qoder', testid: 'create-provider-platform-qoder' },
+    { value: 'grok' },
   ],
   [
-    { value: 'kimi', label: 'Kimi' },
-    { value: 'zhipu', label: 'Zhipu GLM' },
-    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'jev', testid: 'create-provider-platform-jev' },
+    { value: 'opencode', testid: 'create-provider-platform-opencode' },
+    { value: 'kimi' },
+    { value: 'zhipu' },
+    { value: 'deepseek' },
   ],
 ]
 // selectPlatform selects a platform through the CN preset reset when
 // applicable. International platforms update the platform field directly,
 // letting the existing platform watcher restore their authentication and
 // endpoint defaults.
+//
+// A mode chosen for the previous platform may not exist on the new one, so the
+// mode falls back to the new platform's first choice before any endpoint
+// defaults are computed. Address slots belong to one platform, so international
+// platforms start with blank slots.
 function selectPlatform(platform: ProviderPlatform) {
+  const choices = providerModeChoices(platform)
+  if (choices.length > 0 && !choices.some((choice) => choice.value === providerMode.value)) {
+    providerMode.value = choices[0]!.value
+  }
   if (platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek') {
     selectCNPlatform(platform)
     return
   }
+  adaptiveBaseUrls.value = { chat_completions: '', anthropic: '', responses: '' }
   form.platform = platform
 }
 
@@ -2804,36 +2878,21 @@ const tlsFingerprintTestIdPrefix = computed<string | null>(() => {
   if (isAnthropicOAuthCategory.value) return ''
   return null
 })
-const apiKeyBaseUrlPlaceholder = computed(() => {
-  switch (form.platform) {
-    case 'jev':
-      return 'https://api.typesafe.ai'
-    case 'openai':
-      return 'https://api.openai.com'
-    case 'gemini':
-      return geminiProviderType.value === 'third_party'
-        ? 'https://'
-        : 'https://generativelanguage.googleapis.com'
-    case 'grok':
-      return 'https://api.x.ai/v1'
-    default:
-      return 'https://api.anthropic.com'
-  }
-})
-const apiKeyPlaceholder = computed(() => {
-  switch (form.platform) {
-    case 'jev':
-      return 'api-key-...'
-    case 'openai':
-      return 'sk-proj-...'
-    case 'gemini':
-      return geminiProviderType.value === 'third_party' ? 'api-key-...' : 'AIza...'
-    case 'grok':
-      return 'xai-...'
-    default:
-      return 'sk-ant-...'
-  }
-})
+// platformApiKeyPreset resolves the selected platform's API-key defaults for the current
+// provider mode; the placeholders below apply the Gemini relay source on top of it.
+const platformApiKeyPreset = computed(() => apiKeyPreset(form.platform, providerMode.value))
+// isGeminiRelaySource reports whether the Gemini draft targets an administrator relay.
+const isGeminiRelaySource = computed(
+  () => form.platform === 'gemini' && geminiProviderType.value === 'third_party',
+)
+// apiKeyBaseUrlPlaceholder shows the preset address, or a bare scheme for a Gemini relay.
+const apiKeyBaseUrlPlaceholder = computed(() =>
+  isGeminiRelaySource.value ? 'https://' : platformApiKeyPreset.value.baseUrlPlaceholder,
+)
+// apiKeyPlaceholder shows the preset key prefix, or a generic key for a Gemini relay.
+const apiKeyPlaceholder = computed(() =>
+  isGeminiRelaySource.value ? 'api-key-...' : platformApiKeyPreset.value.apiKeyPlaceholder,
+)
 
 // Tab definitions omit empty categories for the selected platform and provider type; SettingsTabs handles fallback when the active tab disappears.
 const tabsRef = ref<InstanceType<typeof SettingsTabs> | null>(null)
@@ -2955,7 +3014,7 @@ watch(
 watch(
   [providerCategory, addMethod, qoderProviderType, () => form.platform],
   ([category, method]) => {
-    if (form.platform === 'jev') {
+    if (platformApiKeyPreset.value.apiKeyOnly) {
       form.type = 'apikey'
       return
     }
@@ -2991,17 +3050,13 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
-    // Reset base URL based on platform
+    // Reset base URL based on platform; a Gemini relay source starts blank for its relay address.
     apiKeyBaseUrl.value =
-      newPlatform === 'openai'
-        ? 'https://api.openai.com'
-        : newPlatform === 'gemini'
-          ? geminiProviderType.value === 'third_party'
-            ? ''
-            : 'https://generativelanguage.googleapis.com'
-          : newPlatform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : 'https://api.anthropic.com'
+      newPlatform === 'gemini' && geminiProviderType.value === 'third_party'
+        ? ''
+        : apiKeyPreset(newPlatform).defaultBaseUrl
+    // Model protocol tables describe one platform's models, so each platform starts empty.
+    openCodeProtocols.value = openCodeDraft()
     // Clear restrictions when the platform changes so prior-platform model names cannot silently become restrictions on the newly selected provider.
     allowedModels.value = []
     modelMappings.value = []
@@ -3053,10 +3108,7 @@ watch(
     if (newPlatform !== 'anthropic' && providerCategory.value === 'bedrock') {
       providerCategory.value = 'oauth-based'
     }
-    if (newPlatform === 'jev') {
-      providerCategory.value = 'apikey'
-      apiKeyBaseUrl.value = 'https://api.typesafe.ai'
-    }
+    if (apiKeyPreset(newPlatform).apiKeyOnly) providerCategory.value = 'apikey'
     upstreamUsageEnabled.value = newPlatform !== 'jev'
     // Reset Bedrock fields when switching platforms
     bedrockAccessKeyId.value = ''
@@ -3411,6 +3463,7 @@ const resetForm = () => {
   upstreamUsageWalletAccessToken.value = ''
   upstreamUsageWalletUserId.value = ''
   upstreamRequestIdHeader.value = ''
+  codexImageResponsesModel.value = ''
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -3558,6 +3611,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>) =>
       tlsFingerprintProfileId: tlsFingerprintProfileId.value,
       tlsFingerprintRouterId: tlsFingerprintRouterId.value,
       codexFingerprintMode: codexFingerprintMode.value,
+      codexImageResponsesModel: codexImageResponsesModel.value,
       openAICompactMode: openAICompactMode.value,
       openAINativeCompactionV2Mode: openAINativeCompactionV2Mode.value,
       openAIImagesURLToB64JSON: openAIImagesURLToB64JSON.value,
@@ -3832,23 +3886,12 @@ const handleSubmit = async () => {
     return
   }
 
-  // Determine default base URL based on platform
-  const defaultBaseUrl =
-    form.platform === 'jev'
-      ? 'https://api.typesafe.ai'
-      : form.platform === 'openai'
-        ? 'https://api.openai.com'
-        : form.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : form.platform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : 'https://api.anthropic.com'
-
-  // Build credentials with optional model mapping
+  // Build credentials with optional model mapping; a blank address stores the platform default.
   const credentials: Record<string, unknown> = {
-    base_url: enteredBaseUrl || defaultBaseUrl,
+    base_url: enteredBaseUrl || apiKeyPreset(form.platform).defaultBaseUrl,
     api_key: apiKeyValue.value.trim(),
   }
+  if (modeChoices.value.length > 0) credentials.provider_mode = providerMode.value
 
   // New API wallet queries use a user access token; keep that secret in
   // Credentials alongside the wallet user ID rather than exposing it through Extra.
@@ -3866,12 +3909,18 @@ const handleSubmit = async () => {
       credentials.tier_id = geminiTierAIStudio.value
     }
   }
+  // Root-derived address slots store only administrator overrides, and OpenCode keeps its
+  // per-mode model protocol tables beside them.
+  const endpointOverrides = derivedEndpointOverrides(form.platform, adaptiveBaseUrls.value)
+  if (endpointOverrides) credentials.api_base_urls = endpointOverrides
+  if (form.platform === 'opencode') {
+    Object.assign(credentials, openCodeCredentials(openCodeProtocols.value))
+  }
 
-  // CN credentials carry billing mode and per-protocol endpoint settings. The
+  // CN credentials carry the protocol selector and per-protocol endpoint settings. The
   // shared creation boundary subsequently replaces the legacy protocol selector
   // with the supported native protocol set before the provider API receives it.
   if (form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek') {
-    credentials.provider_mode = providerMode.value
     credentials.api_protocol = apiProtocol.value
     if (apiProtocol.value === 'adaptive') {
       const defaults = defaultCNAdaptiveBaseUrls(form.platform, providerMode.value)

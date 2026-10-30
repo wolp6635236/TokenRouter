@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
 	"github.com/TokenFlux/TokenRouter/internal/egress"
 	"github.com/TokenFlux/TokenRouter/internal/gateway"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/errorpolicy"
@@ -27,9 +27,12 @@ import (
 	httptestkit "github.com/TokenFlux/TokenRouter/internal/gateway/httpapi/testkit"
 	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
 	selectionadapter "github.com/TokenFlux/TokenRouter/internal/gateway/provider/selection"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
 	gatewaytestkit "github.com/TokenFlux/TokenRouter/internal/gateway/testkit"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/timing"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/bridge"
 	protocolopenai "github.com/TokenFlux/TokenRouter/internal/protocol/openai"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
@@ -38,7 +41,6 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/scheduler"
 	"github.com/TokenFlux/TokenRouter/internal/scheduler/policy"
 	upstreamcore "github.com/TokenFlux/TokenRouter/internal/upstream"
-	"github.com/TokenFlux/TokenRouter/internal/upstream/grok"
 	responseupstream "github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -61,13 +63,6 @@ import (
 // MultiReader payload ends.
 type grokObservationErrorReader struct {
 	err error // configured fixture read failure
-}
-
-// grokPingFilterTestReadCloser counts every source-close invocation while
-// delegating reading.
-type grokPingFilterTestReadCloser struct {
-	reader     io.ReadCloser // delegated upstream source body
-	closeCount atomic.Int32  // observed source-close invocation count
 }
 
 // firstOutputCloseTrackingBody signals body closure while delegating the
@@ -159,325 +154,6 @@ func TestGrokNativeObservationRetainsPartialUsageAfterReadError(t *testing.T) {
 	require.False(t, result.ObservedOnly)
 	require.Equal(t, 9, result.Usage.InputTokens)
 	require.Equal(t, 2, result.Usage.OutputTokens)
-}
-
-// filterGrokPingTestInput reads the supplied SSE text through the billing-ping
-// filter and closes it. It asserts successful read/close and returns the
-// collected bytes for exact framing comparisons in these fixtures.
-func filterGrokPingTestInput(t *testing.T, input string) string {
-	t.Helper()
-	body := grok.NewGrokResponsesBillingPingFilterBody(
-		io.NopCloser(strings.NewReader(input)),
-		OpenAIResponseDefaultMaxLineSize,
-	)
-	output, err := io.ReadAll(body)
-	require.NoError(t, err)
-	require.NoError(t, body.Close())
-	return string(output)
-}
-
-// TestGrokResponsesBillingPingFilter mixes billing pings with comments, text,
-// unknown and terminal events. It checks two ping comments plus retained
-// nonping bytes and terminal usage in the filtered stream.
-func TestGrokResponsesBillingPingFilter(t *testing.T) {
-	input := strings.Join([]string{
-		": upstream keepalive",
-		"",
-		"event: response.output_text.delta",
-		`data: {"type":"response.output_text.delta","delta":"hello"}`,
-		"",
-		"event: future.vendor_event",
-		`data: {"type":"future.vendor_event","value":1}`,
-		"",
-		"event: ping",
-		`data: {"type":"ping","x-opencode-type":"inference-cost","cost":2.75,"input-tokens":42}`,
-		"",
-		"event: ping",
-		`data: {"type":"ping","cost":"0"}`,
-		"",
-		"event: response.completed",
-		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":3,"output_tokens":5}}}`,
-		"",
-	}, "\n")
-
-	result := filterGrokPingTestInput(t, input)
-	require.NotContains(t, result, "event: ping")
-	require.NotContains(t, result, `"x-opencode-type":"inference-cost"`)
-	require.NotContains(t, result, `{"type":"ping","cost":"0"}`)
-	require.Equal(t, 2, strings.Count(result, ": ping\n\n"))
-	require.Contains(t, result, ": upstream keepalive\n\n")
-	require.Contains(t, result, "event: response.output_text.delta")
-	require.Contains(t, result, `{"type":"response.output_text.delta","delta":"hello"}`)
-	require.Contains(t, result, "event: future.vendor_event")
-	require.Contains(t, result, `{"type":"future.vendor_event","value":1}`)
-	require.Contains(t, result, "event: response.completed")
-	require.Contains(t, result, `"usage":{"input_tokens":3,"output_tokens":5}`)
-}
-
-// TestGrokResponsesBillingPingFilterComposesWithClientToolStream wraps ping
-// filtering in client-tool response adaptation. It checks successful
-// collection/closure and retained ping-comment and completed-response fields
-// through both wrappers.
-func TestGrokResponsesBillingPingFilterComposesWithClientToolStream(t *testing.T) {
-	input := "event: ping\ndata: {\"type\":\"ping\",\"cost\":\"0\"}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"
-	filtered := grok.NewGrokResponsesBillingPingFilterBody(
-		io.NopCloser(strings.NewReader(input)),
-		OpenAIResponseDefaultMaxLineSize,
-	)
-	body := upstreamcore.NewResponsesClientToolStreamBody(filtered, bridge.ResponsesClientToolMapping{
-		CustomTools: map[string]bool{"apply_patch": true},
-	}, OpenAIResponseDefaultMaxLineSize)
-
-	output, err := io.ReadAll(body)
-	require.NoError(t, err)
-	require.NoError(t, body.Close())
-	require.Contains(t, string(output), ": ping\n\n")
-	require.NotContains(t, string(output), "event: ping")
-	require.Contains(t, string(output), "event: response.completed")
-	require.Contains(t, string(output), `"id":"resp_1"`)
-}
-
-// TestGrokResponsesBillingPingFilterConvertsPingVariants enumerates
-// compatible, missing and malformed ping payloads. It checks exactly one
-// normalized SSE comment for each listed frame instead of asserting client
-// behavior beyond the fixture.
-func TestGrokResponsesBillingPingFilterConvertsPingVariants(t *testing.T) {
-	frames := []string{
-		"event: ping\ndata: {\"type\":\"ping\",\"x-opencode-type\":\"inference-cost\",\"cost\":\"0.06029240\"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"cost\":\"0\"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"cost\":\"0.06029240\"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"kind\":\"keepalive\"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"cost\":2}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"cost\":0.0001}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"cost\":\" 0 \"}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"x-opencode-type\":\"keepalive\",\"cost\":0}\n\n",
-		"event: ping\ndata: {\"type\":\"ping\",\"x-opencode-type\":null,\"cost\":0}\n\n",
-		"event: ping\ndata: {\"cost\":\"0\"}\n\n",
-		"event: ping\ndata: {not-json}\n\n",
-		"event: ping\n\n",
-		"event: ping\n: vendor note\ndata: {\"type\":\"ping\"}\n\n",
-	}
-	result := filterGrokPingTestInput(t, strings.Join(frames, ""))
-	require.Equal(t, strings.Repeat(": ping\n\n", len(frames)), result)
-}
-
-// TestGrokResponsesBillingPingFilterPreservesNonPingFrames supplies mismatched
-// types, unnamed data, comments and retry lines. It checks exact byte
-// retention for those inputs through the filter helper.
-func TestGrokResponsesBillingPingFilterPreservesNonPingFrames(t *testing.T) {
-	input := strings.Join([]string{
-		"event: ping",
-		`data: {"type":" ping ","cost":0}`,
-		"",
-		"event: ping",
-		`data: {"type":"response.completed"}`,
-		"",
-		"event: custom",
-		`data: {"type":"ping","x-opencode-type":"inference-cost"}`,
-		"",
-		`data: {"type":"ping","cost":"0"}`,
-		"",
-		": keepalive comment",
-		"",
-		"retry: 1000",
-		"",
-	}, "\n")
-
-	require.Equal(t, input, filterGrokPingTestInput(t, input))
-}
-
-// TestGrokResponsesBillingPingFilterPassesThroughPingFrameWithUnknownField
-// adds an id field to the fixture ping frame. It checks exact retained bytes
-// for this unrecognized SSE-field combination.
-func TestGrokResponsesBillingPingFilterPassesThroughPingFrameWithUnknownField(t *testing.T) {
-	input := "event: ping\nid: 7\ndata: {\"type\":\"ping\",\"cost\":\"0\"}\n\n"
-	require.Equal(t, input, filterGrokPingTestInput(t, input))
-}
-
-// TestGrokResponsesBillingPingFilterPassesThroughOversizedPingFrame exceeds
-// the filter's line-count and frame-byte bounds in separate inputs. It checks
-// exact byte retention for both large ping frames.
-func TestGrokResponsesBillingPingFilterPassesThroughOversizedPingFrame(t *testing.T) {
-	// The event header and payload push these repeated comments beyond the
-	// frame line allowance, so exact retention can expose premature filtering.
-	lines := []string{"event: ping"}
-	for range grok.ResponsesPingFrameMaxLines {
-		lines = append(lines, ": filler comment")
-	}
-	lines = append(lines, `data: {"type":"ping","cost":"0"}`, "")
-	byLines := strings.Join(lines, "\n")
-	require.Equal(t, byLines, filterGrokPingTestInput(t, byLines))
-
-	// Padding alone reaches the frame-byte allowance before framing is added.
-	// This case also contains an unknown pad field, so it checks retention rather
-	// than isolating which pass-through condition was selected.
-	byBytes := "event: ping\ndata: {\"type\":\"ping\",\"pad\":\"" +
-		strings.Repeat("x", grok.ResponsesPingFrameMaxBytes) + "\"}\n\n"
-	require.Equal(t, byBytes, filterGrokPingTestInput(t, byBytes))
-}
-
-// TestGrokResponsesBillingPingFilterConvertsMalformedPingFrames supplies
-// invalid/trailing JSON pings and a partial future event with CRLF. It checks
-// normalized ping comments and exact retention of the unknown event bytes.
-func TestGrokResponsesBillingPingFilterConvertsMalformedPingFrames(t *testing.T) {
-	input := "event: ping\r\ndata: {not-json}\r\n\r\n" +
-		"event: ping\r\ndata: {\"type\":\"ping\",\"cost\":\"0\"} trailing\r\n\r\n" +
-		"event: future.response.event\r\ndata: {\"type\":\"future.response.event\"}"
-	want := ": ping\n\n" + ": ping\n\n" +
-		"event: future.response.event\r\ndata: {\"type\":\"future.response.event\"}"
-	require.Equal(t, want, filterGrokPingTestInput(t, input))
-}
-
-// TestGrokResponsesBillingPingFilterHandlesBareCRFrames uses bare carriage
-// returns for ping and future-event framing. It checks ping conversion and
-// preservation of the future event's supplied line separators.
-func TestGrokResponsesBillingPingFilterHandlesBareCRFrames(t *testing.T) {
-	input := "event: ping\rdata: {\"type\":\"ping\",\"cost\":\"0\"}\r\r" +
-		"event: future.event\rdata: {\"type\":\"future.event\"}\r\r"
-	want := ": ping\n\n" + "event: future.event\rdata: {\"type\":\"future.event\"}\r\r"
-	require.Equal(t, want, filterGrokPingTestInput(t, input))
-}
-
-// TestGrokResponsesBillingPingFilterConvertsPartialPingFrameAtEOF omits the
-// final blank line from a compatible ping. It checks that EOF still yields one
-// complete normalized SSE comment frame.
-func TestGrokResponsesBillingPingFilterConvertsPartialPingFrameAtEOF(t *testing.T) {
-	input := "event: ping\ndata: {\"type\":\"ping\",\"cost\":\"0\"}"
-	require.Equal(t, ": ping\n\n", filterGrokPingTestInput(t, input))
-}
-
-// TestGrokResponsesBillingPingFilterDoesNotFilterNonGrokProviders reads ping
-// and terminal frames under an OpenAI target. It checks successful
-// reading/closure and exact downstream retention of the supplied stream.
-func TestGrokResponsesBillingPingFilterDoesNotFilterNonGrokProviders(t *testing.T) {
-	input := "event: ping\ndata: {\"type\":\"ping\",\"cost\":\"0\"}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"non-grok\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"output\":[]}}\n\n"
-	body := io.NopCloser(strings.NewReader(input))
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: body}
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	output := &OpenAIResponseOutput{Options: OpenAIResponseOptions{MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
-	_, err := output.ReadStreamObservation(context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{Platform: capability.PlatformOpenAI}}, time.Now(), "model", "model", "")
-	require.NoError(t, err)
-	require.NoError(t, body.Close())
-	require.Equal(t, input, recorder.Body.String())
-}
-
-// TestGrokResponsesBillingPingFilterPreservesUsageAndTerminalEvent reads a
-// filtered Grok ping before a usage terminal. It checks response ID,
-// input/output usage and visible terminal with no billing-ping data.
-func TestGrokResponsesBillingPingFilterPreservesUsageAndTerminalEvent(t *testing.T) {
-	input := strings.Join([]string{
-		"event: ping",
-		`data: {"type":"ping","x-opencode-type":"inference-cost","cost":"0"}`,
-		"",
-		"event: response.completed",
-		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":3,"output_tokens":5}}}`,
-		"",
-	}, "\n")
-	provider := &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformGrok}}
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{},
-		Body: grok.NewGrokResponsesBillingPingFilterBody(
-			io.NopCloser(strings.NewReader(input)), OpenAIResponseDefaultMaxLineSize,
-		),
-	}
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	svc := &OpenAIResponseOutput{Options: OpenAIResponseOptions{MaxLineSize: OpenAIResponseDefaultMaxLineSize}, Corrector: responseupstream.NewCodexToolCorrector()}
-
-	result, err := svc.ReadStreamObservation(context.Background(), resp, c, provider, time.Now(), "grok-4.5", "grok-4.5", "")
-	require.NoError(t, err)
-	require.Equal(t, 3, result.Usage.InputTokens)
-	require.Equal(t, 5, result.Usage.OutputTokens)
-	require.Equal(t, "resp_1", result.ResponseID)
-	require.Contains(t, recorder.Body.String(), "response.completed")
-	require.NotContains(t, recorder.Body.String(), "inference-cost")
-	require.NotContains(t, recorder.Body.String(), "event: ping")
-}
-
-// Read delegates byte reading to the fixture's supplied source body.
-func (r *grokPingFilterTestReadCloser) Read(p []byte) (int, error) { return r.reader.Read(p) }
-
-// Close atomically counts every invocation before closing the supplied source.
-// It does not make that source closure idempotent; the filter lifecycle under
-// test determines how many calls reach this recorder.
-func (r *grokPingFilterTestReadCloser) Close() error {
-	// Count the attempt before delegating cleanup so a returned source error
-	// still accompanies the close observation used by cancellation assertions.
-	r.closeCount.Add(1)
-	return r.reader.Close()
-}
-
-// TestGrokResponsesBillingPingFilterCloseCancelsSourceOnce closes the filter
-// before any pipe data arrives. It checks one observed source close, a failed
-// subsequent write and cleanup of the pipe writer.
-func TestGrokResponsesBillingPingFilterCloseCancelsSourceOnce(t *testing.T) {
-	upstreamReader, upstreamWriter := io.Pipe()
-	source := &grokPingFilterTestReadCloser{reader: upstreamReader}
-	body := grok.NewGrokResponsesBillingPingFilterBody(source, OpenAIResponseDefaultMaxLineSize)
-
-	require.NoError(t, body.Close())
-	require.Eventually(t, func() bool { return source.closeCount.Load() == 1 }, time.Second, time.Millisecond)
-	_, err := upstreamWriter.Write([]byte("blocked"))
-	require.Error(t, err)
-	require.NoError(t, upstreamWriter.Close())
-}
-
-// TestGrokResponsesBillingPingFilterFlushesCompletedFrames writes one complete
-// future event while keeping the source pipe open. It checks that a reader
-// receives the event within the bounded fixture wait.
-func TestGrokResponsesBillingPingFilterFlushesCompletedFrames(t *testing.T) {
-	upstreamReader, upstreamWriter := io.Pipe()
-	body := grok.NewGrokResponsesBillingPingFilterBody(upstreamReader, OpenAIResponseDefaultMaxLineSize)
-	// Close the filter on every test exit to release its pipe read and any
-	// blocked producer, including when the completion wait fails.
-	t.Cleanup(func() { require.NoError(t, body.Close()) })
-
-	// Write one complete frame in a separate pipe producer while leaving EOF
-	// unavailable. Discard its write error because the bounded reader result
-	// below determines whether the filter releases that frame.
-	go func() {
-		_, _ = io.WriteString(upstreamWriter, "event: future.event\ndata: {\"type\":\"future.event\"}\n\n")
-	}()
-
-	result := make(chan error, 1)
-	// Run the read separately so its wait can fail while the pipe stays open;
-	// the buffered result permits error publication after cleanup closes the filter.
-	go func() {
-		buffer := make([]byte, 64)
-		n, err := body.Read(buffer)
-		if err == nil && !strings.Contains(string(buffer[:n]), "future.event") {
-			err = errors.New("completed frame was not forwarded")
-		}
-		result <- err
-	}()
-	// A one-second guard distinguishes complete-frame delivery from waiting for
-	// EOF; filter cleanup releases outstanding pipe work if it expires.
-	select {
-	case err := <-result:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("completed frame was buffered until upstream EOF")
-	}
-}
-
-// TestGrokResponsesBillingPingFilterReportsOversizedLine configures an
-// eight-byte scanner ceiling for a longer data line. It checks the
-// filter-specific read diagnostic and successful body cleanup afterward.
-func TestGrokResponsesBillingPingFilterReportsOversizedLine(t *testing.T) {
-	body := grok.NewGrokResponsesBillingPingFilterBody(
-		io.NopCloser(strings.NewReader("data: 123456789\n\n")),
-		8,
-	)
-	_, err := io.ReadAll(body)
-	require.ErrorContains(t, err, "filter Grok Responses billing ping")
-	require.NoError(t, body.Close())
 }
 
 // TestOpenAIStreamPairedFailureAppliesProviderSideEffectsOnce follows content
@@ -1136,7 +812,7 @@ func TestOpenAINativeFirstOutputTimeoutDoesNotLeakLargePreambleEvent(t *testing.
 // the local writer.
 func assertOpenAINativeLargeOpenEventTimesOutWithoutLeak(t *testing.T, line string) {
 	t.Helper()
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{OpenAIFirstOutputTimeoutSeconds: 1, StreamKeepaliveInterval: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{OpenAIFirstOutputTimeoutSeconds: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg, headers: compileHTTPFixtureHeaders(cfg)})
 	pr, pw := io.Pipe()
 	body := &firstOutputCloseTrackingBody{ReadCloser: pr, closed: make(chan struct{})}
@@ -1342,7 +1018,7 @@ func TestOpenAINativeFirstOutputScannerAllowsLargeEventAfterSemanticBoundary(t *
 // It checks eventual recovery and comment output without delivered
 // created/in-progress frames.
 func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepalive(t *testing.T) {
-	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamKeepaliveInterval: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}})
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Response: OpenAIResponseOptions{MaxLineSize: OpenAIResponseDefaultMaxLineSize}}})
 	pr, pw := io.Pipe()
 	// Hold EOF while metadata stays private, allowing heartbeat opportunities
 	// before closing the pipe. Write/Close failures are discarded because the
@@ -1358,13 +1034,16 @@ func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepali
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	stopKeepalive := installDownstreamKeepaliveTest(t, c, time.Second)
+	defer stopKeepalive()
 	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
 
 	_, err := svc.Output.ReadStreamObservation(c.Request.Context(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI}}, time.Now(), "model", "model", "")
 
+	stopKeepalive()
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.Contains(t, rec.Body.String(), ":\n\n")
+	require.Contains(t, rec.Body.String(), ": keepalive\n\n")
 	require.NotContains(t, rec.Body.String(), "response.created")
 	require.NotContains(t, rec.Body.String(), "response.in_progress")
 }
@@ -1376,11 +1055,13 @@ func TestOpenAINativeFirstOutputTimeoutDisabledKeepsPreamblePrivateAcrossKeepali
 func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepaliveCommit(t *testing.T) {
 	// Outlast the one-second heartbeat with a two-second first-output budget so
 	// this attempt can commit an idle comment before recovery.
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{OpenAIFirstOutputTimeoutSeconds: 2, StreamKeepaliveInterval: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{OpenAIFirstOutputTimeoutSeconds: 2, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg, headers: compileHTTPFixtureHeaders(cfg)})
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	stopKeepalive := installDownstreamKeepaliveTest(t, c, time.Second)
+	defer stopKeepalive()
 	firstBody, firstWriter := io.Pipe()
 	trackedFirstBody := &firstOutputCloseTrackingBody{ReadCloser: firstBody, closed: make(chan struct{})}
 	firstWriterDone := make(chan struct{})
@@ -1409,9 +1090,10 @@ func TestOpenAINativeFirstOutputFailoverKeepsAttemptHeadersPrivateAfterKeepalive
 	}
 
 	_, firstErr := svc.Output.ReadStreamObservation(c.Request.Context(), firstResp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI}}, time.Now(), "model", "model", "")
+	stopKeepalive()
 	var failoverErr *forwardcore.UpstreamFailoverError
 	require.ErrorAs(t, firstErr, &failoverErr)
-	require.Contains(t, rec.Body.String(), ":\n\n", "first attempt should have committed only a stable keepalive")
+	require.Contains(t, rec.Body.String(), ": keepalive\n\n", "first attempt should have committed only a stable keepalive")
 	require.NotContains(t, rec.Body.String(), "resp_first")
 
 	secondResp := &http.Response{
@@ -1777,8 +1459,8 @@ func TestOpenAIResponseFlush_BurstDoesNotIncreaseFlushes(t *testing.T) {
 }
 
 // TestOpenAIResponseFlush_CommentAndEOFOnlyFlushCompleteResidual mixes a text
-// frame, comment and unterminated DONE line. It checks three snapshots with
-// the final flush containing only the remaining EOF bytes.
+// frame, comment and unterminated DONE line. It checks that the comment is
+// removed and only content boundaries and final EOF bytes produce flushes.
 func TestOpenAIResponseFlush_CommentAndEOFOnlyFlushCompleteResidual(t *testing.T) {
 	body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\n" +
 		": upstream-comment\n\n" +
@@ -1790,11 +1472,10 @@ func TestOpenAIResponseFlush_CommentAndEOFOnlyFlushCompleteResidual(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	gotBody, flushes := recorder.snapshot()
-	require.Equal(t, body, gotBody)
-	require.Len(t, flushes, 3)
+	require.Equal(t, strings.ReplaceAll(body, ": upstream-comment\n\n", ""), gotBody)
+	require.Len(t, flushes, 2)
 	require.True(t, strings.HasSuffix(flushes[0], "\n\n"))
-	require.True(t, strings.HasSuffix(flushes[1], "\n\n"))
-	require.True(t, strings.HasSuffix(flushes[2], "data: [DONE]\n"), "EOF must flush only the remaining bytes")
+	require.True(t, strings.HasSuffix(flushes[1], "data: [DONE]\n"), "EOF must flush only the remaining bytes")
 }
 
 // TestOpenAIResponseFlush_TerminalReadErrorFlushesResidual returns an error
@@ -1865,86 +1546,6 @@ func TestOpenAIResponseFlush_CanceledAfterOutputFlushesResidualWithoutErrorEvent
 	require.Equal(t, body, gotBody)
 	require.Equal(t, []string{body}, flushes)
 	require.NotContains(t, gotBody, "stream_read_error")
-}
-
-// TestOpenAIResponseFlush_KeepaliveFlushesImmediately holds an empty pipe
-// until a heartbeat flush arrives, then sends DONE. It checks one immediate
-// comment snapshot and the complete two-flush final stream.
-func TestOpenAIResponseFlush_KeepaliveFlushesImmediately(t *testing.T) {
-	recorder := newOpenAIResponseFlushRecorder()
-	reader, writer := io.Pipe()
-	resultCh, errCh := runOpenAIResponseFlushTestAsync(recorder, reader, OpenAIResponseOptions{StreamKeepaliveInterval: 1})
-
-	waitOpenAIResponseFlushCount(t, recorder, 1)
-	_, flushes := recorder.snapshot()
-	require.Equal(t, ":\n\n", flushes[0])
-	_, err := writer.Write([]byte("data: [DONE]\n\n"))
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
-
-	require.NoError(t, <-errCh)
-	require.NotNil(t, <-resultCh)
-	gotBody, flushes := recorder.snapshot()
-	require.Equal(t, ":\n\ndata: [DONE]\n\n", gotBody)
-	require.Len(t, flushes, 2)
-}
-
-// TestOpenAIResponseFlush_KeepaliveDoesNotSplitOpenEvent forces main-loop
-// progress before a controlled blank boundary. It checks no heartbeat flush
-// while open and exact completed-event/terminal snapshots after gate release.
-func TestOpenAIResponseFlush_KeepaliveDoesNotSplitOpenEvent(t *testing.T) {
-	const dataLine = `data: {"type":"response.output_text.delta","delta":"a"}`
-	// Seventeen lines exceed the timed scanner's sixteen-slot queue. Reaching
-	// the next segment requires at least one main-loop receive before the blank
-	// boundary is released, even if the consumer keeps the queue from filling.
-	dataLines := make([]string, 17)
-	for i := range dataLines {
-		dataLines[i] = dataLine
-	}
-	partialEvent := strings.Join(dataLines, "\n") + "\n"
-	completeEvent := partialEvent + "\n"
-	terminal := "data: [DONE]\n\n"
-	allowBlank := make(chan struct{})
-	allowTerminal := make(chan struct{})
-	blankWaiting := make(chan struct{})
-	terminalWaiting := make(chan struct{})
-	reader := &stagedOpenAISSEReadCloser{ // delegated upstream source body
-		segments: [][]byte{[]byte(partialEvent), []byte("\n"), []byte(terminal)},
-		gates:    []<-chan struct{}{nil, allowBlank, allowTerminal},
-		waiting:  []chan struct{}{nil, blankWaiting, terminalWaiting},
-	}
-	recorder := newOpenAIResponseFlushRecorder()
-	resultCh, errCh := runOpenAIResponseFlushTestAsync(recorder, reader, OpenAIResponseOptions{StreamKeepaliveInterval: 1})
-
-	waitOpenAIResponseFlushSignal(t, blankWaiting)
-	// Observe the held open event beyond the one-second heartbeat interval;
-	// the extra quarter second gives that tick a chance to attempt a flush.
-	timer := time.NewTimer(1250 * time.Millisecond)
-	select {
-	case count := <-recorder.flushEvents:
-		timer.Stop()
-		t.Fatalf("keepalive flushed open event before its blank boundary: flush %d", count)
-	case <-timer.C:
-	}
-
-	// Release the blank boundary while holding the terminal back, then inspect
-	// the completed-event snapshot before admitting terminal bytes into the reader.
-	close(allowBlank)
-	waitOpenAIResponseFlushSignal(t, terminalWaiting)
-	waitOpenAIResponseFlushCount(t, recorder, 1)
-	gotBody, flushes := recorder.snapshot()
-	require.Equal(t, completeEvent, gotBody)
-	require.Equal(t, []string{completeEvent}, flushes)
-
-	// The open-event assertion is complete. Release terminal reading before
-	// receiving both worker results, because Close cannot release this gate.
-	close(allowTerminal)
-	require.NoError(t, <-errCh)
-	require.NotNil(t, <-resultCh)
-	gotBody, flushes = recorder.snapshot()
-	require.Equal(t, completeEvent+terminal, gotBody)
-	require.Len(t, flushes, 2)
-	require.Equal(t, completeEvent+terminal, flushes[1])
 }
 
 // TestOpenAIResponseFlush_FailedAndErrorEventsFlushAtBoundaries compares
@@ -2386,7 +1987,7 @@ func TestExtractOpenAIUsage_PreservesResponseUsagePriority(t *testing.T) {
 // idle interval. It checks the idle-timeout diagnostic and OpenAI-compatible
 // stream_timeout error payload after the reader returns.
 func TestOpenAIStreamingTimeout(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 1, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2491,7 +2092,7 @@ func TestOpenAIStreamingTimeoutTiming(t *testing.T) {
 // incomplete-usage error text with no generic SSE or stream-read error
 // injection.
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2521,7 +2122,7 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 // EOF before native content. It checks typed HTTP 502 recovery and no
 // committed client response or body for this attempt.
 func TestOpenAIStreamingReadErrorBeforeOutputReturnsFailover(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2658,7 +2259,7 @@ func TestOpenAIStreamingTerminalAndClientCancellationDoNotQuarantineProxy(t *tes
 // captured message, no same-provider retry and no downstream bytes or
 // commitment.
 func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2696,7 +2297,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 // supplies capacity wording to an API-key pool target without listed retry
 // statuses. It checks typed same-provider recovery before any client output.
 func TestOpenAIStreamingResponseFailedCapacityBeforeOutputReturnsFailover(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2741,7 +2342,7 @@ func TestOpenAIStreamingResponseFailedCapacityBeforeOutputReturnsFailover(t *tes
 // supplies created then an overload-code failure. It checks typed HTTP 503
 // recovery, retained message and an untouched client writer/body.
 func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFailover(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2776,7 +2377,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputServerOverloadedCodeReturnsFai
 // same-provider eligibility, Retry-After and rate-limit envelope plus an
 // upstream status observation before commitment.
 func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2837,7 +2438,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputRateLimitUsesPoolRetryPolicy(t
 // It checks same-provider deadline eligibility and no immediate provider
 // runtime block in the fixture.
 func TestOpenAIStreamingResponseFailedRateLimitDoesNotBlockProviderScheduling(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2876,7 +2477,7 @@ func TestOpenAIStreamingResponseFailedRateLimitDoesNotBlockProviderScheduling(t 
 // checks partial usage and reduced client failure fields with no provider
 // recovery wrapper.
 func TestOpenAIStreamingResponseFailedAfterOutputSanitizesVerboseResponseForClient(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2926,7 +2527,7 @@ func TestOpenAIStreamingResponseFailedAfterOutputSanitizesVerboseResponseForClie
 // supplies metadata followed by context-window rejection. It checks written
 // failed output and retained type/message with no typed provider recovery.
 func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputPassesThrough(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -2961,7 +2562,7 @@ func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputPassesThrough(t *
 // committed JSON 400, retained message, absent failed-event framing and an Ops
 // observation.
 func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3010,7 +2611,7 @@ func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputAppliesPassthroug
 // created and in-progress metadata. It checks typed provider recovery while
 // the client writer remains uncommitted and its body empty.
 func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3038,56 +2639,11 @@ func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T)
 	require.Empty(t, rec.Body.String())
 }
 
-// TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle repeatedly supplies
-// upstream metadata before terminal usage. It checks successful result and a
-// downstream keepalive despite those metadata arrivals, followed by the
-// completed event.
-func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 1, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
-	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       pr,
-		Header:     http.Header{},
-	}
-
-	// Supply metadata more frequently than the heartbeat, then terminal usage
-	// and EOF. Producer write/close errors are discarded while the synchronous
-	// result and client framing determine this fixture outcome.
-	go func() {
-		defer func() { _ = pw.Close() }()
-		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
-		// Six quarter-second metadata intervals span the one-second heartbeat
-		// budget while keeping upstream arrivals more frequent than that heartbeat.
-		for range 6 {
-			time.Sleep(250 * time.Millisecond)
-			_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n"))
-		}
-		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"))
-	}()
-
-	result, err := svc.Output.ReadStreamObservation(c.Request.Context(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1, Platform: capability.PlatformOpenAI, Name: "acc"}}, time.Now(), "model", "model", "")
-	// Release the caller-owned reader after observation so a producer cannot
-	// remain blocked on writing; cleanup errors are discarded while assertions
-	// inspect the stream result.
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), ":\n\n")
-	require.Contains(t, rec.Body.String(), "response.completed")
-}
-
 // TestOpenAIStreamingNormalizesTerminalOutputFromDeltas ends with null
 // terminal output after two text fragments. It checks a completed terminal
 // containing one message with their assembled pong text.
 func TestOpenAIStreamingNormalizesTerminalOutputFromDeltas(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3126,7 +2682,7 @@ func TestOpenAIStreamingNormalizesTerminalOutputFromDeltas(t *testing.T) {
 // terminal output with no earlier content. It checks a successful completed
 // event whose normalized output is an empty JSON array.
 func TestOpenAIStreamingNormalizesTerminalOutputToEmptyArray(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3155,7 +2711,7 @@ func TestOpenAIStreamingNormalizesTerminalOutputToEmptyArray(t *testing.T) {
 // risk-warning text in a failed terminal before content. It checks visible
 // failure/message and no typed provider recovery for that request rejection.
 func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3188,7 +2744,7 @@ func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing
 // risk-warning text in an HTTP 200 stream. It checks the error-chain warning
 // retains that transport status, message and failed-event evidence.
 func TestOpenAIStreamingPolicyResponseFailedCarriesHTTPStatusWarning(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3223,7 +2779,7 @@ func TestOpenAIStreamingPolicyResponseFailedCarriesHTTPStatusWarning(t *testing.
 // checks no recovery wrapper and warning-chain HTTP 200, message and event
 // evidence.
 func TestOpenAIStreamingCybersecurityRiskResponseFailedCarriesHTTPStatusWarning(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3259,7 +2815,7 @@ func TestOpenAIStreamingCybersecurityRiskResponseFailedCarriesHTTPStatusWarning(
 // writes while a pipe supplies terminal usage. It checks successful exact
 // token observation and absence of injected generic write/error events.
 func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3306,7 +2862,7 @@ func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 // source pipe after one text delta without a terminal. It checks the reader
 // returns the missing-terminal diagnostic for that partial stream.
 func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3342,7 +2898,7 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 // with a 64-KiB ceiling. It checks bufio.ErrTooLong and the response_too_large client
 // event after reading fails.
 func TestOpenAIStreamingTooLong(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: 64 * 1024}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: 64 * 1024}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3440,7 +2996,7 @@ func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
 // headers and a request identifier. It checks client SSE/no-cache overrides
 // and request-ID relay after successful stream reading.
 func TestOpenAIStreamingHeadersOverride(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}, Headers: egress.ResponseHeaderOptions{Enabled: false}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}, Headers: egress.ResponseHeaderOptions{Enabled: false}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -3490,7 +3046,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 // usage terminal through a pipe. It checks successful token extraction for
 // this fixture; the assertions do not inspect internal buffer reuse.
 func TestOpenAIStreamingReuseScannerBufferAndStillWorks(t *testing.T) {
-	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, StreamKeepaliveInterval: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
+	cfg := &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamDataIntervalTimeout: 0, MaxLineSize: OpenAIResponseDefaultMaxLineSize}}
 	svc := newResponsesFixture(responsesFixtureInputs{options: cfg})
 
 	rec := httptest.NewRecorder()
@@ -4290,4 +3846,76 @@ func selectionDiagnosticForStreamTest(t *testing.T, source *OpenAIResponsesExecu
 	require.NoError(t, err)
 	require.NotNil(t, result.Detail)
 	return result.Detail.Eligible, strings.Join(result.Detail.HardFilterReasons, ",")
+}
+
+// TestStreamSinkDoesNotClaimOwnershipAfterRacingHeartbeat reproduces commitment
+// between the reader's Written check and actual header application. Provider
+// turn-state ownership must remain unknown when heartbeat headers won that race.
+func TestStreamSinkDoesNotClaimOwnershipAfterRacingHeartbeat(t *testing.T) {
+	runSSEKeepaliveTest(t, protocol.ProtocolOpenAIResponses, "", true, 0, func(t *testing.T, c *gin.Context, rec *httptest.ResponseRecorder) {
+		c.Request.Header.Set("session-id", "staged-race")
+		c.Set("api_key", &apikey.APIKey{ID: 7})
+		origins := session.NewCodexTurnOrigins(time.Now)
+		fixture := newResponsesFixture(responsesFixtureInputs{})
+		fixture.Output.Turns = &CodexTurnStateHeaders{Origins: origins}
+		target := &gatewayprovider.ExecutionProvider{Record: providercore.Record{ID: 42, Platform: capability.PlatformOpenAI}}
+		writer, ok := c.Writer.(*sseKeepaliveWriter)
+		require.True(t, ok)
+		writer.openHeaderWait(c.Request.Context())
+		output := upstreamcore.NewOutputContext(fixture.Output.streamSink(c, target))
+		output.Writer.Header().Set(CodexTurnStateHeader, "undelivered-state")
+		require.False(t, output.Writer.Written())
+		// The reader can be preempted after checking Written and before applying headers.
+		// Advance the heartbeat now to exercise that otherwise tiny scheduling window.
+		time.Sleep(15 * time.Millisecond)
+		synctest.Wait()
+		_, err := output.Writer.Write([]byte("data: {}\n\n"))
+		require.NoError(t, err)
+		_, known := origins.Owner("7\x00staged-race")
+		require.False(t, known, "undelivered header must not claim provider ownership")
+		require.Empty(t, rec.Header().Get(CodexTurnStateHeader))
+	})
+}
+
+// TestStreamSinkRecordsAppliedHeaderOwnership delivers provider headers before
+// any waiting heartbeat commits HTTP. The actual header and remembered owner
+// must agree, so provider switching can later reject foreign echoed turn state.
+func TestStreamSinkRecordsAppliedHeaderOwnership(t *testing.T) {
+	runSSEKeepaliveTest(t, protocol.ProtocolOpenAIResponses, "", true, 0, func(t *testing.T, c *gin.Context, rec *httptest.ResponseRecorder) {
+		c.Request.Header.Set("session-id", "applied-header")
+		c.Set("api_key", &apikey.APIKey{ID: 7})
+		origins := session.NewCodexTurnOrigins(time.Now)
+		fixture := newResponsesFixture(responsesFixtureInputs{})
+		fixture.Output.Turns = &CodexTurnStateHeaders{Origins: origins}
+		target := &gatewayprovider.ExecutionProvider{Record: providercore.Record{ID: 42, Platform: capability.PlatformOpenAI}}
+		output := upstreamcore.NewOutputContext(fixture.Output.streamSink(c, target))
+		output.Writer.Header().Set(CodexTurnStateHeader, "delivered-state")
+		_, err := output.Writer.Write([]byte("data: {}\n\n"))
+		require.NoError(t, err)
+		owner, known := origins.Owner("7\x00applied-header")
+		require.True(t, known)
+		require.Equal(t, int64(42), owner)
+		require.Equal(t, "delivered-state", rec.Result().Header.Get(CodexTurnStateHeader))
+	})
+}
+
+// installDownstreamKeepaliveTest binds the text controller to a direct reader fixture.
+// Call the returned stop function before inspecting its recorder; cleanup also
+// stops the worker if an assertion ends the test before normal reader return.
+func installDownstreamKeepaliveTest(t *testing.T, c *gin.Context, interval time.Duration) func() {
+	t.Helper()
+	ctx := requeststate.WithClientProtocol(c.Request.Context(), protocol.ProtocolOpenAIResponses)
+	ctx, stages := timing.WithStages(ctx, time.Now(), nil)
+	stages.SetStream(true)
+	c.Request = c.Request.WithContext(ctx)
+	w := &sseKeepaliveWriter{
+		ResponseWriter: c.Writer, c: c, stages: stages, interval: interval,
+		lastWrite: time.Now(), atBoundary: true, anthropicBlockIndex: -1,
+		wake: make(chan struct{}, 1), done: make(chan struct{}),
+	}
+	c.Writer = w
+	c.Set(sseKeepaliveWriterKey, w)
+	w.openHeaderWait(ctx)
+	t.Cleanup(w.close)
+	return w.close
 }

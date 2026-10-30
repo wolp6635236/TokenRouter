@@ -531,6 +531,17 @@ export default {
   },
   // Usage Records
   usage: {
+    requestSource: '请求来源',
+    sourcesAll: '全部请求',
+    requestSources: {
+      user: '用户请求',
+      system: '系统请求',
+      group_probe: '分组探针',
+      provider_test: '手动提供商测试',
+      scheduled_test: '定时提供商测试',
+      quota_probe: '额度探测',
+    },
+    costStatus: '费用完整性',
     title: '使用记录',
     description: '查看和管理所有用户的使用记录',
     userFilter: '用户',

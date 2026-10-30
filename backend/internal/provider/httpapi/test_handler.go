@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
@@ -103,7 +104,11 @@ func (h *TestHandler) Test(c *gin.Context) {
 	if testType == "" {
 		testType = req.TestMode
 	}
-	if err := h.tests.Test(c.Request.Context(), provider.TestRequest{GroupID: req.GroupID, SystemOne: req.SystemOne, ProviderID: providerID, Model: req.ModelID, Prompt: req.Prompt, Mode: req.Mode, Type: &testType, Protocol: req.Protocol, UserAgent: c.GetHeader("User-Agent"), Originator: c.GetHeader("originator")}, NewTestEventSink(c.Writer)); err != nil {
+	var operatorID *int64
+	if subject, ok := authctx.GetAuthSubjectFromContext(c); ok {
+		operatorID = &subject.UserID
+	}
+	if err := h.tests.Test(c.Request.Context(), provider.TestRequest{OperatorUserID: operatorID, GroupID: req.GroupID, SystemOne: req.SystemOne, ProviderID: providerID, Model: req.ModelID, Prompt: req.Prompt, Mode: req.Mode, Type: &testType, Protocol: req.Protocol, UserAgent: c.GetHeader("User-Agent"), Originator: c.GetHeader("originator")}, NewTestEventSink(c.Writer)); err != nil {
 		// A failed test cannot justify restoring provider health. Return before
 		// recovery even when the service has already emitted partial output or a failure event.
 		return

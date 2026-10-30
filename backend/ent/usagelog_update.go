@@ -35,6 +35,32 @@ func (_u *UsageLogUpdate) Where(ps ...predicate.UsageLog) *UsageLogUpdate {
 	return _u
 }
 
+// SetRequestSource sets the "request_source" field.
+func (_u *UsageLogUpdate) SetRequestSource(v string) *UsageLogUpdate {
+	_u.mutation.SetRequestSource(v)
+	return _u
+}
+
+// SetNillableRequestSource sets the "request_source" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableRequestSource(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetRequestSource(*v)
+	}
+	return _u
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (_u *UsageLogUpdate) SetSystemUsage(v map[string]interface{}) *UsageLogUpdate {
+	_u.mutation.SetSystemUsage(v)
+	return _u
+}
+
+// ClearSystemUsage clears the value of the "system_usage" field.
+func (_u *UsageLogUpdate) ClearSystemUsage() *UsageLogUpdate {
+	_u.mutation.ClearSystemUsage()
+	return _u
+}
+
 // SetUserID sets the "user_id" field.
 func (_u *UsageLogUpdate) SetUserID(v int64) *UsageLogUpdate {
 	_u.mutation.SetUserID(v)
@@ -46,6 +72,12 @@ func (_u *UsageLogUpdate) SetNillableUserID(v *int64) *UsageLogUpdate {
 	if v != nil {
 		_u.SetUserID(*v)
 	}
+	return _u
+}
+
+// ClearUserID clears the value of the "user_id" field.
+func (_u *UsageLogUpdate) ClearUserID() *UsageLogUpdate {
+	_u.mutation.ClearUserID()
 	return _u
 }
 
@@ -107,6 +139,12 @@ func (_u *UsageLogUpdate) SetNillableAPIKeyID(v *int64) *UsageLogUpdate {
 	if v != nil {
 		_u.SetAPIKeyID(*v)
 	}
+	return _u
+}
+
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (_u *UsageLogUpdate) ClearAPIKeyID() *UsageLogUpdate {
+	_u.mutation.ClearAPIKeyID()
 	return _u
 }
 
@@ -1176,6 +1214,11 @@ func (_u *UsageLogUpdate) ExecX(ctx context.Context) {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *UsageLogUpdate) check() error {
+	if v, ok := _u.mutation.RequestSource(); ok {
+		if err := usagelog.RequestSourceValidator(v); err != nil {
+			return &ValidationError{Name: "request_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_source": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Platform(); ok {
 		if err := usagelog.PlatformValidator(v); err != nil {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "UsageLog.platform": %w`, err)}
@@ -1261,12 +1304,6 @@ func (_u *UsageLogUpdate) check() error {
 			return &ValidationError{Name: "video_resolution", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_resolution": %w`, err)}
 		}
 	}
-	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.user"`)
-	}
-	if _u.mutation.APIKeyCleared() && len(_u.mutation.APIKeyIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.api_key"`)
-	}
 	if _u.mutation.ProviderCleared() && len(_u.mutation.ProviderIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UsageLog.provider"`)
 	}
@@ -1284,6 +1321,15 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.RequestSource(); ok {
+		_spec.SetField(usagelog.FieldRequestSource, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SystemUsage(); ok {
+		_spec.SetField(usagelog.FieldSystemUsage, field.TypeJSON, value)
+	}
+	if _u.mutation.SystemUsageCleared() {
+		_spec.ClearField(usagelog.FieldSystemUsage, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.BillingUserID(); ok {
 		_spec.SetField(usagelog.FieldBillingUserID, field.TypeInt64, value)
@@ -1763,6 +1809,32 @@ type UsageLogUpdateOne struct {
 	mutation *UsageLogMutation
 }
 
+// SetRequestSource sets the "request_source" field.
+func (_u *UsageLogUpdateOne) SetRequestSource(v string) *UsageLogUpdateOne {
+	_u.mutation.SetRequestSource(v)
+	return _u
+}
+
+// SetNillableRequestSource sets the "request_source" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableRequestSource(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetRequestSource(*v)
+	}
+	return _u
+}
+
+// SetSystemUsage sets the "system_usage" field.
+func (_u *UsageLogUpdateOne) SetSystemUsage(v map[string]interface{}) *UsageLogUpdateOne {
+	_u.mutation.SetSystemUsage(v)
+	return _u
+}
+
+// ClearSystemUsage clears the value of the "system_usage" field.
+func (_u *UsageLogUpdateOne) ClearSystemUsage() *UsageLogUpdateOne {
+	_u.mutation.ClearSystemUsage()
+	return _u
+}
+
 // SetUserID sets the "user_id" field.
 func (_u *UsageLogUpdateOne) SetUserID(v int64) *UsageLogUpdateOne {
 	_u.mutation.SetUserID(v)
@@ -1774,6 +1846,12 @@ func (_u *UsageLogUpdateOne) SetNillableUserID(v *int64) *UsageLogUpdateOne {
 	if v != nil {
 		_u.SetUserID(*v)
 	}
+	return _u
+}
+
+// ClearUserID clears the value of the "user_id" field.
+func (_u *UsageLogUpdateOne) ClearUserID() *UsageLogUpdateOne {
+	_u.mutation.ClearUserID()
 	return _u
 }
 
@@ -1835,6 +1913,12 @@ func (_u *UsageLogUpdateOne) SetNillableAPIKeyID(v *int64) *UsageLogUpdateOne {
 	if v != nil {
 		_u.SetAPIKeyID(*v)
 	}
+	return _u
+}
+
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (_u *UsageLogUpdateOne) ClearAPIKeyID() *UsageLogUpdateOne {
+	_u.mutation.ClearAPIKeyID()
 	return _u
 }
 
@@ -2917,6 +3001,11 @@ func (_u *UsageLogUpdateOne) ExecX(ctx context.Context) {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *UsageLogUpdateOne) check() error {
+	if v, ok := _u.mutation.RequestSource(); ok {
+		if err := usagelog.RequestSourceValidator(v); err != nil {
+			return &ValidationError{Name: "request_source", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_source": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Platform(); ok {
 		if err := usagelog.PlatformValidator(v); err != nil {
 			return &ValidationError{Name: "platform", err: fmt.Errorf(`ent: validator failed for field "UsageLog.platform": %w`, err)}
@@ -3002,12 +3091,6 @@ func (_u *UsageLogUpdateOne) check() error {
 			return &ValidationError{Name: "video_resolution", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_resolution": %w`, err)}
 		}
 	}
-	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.user"`)
-	}
-	if _u.mutation.APIKeyCleared() && len(_u.mutation.APIKeyIDs()) > 0 {
-		return errors.New(`ent: clearing a required unique edge "UsageLog.api_key"`)
-	}
 	if _u.mutation.ProviderCleared() && len(_u.mutation.ProviderIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UsageLog.provider"`)
 	}
@@ -3042,6 +3125,15 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.RequestSource(); ok {
+		_spec.SetField(usagelog.FieldRequestSource, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.SystemUsage(); ok {
+		_spec.SetField(usagelog.FieldSystemUsage, field.TypeJSON, value)
+	}
+	if _u.mutation.SystemUsageCleared() {
+		_spec.ClearField(usagelog.FieldSystemUsage, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.BillingUserID(); ok {
 		_spec.SetField(usagelog.FieldBillingUserID, field.TypeInt64, value)

@@ -36,11 +36,6 @@ func (storeUnavailableRepoStub) TryReclaim(context.Context, int64, string, time.
 	return false, errors.New("store unavailable")
 }
 
-// ExtendProcessingLock injects a store outage during an attempted lock extension.
-func (storeUnavailableRepoStub) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, errors.New("store unavailable")
-}
-
 // MarkSucceeded injects a store outage while storing a successful callback result.
 func (storeUnavailableRepoStub) MarkSucceeded(context.Context, int64, int, string, time.Time) error {
 	return errors.New("store unavailable")

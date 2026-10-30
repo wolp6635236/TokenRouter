@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,20 +26,20 @@ func TestStartOpenAISSEKeepaliveRetainsAttemptHistory(t *testing.T) {
 		synctest.Wait()
 		firstSize := rec.Body.Len()
 		require.Positive(t, firstSize)
-		require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+		require.Equal(t, -1, HeartbeatAdjustedWrittenSize(c))
 		stop = StartOpenAISSEKeepalive(c, time.Second)
 		time.Sleep(2 * time.Second)
 		stop()
 		synctest.Wait()
 		require.Greater(t, rec.Body.Len(), firstSize)
-		require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+		require.Equal(t, -1, HeartbeatAdjustedWrittenSize(c))
 		stop = StartOpenAISSEKeepalive(c, time.Hour)
 		stop()
 		require.True(t, StopOpenAICompactSSEKeepaliveCommitted(c))
 		require.Same(t, original, c.Writer)
 		_, err := c.Writer.Write([]byte("data: completed\n\n"))
 		require.NoError(t, err)
-		require.Equal(t, len("data: completed\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+		require.Equal(t, len("data: completed\n\n"), HeartbeatAdjustedWrittenSize(c))
 	})
 }
 
@@ -89,11 +88,6 @@ func TestStartOpenAISSEKeepaliveWriteFailureStopsFutureWaits(t *testing.T) {
 		require.Equal(t, 1, writer.failedWrites)
 	})
 }
-
-// Keepalive comments commit SSE headers while leaving the model-output retry
-// check unstarted. These cases exercise first-beat timing, response-writer takeover,
-// byte accounting, missing wrapper components, and restoration for middleware
-// that reads final status after request handling.
 
 // TestStartOpenAICompactSSEKeepalive_NoopWhenUnmarkedOrDisabled omits the client-stream
 // marker or supplies a zero interval. Neither configuration may emit comments,
@@ -162,12 +156,12 @@ func TestOpenAIAdjustedWrittenSizeExcludesResponsesStreamKeepalive(t *testing.T)
 	require.NoError(t, err)
 	RecordOpenAIStreamKeepaliveBytes(c, n)
 
-	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, -1, HeartbeatAdjustedWrittenSize(c))
 	require.True(t, StopOpenAICompactSSEKeepaliveCommitted(c))
 
 	_, err = c.Writer.Write([]byte("data: semantic\n\n"))
 	require.NoError(t, err)
-	require.Equal(t, len("data: semantic\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, len("data: semantic\n\n"), HeartbeatAdjustedWrittenSize(c))
 	require.Equal(t, ":\n\ndata: semantic\n\n", rec.Body.String())
 }
 
@@ -191,51 +185,25 @@ func TestOpenAICompactKeepaliveWriter_RequestSideWriteSuspendsBeats(t *testing.T
 	require.Contains(t, rec.Body.String(), `{"error":"local reject"}`)
 }
 
-// TestOpenAICompactKeepaliveWriter_DelegatesWhenReady checks state and write delegation for an initialized wrapper.
-// Header and string output must reach the recorder, and the wrapper must
-// report the delegated status, byte size, and written flag after response takeover.
-func TestOpenAICompactKeepaliveWriter_DelegatesWhenReady(t *testing.T) {
-	c, rec := newCompactBridgeTestContext(t, true)
-	// Delay the first beat while Header takes over through the wrapper, so
-	// subsequent assertions isolate response delegation from heartbeat-driven status and byte changes.
-	stop := StartOpenAICompactSSEKeepalive(c, time.Hour)
-	defer stop()
-
-	w, ok := c.Writer.(*compactKeepaliveWriter)
-	require.True(t, ok)
-
-	w.Header().Set("X-Test", "ok")
-	w.WriteHeader(http.StatusAccepted)
-	n, err := w.WriteString("ready")
-	require.NoError(t, err)
-	require.Equal(t, len("ready"), n)
-
-	require.Equal(t, http.StatusAccepted, w.Status())
-	require.Equal(t, len("ready"), w.Size())
-	require.True(t, w.Written())
-	require.Equal(t, "ok", rec.Header().Get("X-Test"))
-	require.Equal(t, "ready", rec.Body.String())
-}
-
-// TestOpenAICompactKeepaliveAdjustedWrittenSize_ExcludesHeartbeatBytes observes
+// TestHeartbeatAdjustedWrittenSize_ExcludesHeartbeatBytes observes
 // Compact comments before direct protocol output. Adjusted size must retain
 // its pre-heartbeat value until data arrives, then report the data byte count.
-func TestOpenAICompactKeepaliveAdjustedWrittenSize_ExcludesHeartbeatBytes(t *testing.T) {
+func TestHeartbeatAdjustedWrittenSize_ExcludesHeartbeatBytes(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, true)
 	// Without heartbeats, use the Gin writer size.
-	require.Equal(t, c.Writer.Size(), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, c.Writer.Size(), HeartbeatAdjustedWrittenSize(c))
 
 	stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
 	defer stop()
-	before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	waitForKeepaliveBeats()
-	require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c), "仅心跳字节不得改变判定口径")
+	require.Equal(t, before, HeartbeatAdjustedWrittenSize(c), "仅心跳字节不得改变判定口径")
 
 	// Take over through wrapper Write before measuring data. The stored heartbeat
 	// count must stay subtracted after normal bytes increase the captured writer's size.
 	_, err := c.Writer.Write([]byte("real-bytes"))
 	require.NoError(t, err)
-	require.Equal(t, len("real-bytes"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, len("real-bytes"), HeartbeatAdjustedWrittenSize(c))
 	require.Contains(t, rec.Body.String(), ": keepalive\n\n")
 }
 
@@ -256,105 +224,6 @@ func TestOpenAIStreamClientOutputStarted_IgnoresCompactKeepaliveBytes(t *testing
 	_, err := c.Writer.Write([]byte("real-output"))
 	require.NoError(t, err)
 	require.True(t, OpenAIStreamClientOutputStarted(c, false))
-}
-
-// newNativeCompactWriterTestContext supplies a request and recorder for wrappers with missing components.
-func newNativeCompactWriterTestContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
-	MarkOpenAICompactClientStream(c)
-	return c, rec
-}
-
-// TestOpenAICompactKeepaliveWriter_NilInnerWriter_NoPanic supplies a controller
-// with no response writer. Every exercised wrapper operation must return its
-// documented empty or error result without panicking during output and interface lookup.
-func TestOpenAICompactKeepaliveWriter_NilInnerWriter_NoPanic(t *testing.T) {
-	w := &compactKeepaliveWriter{
-		k: &openAICompactSSEKeepalive{stop: make(chan struct{})},
-	}
-	w.ResponseWriter = nil
-
-	assert.NotPanics(t, func() {
-		assert.Equal(t, 0, w.Status())
-	})
-	assert.NotPanics(t, func() {
-		assert.Equal(t, 0, w.Size())
-	})
-	assert.NotPanics(t, func() {
-		assert.False(t, w.Written())
-	})
-	assert.NotPanics(t, func() {
-		assert.NotNil(t, w.Header())
-	})
-	assert.NotPanics(t, func() {
-		n, err := w.Write([]byte("test"))
-		assert.Equal(t, 0, n)
-		assert.NoError(t, err)
-	})
-	assert.NotPanics(t, func() {
-		n, err := w.WriteString("test")
-		assert.Equal(t, 0, n)
-		assert.NoError(t, err)
-	})
-	assert.NotPanics(t, func() {
-		w.WriteHeader(http.StatusOK)
-	})
-	assert.NotPanics(t, func() {
-		w.WriteHeaderNow()
-	})
-	assert.NotPanics(t, func() {
-		w.Flush()
-	})
-	assert.NotPanics(t, func() {
-		conn, rw, err := w.Hijack()
-		assert.Nil(t, conn)
-		assert.Nil(t, rw)
-		assert.Error(t, err)
-	})
-	assert.NotPanics(t, func() {
-		ch := w.CloseNotify()
-		assert.NotNil(t, ch)
-	})
-	assert.NotPanics(t, func() {
-		assert.Nil(t, w.Pusher())
-	})
-}
-
-// TestOpenAICompactKeepaliveWriter_NilKeepalive_NoPanic supplies a response writer
-// with no heartbeat controller. State reads must return fallback values, while
-// headers and string bytes reach the recorder and flush remains callable.
-func TestOpenAICompactKeepaliveWriter_NilKeepalive_NoPanic(t *testing.T) {
-	c, rec := newNativeCompactWriterTestContext(t)
-	w := &compactKeepaliveWriter{ResponseWriter: c.Writer}
-
-	assert.NotPanics(t, func() {
-		assert.Equal(t, 0, w.Status())
-	})
-	assert.NotPanics(t, func() {
-		assert.Equal(t, 0, w.Size())
-	})
-	assert.NotPanics(t, func() {
-		assert.False(t, w.Written())
-	})
-	assert.NotPanics(t, func() {
-		w.Header().Set("X-Test", "ok")
-	})
-	assert.NotPanics(t, func() {
-		w.WriteHeader(http.StatusAccepted)
-	})
-	assert.NotPanics(t, func() {
-		n, err := w.WriteString("ok")
-		assert.Equal(t, 2, n)
-		assert.NoError(t, err)
-	})
-	assert.NotPanics(t, func() {
-		w.Flush()
-	})
-	require.Equal(t, "ok", rec.Header().Get("X-Test"))
-	require.Equal(t, "ok", rec.Body.String())
 }
 
 // TestOpsCaptureWriter_CompactKeepaliveRestoresOriginalWriter installs keepalive

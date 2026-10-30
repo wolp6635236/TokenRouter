@@ -891,7 +891,7 @@ export default {
       apiBaseUrl: 'API Base URL',
       apiBaseUrlPlaceholder: 'https://api.example.com',
       apiBaseUrlHint:
-        'Used for "Use Key", "Import to CC Switch", and callback URL suggestions. Leave empty to use current site URL.',
+        'Used for "Use Key" and "Import to CC Switch". Leave empty to use current site URL.',
       tablePreferencesTitle: 'Global Table Preferences',
       tablePreferencesDescription:
         'Configure default pagination behavior for shared table components',

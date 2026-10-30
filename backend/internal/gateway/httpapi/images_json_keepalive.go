@@ -1,9 +1,6 @@
 package httpapi
 
 import (
-	"bufio"
-	"errors"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -42,13 +39,10 @@ type openAIImagesJSONKeepalive struct {
 	stop    chan struct{}      // heartbeat exit notification channel
 }
 
-// openAIImagesJSONKeepaliveWriter stops heartbeat output when final response
-// access begins.
+// openAIImagesJSONKeepaliveWriter identifies one installed JSON heartbeat
+// wrapper so cleanup restores only the writer that it owns.
 type openAIImagesJSONKeepaliveWriter struct {
-	// ResponseWriter and k reference one installed response. The constructor pairs
-	// the underlying writer with its heartbeat state; callers serialize final output.
-	gin.ResponseWriter                            // wrapped HTTP response writer
-	k                  *openAIImagesJSONKeepalive // associated heartbeat coordination state
+	keepaliveResponseWriter // shared heartbeat takeover operations
 }
 
 // StartOpenAIImagesJSONKeepalive installs whitespace heartbeats and returns a
@@ -71,7 +65,13 @@ func StartOpenAIImagesJSONKeepalive(c *gin.Context, interval time.Duration) func
 		stop:   make(chan struct{}),
 	}
 	c.Set(openAIImagesJSONKeepaliveKey, k)
-	wrappedWriter := &openAIImagesJSONKeepaliveWriter{ResponseWriter: originalWriter, k: k}
+	wrappedWriter := &openAIImagesJSONKeepaliveWriter{
+		keepaliveResponseWriter: keepaliveResponseWriter{
+			ResponseWriter: originalWriter,
+			stop:           k.Stop,
+			mu:             &k.mu,
+		},
+	}
 	c.Writer = wrappedWriter
 
 	var reqDone <-chan struct{}
@@ -191,38 +191,6 @@ func OpenAIImagesJSONKeepalivePresent(c *gin.Context) bool {
 	return openAIImagesJSONKeepaliveFromContext(c) != nil
 }
 
-// OpenAIImagesJSONKeepaliveAdjustedWrittenSize reports accepted response
-// bytes after subtracting heartbeat padding. Missing context or writer
-// returns -1, and a writer without heartbeat state supplies its own Size
-// value. A heartbeat response containing no positive remaining byte count
-// also returns -1.
-//
-// Retry callers compare these observations before and after an attempt. The
-// mutex gives byte count and original writer size one consistent observation,
-// so padding alone can commit HTTP status while the attempt remains eligible
-// for output-based retry checks.
-func OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c *gin.Context) int {
-	if c == nil || c.Writer == nil {
-		return -1
-	}
-	k := openAIImagesJSONKeepaliveFromContext(c)
-	if k == nil {
-		return c.Writer.Size()
-	}
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	size := k.writer.Size()
-	if size < 0 {
-		return size
-	}
-	// Treat accepted whitespace alone as absent business output so provider retry
-	// checks remain usable after the first heartbeat has committed HTTP status.
-	if real := size - k.bytes; real > 0 {
-		return real
-	}
-	return -1
-}
-
 // openAIImagesJSONKeepaliveFromContext retrieves typed heartbeat state
 // retained on the request. Missing contexts, absent keys, and values of
 // another type return nil, letting response helpers work before installation.
@@ -236,145 +204,4 @@ func openAIImagesJSONKeepaliveFromContext(c *gin.Context) *openAIImagesJSONKeepa
 	}
 	k, _ := value.(*openAIImagesJSONKeepalive)
 	return k
-}
-
-// suspend stops the associated heartbeat before a final response operation
-// proceeds. A wrapper without heartbeat state needs no coordination, while
-// Stop waits for any active padding write.
-func (w *openAIImagesJSONKeepaliveWriter) suspend() {
-	if w.k != nil {
-		w.k.Stop()
-	}
-}
-
-// Header stops heartbeat writes and returns the underlying mutable header
-// map. A missing writer returns a fresh empty map; accessing headers
-// therefore ends heartbeats even before response bytes are written.
-func (w *openAIImagesJSONKeepaliveWriter) Header() http.Header {
-	w.suspend()
-	if w.ResponseWriter == nil {
-		return http.Header{}
-	}
-	return w.ResponseWriter.Header()
-}
-
-// Write stops heartbeat writes before forwarding final response bytes to the
-// underlying writer. A missing writer returns zero and nil, so the return
-// value alone does not guarantee delivery.
-func (w *openAIImagesJSONKeepaliveWriter) Write(data []byte) (int, error) {
-	w.suspend()
-	if w.ResponseWriter == nil {
-		return 0, nil
-	}
-	return w.ResponseWriter.Write(data)
-}
-
-// WriteString stops heartbeat writes before forwarding the supplied string to
-// the underlying writer. A missing writer returns zero and nil, so callers
-// still interpret the returned byte count.
-func (w *openAIImagesJSONKeepaliveWriter) WriteString(s string) (int, error) {
-	w.suspend()
-	if w.ResponseWriter == nil {
-		return 0, nil
-	}
-	return w.ResponseWriter.WriteString(s)
-}
-
-// WriteHeader stops heartbeat writes before requesting the supplied HTTP
-// status from the underlying writer. A missing writer is ignored, and an
-// already committed heartbeat status follows the writer's rules.
-func (w *openAIImagesJSONKeepaliveWriter) WriteHeader(code int) {
-	w.suspend()
-	if w.ResponseWriter != nil {
-		w.ResponseWriter.WriteHeader(code)
-	}
-}
-
-// WriteHeaderNow stops heartbeat writes before asking the underlying writer
-// to commit its current status. A missing writer is ignored; stopping
-// coordinates pending padding even when no final body follows.
-func (w *openAIImagesJSONKeepaliveWriter) WriteHeaderNow() {
-	w.suspend()
-	if w.ResponseWriter != nil {
-		w.ResponseWriter.WriteHeaderNow()
-	}
-}
-
-// Flush stops heartbeat writes before flushing the underlying response
-// writer. A missing writer is ignored, and the heartbeat goroutine uses its
-// original writer directly for its own flushes.
-func (w *openAIImagesJSONKeepaliveWriter) Flush() {
-	w.suspend()
-	if w.ResponseWriter != nil {
-		w.ResponseWriter.Flush()
-	}
-}
-
-// Hijack delegates connection ownership transfer and returns an error when
-// the underlying writer is missing. Callers stop installed heartbeats before
-// hijacking because this method leaves heartbeat coordination untouched.
-func (w *openAIImagesJSONKeepaliveWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if w.ResponseWriter == nil {
-		return nil, nil, errors.New("response writer released")
-	}
-	return w.ResponseWriter.Hijack()
-}
-
-// CloseNotify returns the underlying writer's connection-close notification
-// channel. A missing writer returns an already closed channel, allowing
-// callers waiting for departure to finish immediately without a live
-// connection.
-func (w *openAIImagesJSONKeepaliveWriter) CloseNotify() <-chan bool {
-	if w.ResponseWriter == nil {
-		ch := make(chan bool)
-		close(ch)
-		return ch
-	}
-	return w.ResponseWriter.CloseNotify()
-}
-
-// Pusher returns the underlying writer's HTTP push capability, or nil when
-// the writer is missing. Reading this capability leaves heartbeat activity
-// unchanged; downstream code checks the result before pushing.
-func (w *openAIImagesJSONKeepaliveWriter) Pusher() http.Pusher {
-	if w.ResponseWriter == nil {
-		return nil
-	}
-	return w.ResponseWriter.Pusher()
-}
-
-// Status observes the underlying HTTP status while excluding concurrent
-// heartbeat writer mutations. Missing heartbeat state or an underlying writer
-// returns zero, and observing status leaves future beats enabled.
-func (w *openAIImagesJSONKeepaliveWriter) Status() int {
-	if w.k == nil || w.ResponseWriter == nil {
-		return 0
-	}
-	w.k.mu.Lock()
-	defer w.k.mu.Unlock()
-	return w.ResponseWriter.Status()
-}
-
-// Size observes accepted underlying response bytes while excluding concurrent
-// heartbeat writes. Missing heartbeat state or an underlying writer returns
-// zero; the reported size includes padding and leaves beats enabled.
-func (w *openAIImagesJSONKeepaliveWriter) Size() int {
-	if w.k == nil || w.ResponseWriter == nil {
-		return 0
-	}
-	w.k.mu.Lock()
-	defer w.k.mu.Unlock()
-	return w.ResponseWriter.Size()
-}
-
-// Written observes whether the underlying HTTP response has committed under
-// the heartbeat mutex. Missing heartbeat state or an underlying writer
-// returns false; heartbeat-only commitment also counts as written.
-func (w *openAIImagesJSONKeepaliveWriter) Written() bool {
-	if w.k == nil || w.ResponseWriter == nil {
-		return false
-	}
-	w.k.mu.Lock()
-	defer w.k.mu.Unlock()
-	return w.ResponseWriter.Written()
 }

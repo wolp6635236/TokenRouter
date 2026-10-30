@@ -819,3 +819,34 @@ func TestOpenCodeSessionIsNotForwardedToOtherUpstreams(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenCodeResponsesRetainsPersistenceFields builds a native Responses request
+// with client continuation fields. Provider protocol selection must retain these
+// fields while request preparation installs normalized OpenCode credentials.
+func TestOpenCodeResponsesRetainsPersistenceFields(t *testing.T) {
+	svc := openCodeSessionTestService()
+	value := &gatewayprovider.ExecutionProvider{Record: providercore.Record{
+		ID: 7, Platform: providercore.PlatformOpenCode, Type: providercore.ProviderTypeAPIKey,
+		Credentials: map[string]any{"api_key": "  fixture-key\n"},
+	}}
+	body := []byte(`{"model":"gpt-5","input":"hello","store":true,"previous_response_id":"resp_previous"}`)
+	for _, passthrough := range []bool{false, true} {
+		c := newOpenCodeSessionTestContext(t, "conversation")
+		c.Request.Header.Set("User-Agent", "client/1")
+		var req *http.Request
+		var err error
+		if passthrough {
+			req, err = svc.Requests.BuildPassthrough(context.Background(), c, value, body, "fallback-key")
+		} else {
+			req, err = svc.Requests.Build(context.Background(), c, value, body, "fallback-key", false, "", false)
+		}
+		require.NoError(t, err)
+		out, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		require.True(t, gjson.GetBytes(out, "store").Bool())
+		require.Equal(t, "resp_previous", gjson.GetBytes(out, "previous_response_id").String())
+		require.Equal(t, "Bearer fixture-key", req.Header.Get("Authorization"))
+		require.Equal(t, "client/1", req.Header.Get("User-Agent"))
+		require.Equal(t, "conversation", req.Header.Get("X-OpenCode-Session"))
+	}
+}

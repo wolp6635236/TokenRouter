@@ -42,7 +42,6 @@ const (
 	// rendering and unsubscribe URLs, with a built-in site name for missing copy.
 	defaultSiteName       = "TokenRouter"
 	SettingKeySiteName    = "site_name"
-	SettingKeyAPIBaseURL  = "api_base_url"
 	SettingKeyFrontendURL = "frontend_url"
 
 	// Event identifiers select templates, placeholder rules, preference
@@ -564,6 +563,9 @@ type (
 
 // NotificationEmailService renders events and coordinates recipient preferences with source-backed delivery markers.
 type NotificationEmailService struct {
+	// frontendURL resolves the public site address on each send. Assembly
+	// installs it before concurrent use; nil uses only the stored frontend_url.
+	frontendURL func(context.Context) string
 	// recipientLocale is installed during assembly and read before stored
 	// language fallbacks. Configure it before concurrent lookups because this field
 	// assignment and its readers are unsynchronized.
@@ -1284,23 +1286,28 @@ func (s *NotificationEmailService) siteName(ctx context.Context) string {
 	return locale.ReadGroupedText(ctx, s.settingRepo, "site_texts", "site_name", defaultSiteName)
 }
 
-// baseURL returns the first nonblank API base or frontend URL from current settings.
-// Read failures and blank values proceed to the next source, and the selected
-// string is trimmed with trailing slashes removed. Missing service/storage or
-// both unavailable values produces an empty base for relative unsubscribe links.
-func (s *NotificationEmailService) baseURL(ctx context.Context) string {
-	if s == nil || s.settingRepo == nil {
+// @project-doc docs/interfaces/configuration.md#site_link_addresses
+// frontendBaseURL returns the selected public site address without trailing slashes.
+// An installed reader owns stored/deployment precedence, including an empty
+// result. Standalone services read only frontend_url; missing or failed reads
+// leave unsubscribe links relative. API client endpoints never supply this base.
+func (s *NotificationEmailService) frontendBaseURL(ctx context.Context) string {
+	if s == nil {
 		return ""
 	}
-	// Prefer the API base before the frontend base. Failed reads and blank values
-	// leave the next source eligible, and no usable source keeps unsubscribe links relative.
-	for _, key := range []string{SettingKeyAPIBaseURL, SettingKeyFrontendURL} {
-		value, err := s.settingRepo.GetValue(ctx, key)
-		if err == nil && strings.TrimSpace(value) != "" {
-			return strings.TrimRight(strings.TrimSpace(value), "/")
-		}
+	if s.frontendURL != nil {
+		return strings.TrimRight(strings.TrimSpace(s.frontendURL(ctx)), "/")
 	}
-	return ""
+	if s.settingRepo == nil {
+		return ""
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyFrontendURL)
+	// Standalone mailers have no deployment reader. A failed stored-address read
+	// retains relative links without substituting the unrelated client API endpoint.
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(value), "/")
 }
 
 // buildUnsubscribeURL signs a recipient/event token and appends its escaped value to the endpoint path.
@@ -1314,7 +1321,7 @@ func (s *NotificationEmailService) buildUnsubscribeURL(ctx context.Context, emai
 	// Escape the complete signed token as one query value so payload punctuation
 	// remains within token input when the unsubscribe handler reads the request parameter.
 	path := "/api/v1/settings/email-unsubscribe?token=" + url.QueryEscape(token)
-	baseURL := s.baseURL(ctx)
+	baseURL := s.frontendBaseURL(ctx)
 	// A missing link base leaves an endpoint-relative path available. The renderer
 	// accepts slash-prefixed URL substitutions, so the optional notice can still carry that prepared link.
 	if baseURL == "" {
@@ -1611,6 +1618,13 @@ func notificationEmailPlaceholdersIn(raw string) []string {
 // one supported language code for template keys, samples, and remembered preferences.
 func normalizeNotificationLocale(raw string) string {
 	return locale.Negotiate(raw, notificationEmailDefaultLocale)
+}
+
+// SetFrontendURLReader installs the public site address resolver for unsubscribe links.
+// Call during assembly before concurrent sends because assignment is unsynchronized.
+// The reader owns deployment fallback; nil selects standalone stored-setting reads.
+func (s *NotificationEmailService) SetFrontendURLReader(read func(context.Context) string) {
+	s.frontendURL = read
 }
 
 // SetRecipientLocaleReader installs the account-language lookup used before persisted language hints.

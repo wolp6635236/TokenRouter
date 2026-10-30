@@ -37,11 +37,6 @@ func (userStoreUnavailableRepoStub) TryReclaim(context.Context, int64, string, t
 	return false, errors.New("store unavailable")
 }
 
-// ExtendProcessingLock reports store unavailability while updating a user processing deadline.
-func (userStoreUnavailableRepoStub) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, errors.New("store unavailable")
-}
-
 // MarkSucceeded reports store unavailability when recording a successful user result.
 func (userStoreUnavailableRepoStub) MarkSucceeded(context.Context, int64, int, string, time.Time) error {
 	return errors.New("store unavailable")

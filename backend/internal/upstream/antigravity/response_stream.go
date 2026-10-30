@@ -32,8 +32,8 @@ import (
 //
 // Scanner workers own pooled buffers until reading ends; handler return
 // signals delivery stop, while the exchange owner closes the body to release
-// a blocked read. Idle timeout follows scanned-line activity, while keepalive
-// follows delivered-line quiet time. Buffered collection keeps content-bearing
+// a blocked read. Idle timeout follows scanned-line activity independently of
+// downstream heartbeats owned by HTTP middleware. Buffered collection keeps content-bearing
 // output when metadata arrives later, then merges first-candidate parts with
 // deliberately shallow map ownership. Ordinary text runs can lose per-part
 // metadata, and image/text merging has separate key-presence rules that affect
@@ -42,16 +42,20 @@ import (
 // ResponseOptions supplies stream limits, raw observation, tool restoration,
 // and representation-specific failure callbacks.
 type ResponseOptions struct {
+	// Context supplies the selected native attempt cancellation. Nil permits
+	// standalone codec use with a background context in the shared reader.
+	Context    context.Context
+	Candidates int // expected native candidate count
+
 	// ObserveRaw optionally receives each scanned line synchronously before
 	// parsing/output; Executor chains it with attempt model and usage
 	// observation. Callbacks leave supplied bytes unchanged and copy retained
 	// mutable data before the owner continues synchronous processing.
 	ObserveRaw func([]byte)
 	// MaxLineSize is scanner-growth bytes, with nonpositive selecting the
-	// default. StreamDataIntervalTimeout and StreamKeepaliveInterval are
-	// idle-timeout seconds and keepalive seconds; nonpositive intervals disable
-	// their timers.
-	MaxLineSize, StreamDataIntervalTimeout, StreamKeepaliveInterval int
+	// default. StreamDataIntervalTimeout supplies upstream idle-timeout seconds;
+	// nonpositive values disable the timer without affecting downstream heartbeats.
+	MaxLineSize, StreamDataIntervalTimeout int
 	// ReverseTools restores provider-mapped tool names in compatible serialized
 	// output; required when a selected compatibility adapter emits or collects
 	// payloads.
@@ -199,437 +203,86 @@ func HandleStreamReadError(err error, clientDisconnected bool, prefix string) (d
 	return false, false
 }
 
-// HandleGeminiStreamingResponse unwraps v1internal data lines into Gemini SSE
-// while observing raw input. Callers supply a nonnil response/body and
-// flushing output writer, then close the body after return to release any
-// blocked scanner.
+// HandleGeminiStreamingResponse unwraps and normalizes native Gemini SSE frames.
+// Shared consumption validates completion and provider errors before delivery.
+// Partial usage accompanies failures, and the reader owns idempotent body cleanup.
 //
-// Latest projected usage replaces earlier adapter usage, while Executor separately accumulates raw fields. Write failures suppress
-// later output but scanning continues. Read cancellation, or read failure
-// after client disconnect, returns collected usage with disconnect=true;
-// other read errors or idle timeout can fail. Scanned lines reset idle
-// activity, delivered lines reset keepalive quiet time, and keepalive bytes
-// can commit output before model content.
+// A complete frame carries its whole-response terminal flag into the output sink,
+// so heartbeat shutdown does not depend on inspecting a bounded JSON prefix.
+// Transport-only DONE becomes a notification without a native SDK data event.
+// Payload observers retain upstream metadata independently of downstream formatting.
 func (s *ResponseAdapter) HandleGeminiStreamingResponse(c *upstream.OutputContext, resp *http.Response, startTime time.Time) (*StreamResult, error) {
 	c.Status(resp.StatusCode)
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "text/event-stream; charset=utf-8"
-	}
-	c.Header("Content-Type", contentType)
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		return nil, errors.New("streaming not supported")
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	maxLineSize := upstream.DefaultSSELineLimit
-	if s.Options.MaxLineSize > 0 {
-		maxLineSize = s.Options.MaxLineSize
-	}
-	scanBuf := httpclient.GetSSEScannerBuf64K()
-	// Use pooled 64-KiB capacity before allowing configured growth; a smaller
-	// selected maximum cannot shrink this initial buffer or enforce its lower
-	// cap.
-	scanner.Buffer(scanBuf[:0], maxLineSize)
-	usage := &upstream.TokenUsage{}
-
-	// scanEvent transports a scanned line or terminal read error from the worker
-	// to its owning response handler.
-	type scanEvent struct {
-		line string // copied scanned input line
-		err  error  // terminal scanner read failure
-	}
-	// Queue sixteen line/error events so reading can advance separately from
-	// handler timeout selection; the worker owns the pooled buffer until its
-	// scanning work exits.
-	events := make(chan scanEvent, 16)
-	done := make(chan struct{})
-	sendEvent := func(ev scanEvent) bool {
-		select {
-		case events <- ev:
-			return true
-		case <-done:
-			return false
+	result := &StreamResult{Usage: &upstream.TokenUsage{}}
+	observed, err := s.readGeminiStream(resp, func(event upstream.GeminiStreamEvent) error {
+		if len(event.Data) == 0 {
+			if event.Terminal {
+				c.Complete()
+			}
+			return nil
 		}
-	}
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-	go func(scanBuf *httpclient.SSEScannerBuf64K) {
-		defer httpclient.PutSSEScannerBuf64K(scanBuf)
-		defer close(events)
-		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-			if !sendEvent(scanEvent{line: scanner.Text()}) {
-				return
-			}
+		s.observeRaw(event.Data)
+		if usage := bridge.NativeUsageProjection(bridge.NativeExtractGeminiUsage(event.Data)); usage != nil {
+			result.Usage = usage
 		}
-		if err := scanner.Err(); err != nil {
-			_ = sendEvent(scanEvent{err: err})
+		if c.Err() != nil {
+			return nil
 		}
-	}(scanBuf)
-	// Signal stop on handler return so the sender can select termination; a
-	// competing ready send can still win, and body closing releases blocked
-	// Scan calls.
-	defer close(done)
-
-	// Check scanned-line activity on interval ticks, including nondata lines;
-	// a disabled interval leaves a nil channel so this select path cannot fire.
-	streamInterval := time.Duration(0)
-	if s.Options.StreamDataIntervalTimeout > 0 {
-		streamInterval = time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second
-	}
-	var intervalTicker *time.Ticker
-	if streamInterval > 0 {
-		intervalTicker = time.NewTicker(streamInterval)
-		defer intervalTicker.Stop()
-	}
-	var intervalCh <-chan time.Time
-	if intervalTicker != nil {
-		intervalCh = intervalTicker.C
-	}
-
-	// Send keepalive after delivered-line quiet time while the client remains
-	// connected; pings do not reset that time, so subsequent ticks can continue
-	// pinging.
-	keepaliveInterval := time.Duration(0)
-	if s.Options.StreamKeepaliveInterval > 0 {
-		keepaliveInterval = time.Duration(s.Options.StreamKeepaliveInterval) * time.Second
-	}
-	var keepaliveTicker *time.Ticker
-	if keepaliveInterval > 0 {
-		keepaliveTicker = time.NewTicker(keepaliveInterval)
-		defer keepaliveTicker.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTicker != nil {
-		keepaliveCh = keepaliveTicker.C
-	}
-	lastDataAt := time.Now()
-
-	cw := NewClientWriter(c.Writer, flusher, "antigravity gemini")
-
-	// Suppress duplicate terminal error events after the first attempted emission
-	// or a recorded disconnect; this direct writer does not itself update the
-	// ClientWriter failure flag.
-	errorEventSent := false
-	sendErrorEvent := func(reason string) {
-		if errorEventSent || cw.Disconnected() {
-			return
+		c.NextEvent(protocolgemini.ObservePayload(event.Data).Semantic, event.Terminal)
+		if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", event.Data); err != nil {
+			return nil
 		}
-		errorEventSent = true
-		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: {\"error\":\"%s\"}\n\n", reason)
-		flusher.Flush()
+		c.Writer.Flush()
+		return nil
+	})
+	if usage := bridge.NativeUsageProjection(bridge.NativeExtractGeminiUsage(observed.UsageJSON)); usage != nil {
+		result.Usage = usage
 	}
-
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				return &StreamResult{Usage: usage, ClientDisconnect: cw.Disconnected()}, nil
-			}
-			if ev.err != nil {
-				if disconnect, handled := HandleStreamReadError(ev.err, cw.Disconnected(), "antigravity gemini"); handled {
-					return &StreamResult{Usage: usage, ClientDisconnect: disconnect}, nil
-				}
-				if errors.Is(ev.err, bufio.ErrTooLong) {
-					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity): max_size=%d error=%v", maxLineSize, ev.err)
-					sendErrorEvent("response_too_large")
-					return &StreamResult{Usage: usage}, ev.err
-				}
-				sendErrorEvent("stream_read_error")
-				return nil, ev.err
-			}
-
-			lastDataAt = time.Now()
-
-			line := ev.line
-			s.observeRaw([]byte(line))
-			trimmed := strings.TrimRight(line, "\r\n")
-			if after, ok0 := strings.CutPrefix(trimmed, "data:"); ok0 {
-				payload := strings.TrimSpace(after)
-				if payload == "" || payload == "[DONE]" {
-					cw.Fprintf("%s\n", line)
-					continue
-				}
-
-				inner, parseErr := s.UnwrapV1InternalResponse([]byte(payload))
-				if parseErr == nil && inner != nil {
-					payload = string(inner)
-				}
-
-				// Replace adapter usage from the latest projected payload, while the
-				// executor raw observer independently accumulates sparse fields from
-				// earlier and later lines.
-				if u := bridge.NativeUsageProjection(bridge.NativeExtractGeminiUsage(inner)); u != nil {
-					usage = u
-				}
-				// Tool diagnostics require complete JSON decoding; decode failure
-				// leaves the forwarding payload and already projected usage available.
-				var parsed map[string]any
-				if json.Unmarshal(inner, &parsed) == nil {
-					// Log malformed tool output reported by the upstream.
-					if candidates, ok := parsed["candidates"].([]any); ok && len(candidates) > 0 {
-						if cand, ok := candidates[0].(map[string]any); ok {
-							if fr, ok := cand["finishReason"].(string); ok && fr == "MALFORMED_FUNCTION_CALL" {
-								logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward stream")
-								if content, ok := cand["content"]; ok {
-									if b, err := json.Marshal(content); err == nil {
-										logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", string(b))
-									}
-								}
-							}
-						}
-					}
-				}
-
-				cw.Fprintf("data: %s\n\n", payload)
-				continue
-			}
-
-			cw.Fprintf("%s\n", line)
-
-		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
-				continue
-			}
-			if cw.Disconnected() {
-				logger.LegacyPrintf("service.antigravity_gateway", "Upstream timeout after client disconnect (antigravity gemini), returning collected usage")
-				return &StreamResult{Usage: usage, ClientDisconnect: true}, nil
-			}
-			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
-			sendErrorEvent("stream_timeout")
-			return &StreamResult{Usage: usage}, fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if cw.Disconnected() {
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				continue
-			}
-			// An SSE comment keeps the connection active without adding response content.
-			if !cw.Fprintf(":\n\n") {
-				logger.LegacyPrintf("service.antigravity_gateway", "Client disconnected during keepalive ping (antigravity gemini), continuing to drain upstream for billing")
-				continue
-			}
-		}
+	result.ClientDisconnect = c.Err() != nil || errors.Is(err, context.Canceled) || (s.Options.Context != nil && s.Options.Context.Err() != nil)
+	if result.ClientDisconnect {
+		return result, nil
 	}
+	return result, err
 }
 
-// HandleGeminiStreamToNonStreaming collects Gemini SSE into one JSON response
-// and returns latest projected usage. Callers keep output and response body
-// valid until completion and close the body afterward; read/idle errors return
-// before buffered output.
-//
-// Successfully decoded metadata-only objects remain available as the latest
-// response. JSON null leaves the retained map nil and can still select
-// empty-response failover.
-//
-// The final map prefers the latest content-bearing candidate; all
-// first-candidate text, including thought text, is collected separately from
-// object inlineData parts. Images append only when no existing inlineData key
-// is present, and concatenated text replaces the first text-key part. When
-// both retained snapshots are nil, Failover handles the empty result; retained
-// metadata-only input can still produce buffered JSON.
-//
-// Buffered write errors stay in OutputContext.Err; the collected snapshot
-// keeps ClientDisconnect unchanged by that output attempt.
+// readGeminiStream binds Antigravity envelope extraction to shared stream validation.
+// Native streaming and buffered collection use the same read limits and completion
+// expectation. Other Antigravity output protocols retain their own response processors.
+func (s *ResponseAdapter) readGeminiStream(resp *http.Response, consume func(upstream.GeminiStreamEvent) error) (upstream.GeminiStreamResult, error) {
+	return upstream.ReadGeminiStream(s.Options.Context, resp, upstream.GeminiStreamOptions{
+		IdleTimeout:   time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second,
+		MaxFrameBytes: s.Options.MaxLineSize, Candidates: s.Options.Candidates,
+		Unwrap: s.UnwrapV1InternalResponse,
+	}, consume)
+}
+
+// HandleGeminiStreamToNonStreaming collects a validated native Gemini response.
+// Candidate indices retain their own parts and metadata through usage-only tails.
+// Failed consumption returns partial usage without emitting successful JSON; shared
+// consumption closes the response body and joins its worker before returning.
 func (s *ResponseAdapter) HandleGeminiStreamToNonStreaming(c *upstream.OutputContext, resp *http.Response, startTime time.Time) (*StreamResult, error) {
-	scanner := bufio.NewScanner(resp.Body)
-	maxLineSize := upstream.DefaultSSELineLimit
-	if s.Options.MaxLineSize > 0 {
-		maxLineSize = s.Options.MaxLineSize
+	response, observed, err := upstream.CollectGeminiStream(s.Options.Context, resp, upstream.GeminiStreamOptions{
+		IdleTimeout:   time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second,
+		MaxFrameBytes: s.Options.MaxLineSize, Candidates: s.Options.Candidates, Unwrap: s.UnwrapV1InternalResponse,
+	}, s.observeRaw)
+	usage := bridge.NativeUsageProjection(bridge.NativeExtractGeminiUsage(observed.UsageJSON))
+	if usage == nil {
+		usage = &upstream.TokenUsage{}
 	}
-	scanBuf := httpclient.GetSSEScannerBuf64K()
-	// Use pooled 64-KiB capacity before allowing configured growth; a smaller
-	// selected maximum cannot shrink this initial buffer or enforce its lower
-	// cap.
-	scanner.Buffer(scanBuf[:0], maxLineSize)
-
-	usage := &upstream.TokenUsage{}
-
-	var last map[string]any
-	var lastWithParts map[string]any
-	var collectedImageParts []map[string]any // image parts across chunks
-	var collectedTextParts []string          // text fragments across chunks
-
-	// scanEvent transports a scanned line or terminal read error from the worker
-	// to its owning response handler.
-	type scanEvent struct {
-		line string // copied scanned input line
-		err  error  // terminal scanner read failure
-	}
-
-	// Queue sixteen line/error events so reading can advance separately from
-	// handler timeout selection; the worker owns the pooled buffer until its
-	// scanning work exits.
-	events := make(chan scanEvent, 16)
-	done := make(chan struct{})
-	sendEvent := func(ev scanEvent) bool {
-		select {
-		case events <- ev:
-			return true
-		case <-done:
-			return false
-		}
-	}
-
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-	go func(scanBuf *httpclient.SSEScannerBuf64K) {
-		defer httpclient.PutSSEScannerBuf64K(scanBuf)
-		defer close(events)
-		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-			if !sendEvent(scanEvent{line: scanner.Text()}) {
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			_ = sendEvent(scanEvent{err: err})
-		}
-	}(scanBuf)
-	// Signal stop on handler return so the sender can select termination; a
-	// competing ready send can still win, and body closing releases blocked
-	// Scan calls.
-	defer close(done)
-
-	// Check scanned-line activity on interval ticks, including nondata lines;
-	// a disabled interval leaves a nil channel so this select path cannot fire.
-	streamInterval := time.Duration(0)
-	if s.Options.StreamDataIntervalTimeout > 0 {
-		streamInterval = time.Duration(s.Options.StreamDataIntervalTimeout) * time.Second
-	}
-	var intervalTicker *time.Ticker
-	if streamInterval > 0 {
-		intervalTicker = time.NewTicker(streamInterval)
-		defer intervalTicker.Stop()
-	}
-	var intervalCh <-chan time.Time
-	if intervalTicker != nil {
-		intervalCh = intervalTicker.C
-	}
-
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				goto returnResponse
-			}
-			if ev.err != nil {
-				if errors.Is(ev.err, bufio.ErrTooLong) {
-					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity non-stream): max_size=%d error=%v", maxLineSize, ev.err)
-				}
-				return nil, ev.err
-			}
-
-			line := ev.line
-			s.observeRaw([]byte(line))
-			trimmed := strings.TrimRight(line, "\r\n")
-
-			if !strings.HasPrefix(trimmed, "data:") {
-				continue
-			}
-
-			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-			if payload == "" || payload == "[DONE]" {
-				continue
-			}
-
-			inner, parseErr := s.UnwrapV1InternalResponse([]byte(payload))
-			if parseErr != nil {
-				continue
-			}
-
-			// Reject incomplete decoded input before retaining the selected response;
-			// raw observers have already received this line for independent accounting.
-			var parsed map[string]any
-			if err := json.Unmarshal(inner, &parsed); err != nil {
-				continue
-			}
-
-			last = parsed
-
-			// Retain latest projected usage separately from the selected
-			// content-bearing response, because a later metadata chunk can carry tokens
-			// without replacing collected output.
-			if u := bridge.NativeUsageProjection(bridge.NativeExtractGeminiUsage(inner)); u != nil {
-				usage = u
-			}
-
-			// Log malformed tool output reported by the upstream.
-			if candidates, ok := parsed["candidates"].([]any); ok && len(candidates) > 0 {
-				if cand, ok := candidates[0].(map[string]any); ok {
-					if fr, ok := cand["finishReason"].(string); ok && fr == "MALFORMED_FUNCTION_CALL" {
-						logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] MALFORMED_FUNCTION_CALL detected in forward non-stream collect")
-						if content, ok := cand["content"]; ok {
-							if b, err := json.Marshal(content); err == nil {
-								logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Malformed content: %s", string(b))
-							}
-						}
-					}
-				}
-			}
-
-			// Retain the last content-bearing map before a metadata-only tail arrives;
-			// separately collect first-candidate image maps and every text fragment,
-			// including thought text.
-			if parts := bridge.NativeExtractGeminiParts(parsed); len(parts) > 0 {
-				lastWithParts = parsed
-				for _, part := range parts {
-					if inlineData, ok := part["inlineData"].(map[string]any); ok {
-						collectedImageParts = append(collectedImageParts, part)
-						_ = inlineData
-					}
-					if text, ok := part["text"].(string); ok && text != "" {
-						collectedTextParts = append(collectedTextParts, text)
-					}
-				}
-			}
-
-		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
-				continue
-			}
-			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity non-stream)")
-			return nil, fmt.Errorf("stream data interval timeout")
-		}
-	}
-
-returnResponse:
-	finalResponse := bridge.NativePickGeminiCollectResult(last, lastWithParts)
-
-	// Invoke empty-stream policy only when no decoded map was retained, allowing
-	// metadata-only Gemini input to remain a buffered response while unusable
-	// input selects failover.
-	if last == nil && lastWithParts == nil {
-		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (gemini non-stream), triggering failover")
-		return nil, s.Options.Failover([]byte(`{"error":"empty stream response from upstream"}`))
-	}
-
-	if len(collectedImageParts) > 0 {
-		finalResponse = MergeImagePartsToResponse(finalResponse, collectedImageParts)
-	}
-
-	if len(collectedTextParts) > 0 {
-		finalResponse = MergeTextPartsToResponse(finalResponse, collectedTextParts)
-	}
-
-	respBody, err := json.Marshal(finalResponse)
+	result := &StreamResult{Usage: usage}
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response: %w", err)
+		return result, err
 	}
-	c.Data(http.StatusOK, "application/json", respBody)
-
-	return &StreamResult{Usage: usage}, nil
+	body, err := json.Marshal(response)
+	if err != nil {
+		return result, err
+	}
+	c.Data(http.StatusOK, "application/json", body)
+	return result, c.Err()
 }
 
 // GetOrCreateGeminiParts returns a shallow top-level response copy,
@@ -1145,24 +798,6 @@ func (s *ResponseAdapter) HandleClaudeStreamingResponse(c *upstream.OutputContex
 		intervalCh = intervalTicker.C
 	}
 
-	// Send keepalive after delivered-line quiet time while the client remains
-	// connected; pings do not reset that time, so subsequent ticks can continue
-	// pinging.
-	keepaliveInterval := time.Duration(0)
-	if s.Options.StreamKeepaliveInterval > 0 {
-		keepaliveInterval = time.Duration(s.Options.StreamKeepaliveInterval) * time.Second
-	}
-	var keepaliveTicker *time.Ticker
-	if keepaliveInterval > 0 {
-		keepaliveTicker = time.NewTicker(keepaliveInterval)
-		defer keepaliveTicker.Stop()
-	}
-	var keepaliveCh <-chan time.Time
-	if keepaliveTicker != nil {
-		keepaliveCh = keepaliveTicker.C
-	}
-	lastDataAt := time.Now()
-
 	cw := NewClientWriter(c.Writer, flusher, "antigravity claude")
 
 	// Suppress duplicate terminal error events after the first attempted emission
@@ -1212,8 +847,6 @@ func (s *ResponseAdapter) HandleClaudeStreamingResponse(c *upstream.OutputContex
 				return nil, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
-			lastDataAt = time.Now()
-
 			s.observeRaw([]byte(ev.line))
 			claudeEvents := processor.ProcessLine(strings.TrimRight(ev.line, "\r\n"))
 			if len(claudeEvents) > 0 {
@@ -1232,19 +865,6 @@ func (s *ResponseAdapter) HandleClaudeStreamingResponse(c *upstream.OutputContex
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")
 			return &StreamResult{Usage: convertUsage(nil)}, fmt.Errorf("stream data interval timeout")
-
-		case <-keepaliveCh:
-			if cw.Disconnected() {
-				continue
-			}
-			if time.Since(lastDataAt) < keepaliveInterval {
-				continue
-			}
-			// Anthropic ping events keep idle connections active without adding content.
-			if !cw.Fprintf("event: ping\ndata: {\"type\": \"ping\"}\n\n") {
-				logger.LegacyPrintf("service.antigravity_gateway", "Client disconnected during keepalive ping (antigravity claude), continuing to drain upstream for billing")
-				continue
-			}
 		}
 	}
 }

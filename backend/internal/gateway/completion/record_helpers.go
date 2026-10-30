@@ -316,11 +316,22 @@ func (s *Recorder) resolveUserGroupRateMultiplier(ctx context.Context, userID, g
 	return s.rates.Resolve(ctx, userID, groupID, fallback)
 }
 
-// resolveConfigPricingForUsage returns configured pricing and the unchanged billing
-// model used for that resolver lookup. Unavailable configured pricing yields nil;
-// the selected model text remains available for catalogue price lookup afterward.
+// resolveConfigPricingForUsage returns a configured card and its catalog identity.
+// It retains reference targets even when no card is configured for that target,
+// allowing media callers to read the matching catalog prices after this lookup.
 func (s *Recorder) resolveConfigPricingForUsage(ctx context.Context, model string, key *KeySnapshot) (*ResolvedPricing, string) {
-	return s.ResolveConfigPricing(ctx, model, key), model
+	if s.resolver == nil || key == nil || key.Group == nil {
+		return nil, model
+	}
+	gid := key.Group.ID
+	resolved := s.resolver.Resolve(ctx, PricingInput{Model: model, GroupID: &gid})
+	if resolved.LookupModel != nil {
+		model = *resolved.LookupModel
+	}
+	if resolved.HasConfiguredPricing() {
+		return resolved, model
+	}
+	return nil, model
 }
 
 // actorID chooses captured actor evidence before the payer's identifier.

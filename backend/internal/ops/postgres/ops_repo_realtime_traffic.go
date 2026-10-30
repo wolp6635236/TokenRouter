@@ -72,7 +72,7 @@ WITH usage_buckets AS (
     date_trunc('minute', ul.created_at) AS bucket,
     COALESCE(COUNT(*), 0) AS success_count,
     COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS token_sum
-  FROM usage_logs ul
+  FROM (SELECT * FROM usage_logs WHERE request_source = 'user') ul
   ` + usageJoin + `
   ` + usageWhere + `
   GROUP BY 1

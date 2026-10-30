@@ -159,7 +159,8 @@ func NewGeminiNativeHandler(options GeminiNativeOptions, backend GeminiNativeBac
 // shared HTTP-to-Google status mapping chooses the error name.
 func WriteGoogleError(c *gin.Context, status int, message string) {
 	status, message = modelAttributeError(c, status, message)
-	c.JSON(status, gin.H{"error": gin.H{"code": status, "message": message, "status": HTTPStatusToGoogleStatus(status)}})
+	body, _ := json.Marshal(gin.H{"error": gin.H{"code": status, "message": message, "status": HTTPStatusToGoogleStatus(status)}})
+	writeGoogleErrorBody(c, status, body)
 }
 
 // geminiNativeIsolationError reports whether an isolation error was presented
@@ -280,9 +281,9 @@ func (h *GeminiNativeHandler) GeminiV1BetaModels(c *gin.Context) {
 
 	subscription, _ := SubscriptionFromContext(c)
 
-	// Waiting uses the same concurrency service with heartbeat output disabled,
-	// because native Gemini consumers do not interpret Anthropic ping frames.
-	geminiConcurrency := NewConcurrencyHelper(h.concurrency.Service(), SSEPingFormatNone, 0)
+	// Native Google SDKs reject comment lines as JSON. Empty SSE events keep
+	// admission waits active without inventing model output or closing retry eligibility.
+	geminiConcurrency := NewConcurrencyHelper(h.concurrency.Service(), SSEPingFormatGemini, 0)
 
 	streamStarted := false
 	h.backend.BindErrors(c)

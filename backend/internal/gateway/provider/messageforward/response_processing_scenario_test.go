@@ -293,7 +293,7 @@ func TestHandleNonStreamingResponse_NonJSON2xxMatchesModelScopedTempUnschedulabl
 // heartbeat and header before the upstream reader fails. The result remains an
 // ordinary stream error with partial state, and the earlier header survives.
 func TestAnthropicPriorHeartbeatPreservesReadFailureBoundary(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -448,102 +448,6 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingDataIntervalTimeout(
 	require.Contains(t, err.Error(), "stream data interval timeout")
 	require.NotNil(t, result)
 	require.False(t, result.ClientDisconnect)
-}
-
-// TestGatewayService_AnthropicAPIKeyPassthrough_StreamingSendsKeepaliveDuringIdle
-// delays the first passthrough frame beyond the heartbeat interval. Client
-// output contains a ping and the final DONE while response reading completes
-// successfully.
-func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingSendsKeepaliveDuringIdle(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-
-	svc := newResponseRuntimeFixture(
-		&messageforward.Options{Configured: true, PreserveContentType: true, ResponseReadLimit: 134217728, StreamKeepalive: time.Duration(1) * time.Second, MaxLineSize: defaultMaxLineSize}, messageforward.Dependencies{Health: newPartialHealthFixture()}, nil,
-	)
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       pr,
-	}
-
-	done := make(chan struct{})
-	// Delay the first fixture event beyond the heartbeat interval while the
-	// reader waits on the pipe, then close the producer to deliver a
-	// complete EOF.
-	go func() {
-		defer close(done)
-		// Delay the first upstream SSE event to check downstream ping
-		// keepalives.
-		time.Sleep(1200 * time.Millisecond)
-		_, _ = pw.Write([]byte(strings.Join([]string{
-			`data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}`,
-			"",
-			`data: {"type":"message_delta","usage":{"output_tokens":2}}`,
-			"",
-			"data: [DONE]",
-			"",
-		}, "\n")))
-		_ = pw.Close()
-	}()
-
-	result, err := passthroughStreamFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 8}}, time.Now(), "claude-3-7-sonnet-20250219")
-	_ = pr.Close()
-	<-done
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), "event: ping\ndata: {\"type\": \"ping\"}\n\n")
-	require.Contains(t, rec.Body.String(), "data: [DONE]")
-}
-
-// TestGatewayService_AnthropicAPIKeyPassthrough_StreamingKeepaliveDoesNotInterleavePartialEvent
-// holds an SSE frame open across the keepalive interval. Client output contains
-// the final DONE and no ping inserted into the partial frame.
-func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingKeepaliveDoesNotInterleavePartialEvent(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-
-	svc := newResponseRuntimeFixture(
-		&messageforward.Options{Configured: true, PreserveContentType: true, ResponseReadLimit: 134217728, StreamKeepalive: time.Duration(1) * time.Second, MaxLineSize: defaultMaxLineSize}, messageforward.Dependencies{Health: newPartialHealthFixture()}, nil,
-	)
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       pr,
-	}
-
-	done := make(chan struct{})
-	// Hold the fixture frame between its data line and blank delimiter
-	// across the heartbeat interval so any misplaced ping would split that
-	// incomplete frame.
-	go func() {
-		defer close(done)
-		// Leave an SSE event incomplete to check that keepalives cannot
-		// split it.
-		_, _ = pw.Write([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}` + "\n"))
-		time.Sleep(1200 * time.Millisecond)
-		_, _ = pw.Write([]byte("\n"))
-		_, _ = pw.Write([]byte("data: [DONE]\n\n"))
-		_ = pw.Close()
-	}()
-
-	result, err := passthroughStreamFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 9}}, time.Now(), "claude-3-7-sonnet-20250219")
-	_ = pr.Close()
-	<-done
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	body := rec.Body.String()
-	require.NotContains(t, body, `data: {"type":"message_start","message":{"usage":{"input_tokens":4}}}`+"\n"+"event: ping")
-	require.NotContains(t, body, "event: ping")
-	require.Contains(t, body, "data: [DONE]")
 }
 
 // TestGatewayService_AnthropicAPIKeyPassthrough_StreamingReadError fails the
@@ -707,10 +611,10 @@ func passthroughResponseFixture(runtime *messageforward.Runtime, ctx context.Con
 }
 
 // newStreamingRuntimeFixture constructs ordinary stream options with the
-// supplied heartbeat interval. It installs default health observation and a
-// normal line limit; individual tests can supply independent pipe responses.
-func newStreamingRuntimeFixture(keepalive time.Duration) *messageforward.Runtime {
-	return messageforward.NewRuntime(messageforward.Dependencies{Health: newPartialHealthFixture()}, messageforward.Options{Configured: true, MaxLineSize: defaultMaxLineSize, StreamKeepalive: keepalive})
+// default health observation and a normal line limit. Downstream heartbeats
+// are owned by HTTP middleware; individual tests can supply independent pipe responses.
+func newStreamingRuntimeFixture() *messageforward.Runtime {
+	return messageforward.NewRuntime(messageforward.Dependencies{Health: newPartialHealthFixture()}, messageforward.Options{Configured: true, MaxLineSize: defaultMaxLineSize})
 }
 
 // streamResponseFixture invokes ordinary Anthropic stream reading using runtime
@@ -737,7 +641,7 @@ func passthroughStreamFixture(runtime *messageforward.Runtime, ctx context.Conte
 // returned input/output counts are checked; this fixture makes no allocation
 // assertion.
 func TestGatewayService_StreamingReusesScannerBufferAndStillParsesUsage(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -766,148 +670,11 @@ func TestGatewayService_StreamingReusesScannerBufferAndStillParsesUsage(t *testi
 	require.Equal(t, 7, result.Usage.OutputTokens)
 }
 
-// TestGatewayService_StreamingKeepaliveUsesIdleTimer leaves an ordinary
-// upstream stream idle between start and stop events. Response reading succeeds
-// and downstream bytes contain the configured ping heartbeat event.
-func TestGatewayService_StreamingKeepaliveUsesIdleTimer(t *testing.T) {
-	svc := newStreamingRuntimeFixture(time.Second)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
-
-	// Pause between start and stop events beyond the configured heartbeat
-	// interval so the reader emits a ping while the upstream pipe remains
-	// open.
-	go func() {
-		defer func() { _ = pw.Close() }()
-		_, _ = pw.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"))
-		time.Sleep(1100 * time.Millisecond)
-		_, _ = pw.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
-	}()
-
-	result, err := streamResponseFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1}}, time.Now(), "model", "model", false)
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), "event: ping")
-}
-
-// TestGatewayService_StreamingKeepaliveUsesNoopDeltaForAffectedClaudeCodeVersion
-// keeps a text block open for the selected Claude CLI version during idle. The
-// downstream stream contains an empty text_delta heartbeat for that block.
-func TestGatewayService_StreamingKeepaliveUsesNoopDeltaForAffectedClaudeCodeVersion(t *testing.T) {
-	svc := newStreamingRuntimeFixture(time.Second)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.198 (external, cli)")
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
-
-	// Keep a text block open across the idle interval for the selected
-	// Claude CLI version so the reader can emit its empty text delta
-	// heartbeat.
-	go func() {
-		defer func() { _ = pw.Close() }()
-		_, _ = pw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"))
-		_, _ = pw.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
-		time.Sleep(1100 * time.Millisecond)
-		_, _ = pw.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
-		_, _ = pw.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
-	}()
-
-	result, err := streamResponseFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1}}, time.Now(), "model", "model", false)
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	body := rec.Body.String()
-	require.Contains(t, body, "event: content_block_delta")
-	require.Contains(t, body, `"delta":{"type":"text_delta","text":""}`)
-}
-
-// TestGatewayService_StreamingKeepaliveUsesNoopDeltaDuringToolUseForAffectedClaudeCodeVersion
-// keeps tool block index one open for the selected Claude CLI version. The
-// downstream heartbeat carries that index and an empty input_json_delta
-// fragment.
-func TestGatewayService_StreamingKeepaliveUsesNoopDeltaDuringToolUseForAffectedClaudeCodeVersion(t *testing.T) {
-	svc := newStreamingRuntimeFixture(time.Second)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.198 (external, cli)")
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
-
-	// Keep tool block index one open across the idle interval so the
-	// selected Claude CLI version receives an empty input_json_delta using
-	// that active index.
-	go func() {
-		defer func() { _ = pw.Close() }()
-		_, _ = pw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"))
-		_, _ = pw.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Edit\",\"input\":{}}}\n\n"))
-		time.Sleep(1100 * time.Millisecond)
-		_, _ = pw.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n"))
-		_, _ = pw.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
-	}()
-
-	result, err := streamResponseFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1}}, time.Now(), "model", "model", false)
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	body := rec.Body.String()
-	require.Contains(t, body, "event: content_block_delta")
-	require.Contains(t, body, `"index":1`)
-	require.Contains(t, body, `"delta":{"type":"input_json_delta","partial_json":""}`)
-}
-
-// TestGatewayService_StreamingKeepaliveKeepsPingForOlderClaudeCodeVersion keeps
-// an older Claude CLI request idle between lifecycle events. Downstream output
-// contains ping and omits the empty text_delta form used by another version.
-func TestGatewayService_StreamingKeepaliveKeepsPingForOlderClaudeCodeVersion(t *testing.T) {
-	svc := newStreamingRuntimeFixture(time.Second)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.187 (external, cli)")
-
-	pr, pw := io.Pipe()
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
-
-	// Keep an older Claude CLI request idle between start and stop events
-	// so its heartbeat remains the ordinary ping under version-dependent
-	// presentation.
-	go func() {
-		defer func() { _ = pw.Close() }()
-		_, _ = pw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n"))
-		_, _ = pw.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
-		time.Sleep(1100 * time.Millisecond)
-		_, _ = pw.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
-		_, _ = pw.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
-	}()
-
-	result, err := streamResponseFixture(svc, context.Background(), resp, c, &gatewayprovider.ExecutionProvider{Record: providercore.Record{LoadLocation: time.LoadLocation, ID: 1}}, time.Now(), "model", "model", false)
-	_ = pr.Close()
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	body := rec.Body.String()
-	require.Contains(t, body, "event: ping")
-	require.NotContains(t, body, `"delta":{"type":"text_delta","text":""}`)
-}
-
 // TestHandleStreamingResponse_CacheTokens supplies cache creation and read
 // counts at message_start and output tokens at message_delta. The returned
 // result retains all four token buckets after terminal completion.
 func TestHandleStreamingResponse_CacheTokens(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -941,7 +708,7 @@ func TestHandleStreamingResponse_CacheTokens(t *testing.T) {
 // event is received. The reader reports a missing terminal event and returns
 // its stream result for error handling.
 func TestHandleStreamingResponse_EmptyStream(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -970,7 +737,7 @@ func TestHandleStreamingResponse_EmptyStream(t *testing.T) {
 // returned token counts match the fixture and output contains a forwarded delta
 // event.
 func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1009,7 +776,7 @@ func TestHandleStreamingResponse_SpecialCharactersInJSON(t *testing.T) {
 // nil and typed failover carries safe Anthropic diagnostics with same-provider
 // retry enabled.
 func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1049,7 +816,7 @@ func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t 
 // with unexpected EOF after a complete usage event reaches the client. The
 // retained result accompanies a stream_read_error event and no failover signal.
 func TestHandleStreamingResponse_StreamReadErrorAfterOutput_PassesThrough(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1090,7 +857,7 @@ func TestHandleStreamingResponse_StreamReadErrorAfterOutput_PassesThrough(t *tes
 // addresses. The failover body retains the connection-reset cause while
 // omitting address and port fragments.
 func TestHandleStreamingResponse_FailoverBodyDoesNotLeakAddresses(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1133,7 +900,7 @@ func TestHandleStreamingResponse_FailoverBodyDoesNotLeakAddresses(t *testing.T) 
 // result is nil and the typed error retains exact raw JSON for diagnostic
 // extraction.
 func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1169,7 +936,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 // event with no data line before EOF. Event recognition returns the typed
 // stream error with empty RawData for outer classification.
 func TestHandleStreamingResponse_SSEErrorEvent_EmptyDataLine(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1199,7 +966,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_EmptyDataLine(t *testing.T) {
 // raw data and the recorder confirms earlier message_start bytes reached
 // output.
 func TestHandleStreamingResponse_SSEErrorEvent_AfterPartialStreamOutput(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1233,7 +1000,7 @@ func TestHandleStreamingResponse_SSEErrorEvent_AfterPartialStreamOutput(t *testi
 // data in a complete error frame. RawData retains that text while error-message
 // extraction returns empty and remains safe to invoke.
 func TestHandleStreamingResponse_SSEErrorEvent_NonJSONDataLine(t *testing.T) {
-	svc := newStreamingRuntimeFixture(0)
+	svc := newStreamingRuntimeFixture()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

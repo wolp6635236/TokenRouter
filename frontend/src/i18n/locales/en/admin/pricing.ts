@@ -372,6 +372,14 @@ export default {
   },
   // Pricing management
   pricing: {
+    ruleMode: 'Rule mode',
+    customMode: 'Custom',
+    referenceMode: 'Map to model',
+    referencePlaceholder: 'Enter target model ID',
+    referenceTarget: 'Target model',
+    referenceHint:
+      'Uses the effective configuration of the target model. Missing target data stays unavailable.',
+    referenceInvalid: 'Enter a concrete target that does not match any mapping source.',
     billingSettings: {
       title: 'Billing settings',
       defaultPrice: 'Empty uses default; 0 is free',

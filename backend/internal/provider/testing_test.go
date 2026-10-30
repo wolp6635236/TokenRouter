@@ -87,28 +87,29 @@ func TestNormalizeProviderTestMode(t *testing.T) {
 	}
 }
 
-// TestDecisionTestingRequiresJev sends a structured explicit decision request to
-// Jev and OpenAI metadata. It verifies Jev receives the selected family, kind
-// and original payload, while OpenAI rejects the request before execution.
-func TestDecisionTestingRequiresJev(t *testing.T) {
-	for _, platform := range []string{PlatformJev, PlatformOpenAI} {
+// TestDecisionTestingRequiresSystemOne sends a structured explicit decision
+// request to Jev, OpenCode, and OpenAI metadata. Platforms whose native
+// protocols include SystemOne receive their family, kind and original payload,
+// while OpenAI rejects the request before execution.
+func TestDecisionTestingRequiresSystemOne(t *testing.T) {
+	for platform, route := range map[string]TestRoute{PlatformJev: TestRouteJev, PlatformOpenCode: TestRouteOpenCode, PlatformOpenAI: TestRouteOpenAI} {
 		t.Run(platform, func(t *testing.T) {
 			called := false
 			kind := ProviderTestTypeDecision
 			request := TestRequest{Type: &kind, SystemOne: []byte(`{"state":["ready"],"questions":{"x":{"type":"noul","instructions":"Ready?"}}}`)}
 			loader := &testLoaderStub{target: testTargetStub{info: TestTargetInfo{ProviderSnapshot: ProviderSnapshot{Platform: platform, Type: ProviderTypeAPIKey}}, run: func(_ context.Context, got PreparedTestRequest, _ TestEventSink) error {
 				called = true
-				require.Equal(t, TestRouteJev, got.Route)
+				require.Equal(t, route, got.Route)
 				require.Equal(t, kind, got.TestType)
 				require.Equal(t, request.SystemOne, got.SystemOne)
 				return nil
 			}}}
 			err := NewTestService(loader, TestOptions{}).Test(context.Background(), request, &testSinkStub{})
-			if platform == PlatformJev {
+			if platform != PlatformOpenAI {
 				require.NoError(t, err)
 				require.True(t, called)
 			} else {
-				require.EqualError(t, err, "Decision tests require a Jev provider")
+				require.EqualError(t, err, "Decision tests require a provider with SystemOne support")
 				require.False(t, called)
 			}
 		})
@@ -272,10 +273,10 @@ func TestTestingBackgroundPreservesWireTextAndClock(t *testing.T) {
 	require.Equal(t, int64(59), loader.request.GroupID)
 }
 
-// TestTestingRejectsProtocolOutsideProviderCapability supplies OpenAI and CN
-// text protocol choices with differing eligibility. It verifies execution agrees
-// with each expected decision and a Gemini image accepts a known explicit
-// protocol.
+// TestTestingRejectsProtocolOutsideProviderCapability supplies OpenAI and Kimi,
+// Zhipu, and DeepSeek text protocol choices with differing eligibility. It
+// verifies execution agrees with each expected decision and a Gemini image
+// accepts a known explicit protocol.
 func TestTestingRejectsProtocolOutsideProviderCapability(t *testing.T) {
 	cases := []struct {
 		name     string           // protocol scenario display name

@@ -309,6 +309,7 @@ type PlatformDashboardStats struct {
 // UsageLogFilters selects record visibility, reporting dimensions and
 // optional time bounds for usage reads.
 type UsageLogFilters struct {
+	RequestSource string // optional customer or system source selector
 	// EndpointSource selects inbound, upstream or path breakdowns in
 	// GetStatsWithFilters. Empty text requests each available endpoint chart for
 	// the same filtered totals.
@@ -360,15 +361,16 @@ type UsageLogFilters struct {
 // UsageStats carries filtered usage totals, latency and optional endpoint
 // chart breakdowns.
 type UsageStats struct {
-	TotalRequests            int64   `json:"total_requests"`              // matching usage record total
-	TotalInputTokens         int64   `json:"total_input_tokens"`          // input token total count
-	TotalOutputTokens        int64   `json:"total_output_tokens"`         // output token total count
-	TotalCacheTokens         int64   `json:"total_cache_tokens"`          // creation plus read cache tokens
-	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens"` // cache creation token total
-	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"`     // cache read token total
-	TotalTokens              int64   `json:"total_tokens"`                // combined general token total
-	TotalCost                float64 `json:"total_cost"`                  // standard cost total USD
-	TotalActualCost          float64 `json:"total_actual_cost"`           // user charge total USD
+	IncompleteCostRequests   int64   `json:"incomplete_cost_requests,omitempty"` // requests with partial or unknown cost
+	TotalRequests            int64   `json:"total_requests"`                     // matching usage record total
+	TotalInputTokens         int64   `json:"total_input_tokens"`                 // input token total count
+	TotalOutputTokens        int64   `json:"total_output_tokens"`                // output token total count
+	TotalCacheTokens         int64   `json:"total_cache_tokens"`                 // creation plus read cache tokens
+	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens"`        // cache creation token total
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens"`            // cache read token total
+	TotalTokens              int64   `json:"total_tokens"`                       // combined general token total
+	TotalCost                float64 `json:"total_cost"`                         // standard cost total USD
+	TotalActualCost          float64 `json:"total_actual_cost"`                  // user charge total USD
 	// TotalProviderCost exposes provider cost when the supplying reader
 	// populates it. User HTTP statistics clear this pointer before encoding
 	// their response.
@@ -419,6 +421,7 @@ type ProviderUsageHistory struct {
 // ProviderUsageSummary carries provider report totals, populated-day averages
 // and selected history rows.
 type ProviderUsageSummary struct {
+	IncompleteCostRequests int64 `json:"incomplete_cost_requests,omitempty"` // partial or unknown expense count
 	// Days is the PostgreSQL provider range's elapsed twenty-four-hour interval
 	// count plus one. Nonpositive derived counts display thirty; the records
 	// still come from the supplied query range.

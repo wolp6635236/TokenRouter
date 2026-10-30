@@ -559,3 +559,131 @@ describe('属性管理页面', () => {
     wrapper.unmount()
   })
 })
+
+// Typing a reference updates the draft and loads defaults after the field change.
+// Saving strips hidden attribute overrides and preserves the entered target.
+// A rejected request leaves the editor open so the same draft can be retried.
+it('saves references and retains the draft after failure', async () => {
+  vi.mocked(modelAttributesAPI.list).mockResolvedValue({
+    items: [
+      {
+        id: 1,
+        name: 'Profile',
+        description: '',
+        status: 'active',
+        group_ids: [7],
+        rules: [{ id: 'rule', models: ['custom-*'], reference_model: 'target', attributes: {} }],
+      },
+    ],
+    total: 1,
+  })
+  vi.mocked(modelAttributesAPI.save)
+    .mockRejectedValueOnce(new Error('save failed'))
+    .mockResolvedValue({} as never)
+  const wrapper = mount(ModelAttributesView, { global: { stubs } })
+  await flushPromises()
+  const edit = wrapper
+    .findAll('button')
+    .find(
+      (button) =>
+        button.attributes('title') === 'common.edit' || button.text().includes('common.edit'),
+    )
+  expect(edit).toBeDefined()
+  await edit!.trigger('click')
+  await flushPromises()
+  expect(modelAttributesAPI.getModelDefaultAttributes).toHaveBeenCalledWith('target')
+  const input = wrapper.get<HTMLInputElement>('input[aria-label="admin.pricing.referenceTarget"]')
+  const lookups = vi.mocked(modelAttributesAPI.getModelDefaultAttributes).mock.calls.length
+  input.element.value = 'manual-target'
+  await input.trigger('input')
+  expect(modelAttributesAPI.getModelDefaultAttributes).toHaveBeenCalledTimes(lookups)
+  await input.trigger('change')
+  await flushPromises()
+  expect(modelAttributesAPI.getModelDefaultAttributes).toHaveBeenLastCalledWith('manual-target')
+  await wrapper.find('#attribute-form').trigger('submit')
+  await flushPromises()
+  expect(modelAttributesAPI.save).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      rules: [expect.objectContaining({ reference_model: 'manual-target', attributes: {} })],
+    }),
+  )
+  expect(wrapper.find('#attribute-form').exists()).toBe(true)
+  await wrapper.find('#attribute-form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.find('#attribute-form').exists()).toBe(false)
+})
+
+// Switching an existing custom rule into reference mode keeps its draft fields but
+// blocks saving until a target is selected. Returning to custom mode restores them.
+it('requires a reference target and retains custom attributes through mode changes', async () => {
+  const wrapper = mount(ModelAttributesView, { global: { stubs } })
+  await flushPromises()
+  await wrapper.get('button[aria-label="common.edit"]').trigger('click')
+  await flushPromises()
+  const mode = wrapper
+    .findAllComponents({ name: 'Select' })
+    .find((item) => item.attributes('aria-label') === 'admin.pricing.ruleMode')!
+  expect(mode).toBeDefined()
+  mode.vm.$emit('update:modelValue', 'reference')
+  await flushPromises()
+  await wrapper.get('#attribute-form').trigger('submit')
+  await flushPromises()
+  expect(modelAttributesAPI.save).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('admin.pricing.referenceInvalid')
+  mode.vm.$emit('update:modelValue', 'custom')
+  await flushPromises()
+  expect(wrapper.findComponent(ModelAttributesFields).props('modelValue')).toEqual({
+    tool_call: false,
+  })
+  wrapper.unmount()
+})
+
+// A persisted reference keeps its selected mode when its target is cleared for editing.
+// Empty targets block preview and save; entering a replacement persists the reference again.
+it.each(['', '  '])('keeps saved reference mode when the target becomes %j', async (empty) => {
+  vi.mocked(modelAttributesAPI.list).mockResolvedValue({
+    items: [
+      {
+        id: 1,
+        name: 'Profile',
+        description: '',
+        status: 'active',
+        group_ids: [7],
+        rules: [{ id: 'alias', models: ['source'], reference_model: 'target', attributes: {} }],
+      },
+    ],
+    total: 1,
+  })
+  vi.mocked(modelAttributesAPI.save).mockResolvedValue({} as never)
+  const wrapper = mount(ModelAttributesView, { global: { stubs } })
+  await flushPromises()
+  await wrapper.get('button[aria-label="common.edit"]').trigger('click')
+  await flushPromises()
+  await wrapper.get('input[aria-label="admin.pricing.referenceTarget"]').setValue(empty)
+  await flushPromises()
+  const mode = wrapper
+    .findAllComponents({ name: 'Select' })
+    .find((item) => item.attributes('aria-label') === 'admin.pricing.ruleMode')!
+  expect(mode.props('modelValue')).toBe('reference')
+  expect(wrapper.find('input[aria-label="admin.pricing.referenceTarget"]').exists()).toBe(true)
+  await wrapper.get('#attribute-form').trigger('submit')
+  await flushPromises()
+  expect(modelAttributesAPI.save).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('admin.pricing.referenceInvalid')
+  await wrapper
+    .findAll('button')
+    .find((button) => button.text() === 'admin.modelAttributes.preview')!
+    .trigger('click')
+  await flushPromises()
+  expect(modelAttributesAPI.preview).not.toHaveBeenCalled()
+  await wrapper.get('input[aria-label="admin.pricing.referenceTarget"]').setValue('replacement')
+  await flushPromises()
+  await wrapper.get('#attribute-form').trigger('submit')
+  await flushPromises()
+  expect(modelAttributesAPI.save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      rules: [{ id: 'alias', models: ['source'], reference_model: 'replacement', attributes: {} }],
+    }),
+  )
+  wrapper.unmount()
+})

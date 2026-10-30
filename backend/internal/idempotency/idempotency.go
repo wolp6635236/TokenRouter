@@ -96,15 +96,6 @@ type IdempotencyRepository interface {
 	// the coordinator back to conflict or refreshed-record handling; record expiration
 	// is checked by the coordinator before its expired-record path invokes this method.
 	TryReclaim(ctx context.Context, id int64, fromStatus string, now, newLockedUntil, newExpiresAt time.Time) (bool, error)
-	// ExtendProcessingLock updates deadlines when ID, processing state, and request
-	// fingerprint match, returning whether the record changed. Deadline expiry itself
-	// does not reject the update.
-	//
-	// A fingerprint represents the request, so another acquisition of that same
-	// request can retain the same value. Callers needing acquisition-specific fencing
-	// use OperationLeaseStore and its ownership token; this method distinguishes
-	// request identities and completed states rather than separate owners of one identity.
-	ExtendProcessingLock(ctx context.Context, id int64, requestFingerprint string, newLockedUntil, newExpiresAt time.Time) (bool, error)
 	// MarkSucceeded stores response text and status by record ID, clearing its lock
 	// and failure reason. The coordinator calls it after callback success and response
 	// encoding. Errors leave successful persistence unconfirmed for the current caller,

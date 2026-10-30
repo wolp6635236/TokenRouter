@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -179,15 +178,6 @@ type openAIResponsesFailoverCancelUpstream struct {
 	// onFirstDo runs once for the first recorded call, after mu is released;
 	// set this optional callback before transport use to avoid concurrent replacement.
 	onFirstDo func()
-}
-
-// mixedHTTPTransport records selected provider IDs before forwarding requests
-// with the default HTTP client.
-type mixedHTTPTransport struct {
-	// mu protects providers appends and cloned observations; requests release
-	// mu before network forwarding so call recording does not serialize HTTP exchanges.
-	mu        sync.Mutex // Provider observation access lock.
-	providers []int64    // Observed provider request order.
 }
 
 // mixedHTTPNoSearch supplies an absent searcher for mixed-platform text
@@ -2850,102 +2840,8 @@ func TestOpenAITextAssemblyReadAndStopBoundaries(t *testing.T) {
 	}
 }
 
-// Do records the provider ID under its mutex, then forwards the request with
-// http.DefaultClient. Proxy and concurrency arguments are ignored; successful
-// responses retain the default client's body-cleanup obligation.
-func (s *mixedHTTPTransport) Do(req *http.Request, _ string, id int64, _ int) (*http.Response, error) {
-	// Record selection before forwarding, then unlock so independent HTTP
-	// exchanges can progress while assertions read a consistent provider call sequence.
-	s.mu.Lock()
-	s.providers = append(s.providers, id)
-	s.mu.Unlock()
-	return http.DefaultClient.Do(req)
-}
-
-// DoWithTLS delegates to Do while ignoring the fingerprint profile supplied by
-// execution. Provider observations and default-client forwarding remain the
-// same, and callers close successful response bodies.
-func (s *mixedHTTPTransport) DoWithTLS(req *http.Request, p string, id int64, n int, _ *tlsfingerprint.Profile) (*http.Response, error) {
-	return s.Do(req, p, id, n)
-}
-
-// calls returns a cloned provider-ID sequence while holding its mutex. The
-// result keeps nil for an uninitialized sequence and gives callers separate
-// slice storage for observation.
-func (s *mixedHTTPTransport) calls() []int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.providers)
-}
-
 // Current returns no searcher for the mixed-platform execution fixture.
 func (mixedHTTPNoSearch) Current() searchtools.Searcher { return nil }
-
-// mixedUpstreamResponse returns fixed successful bodies selected by the
-// upstream URL and stream request. failAnthropic makes Messages URLs return
-// HTTP 502 first; response-write errors are left to the outer HTTP-result
-// assertions.
-func mixedUpstreamResponse(w http.ResponseWriter, r *http.Request, failAnthropic bool) {
-	// Use any bytes read from the fixture request to choose its stream
-	// shape; the outer endpoint assertions detect an unusable exchange after read failure.
-	body, _ := io.ReadAll(r.Body)
-	if failAnthropic && strings.Contains(r.URL.Path, "/messages") {
-		w.WriteHeader(http.StatusBadGateway)
-		// Send the scripted protocol body; the outer HTTP result and
-		// completion assertions expose unsuccessful delivery, so
-		// fixture writes discard their errors.
-		_, _ = io.WriteString(w, `{"error":{"type":"overloaded_error","message":"retry another provider"}}`)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if strings.Contains(r.URL.Path, "/messages") {
-		if gjson.GetBytes(body, "stream").Bool() {
-			w.Header().Set("Content-Type", "text/event-stream")
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-mixed\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5-20250929\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok-mixed\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-		} else {
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = io.WriteString(w, `{"id":"msg-mixed","type":"message","role":"assistant","model":"claude-sonnet-4-5-20250929","content":[{"type":"text","text":"ok-mixed"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":3}}`)
-		}
-	} else if strings.Contains(r.URL.Path, "models/") {
-		response := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok-mixed"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}`
-		if strings.Contains(r.URL.Path, "streamGenerateContent") {
-			w.Header().Set("Content-Type", "text/event-stream")
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", response)
-		} else {
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = io.WriteString(w, response)
-		}
-	} else if strings.Contains(r.URL.Path, "chat/completions") {
-		// Send the scripted protocol body; the outer HTTP result and
-		// completion assertions expose unsuccessful delivery, so
-		// fixture writes discard their errors.
-		_, _ = io.WriteString(w, `{"id":"chat-mixed","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"ok-mixed"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`)
-	} else {
-		response := `{"id":"resp-mixed","object":"response","status":"completed","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok-mixed"}]}],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13}}`
-		if gjson.GetBytes(body, "stream").Bool() {
-			w.Header().Set("Content-Type", "text/event-stream")
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-mixed\",\"model\":\"gpt-5.4\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok-mixed\"}\n\ndata: {\"type\":\"response.completed\",\"response\":%s}\n\n", response)
-		} else {
-			// Send the scripted protocol body; the outer HTTP
-			// result and completion assertions expose unsuccessful
-			// delivery, so fixture writes discard their errors.
-			_, _ = io.WriteString(w, response)
-		}
-	}
-}
 
 // TestMixedGroupTextHTTP sends Messages, Responses, and Chat requests to
 // Anthropic, OpenAI, Gemini, or an Anthropic-to-OpenAI failover case. It checks

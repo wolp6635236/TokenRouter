@@ -45,6 +45,17 @@ const (
 	SmartRetryActionContinueURL                           // advance supplied endpoint selection
 )
 
+// Smart retry kinds distinguish structured local waits, provider-model limits,
+// and shared capacity so each caller can apply its existing recovery policy.
+//
+//nolint:decorder // Separate const blocks keep each iota sequence starting at zero.
+const (
+	SmartRetryNone       SmartRetryKind = iota // no recognized structured retry decision
+	SmartRetryShort                            // short wait on the current provider
+	SmartRetryModelLimit                       // long provider-model quota window
+	SmartRetryCapacity                         // shared capacity with fixed retry wait
+)
+
 // RetryInput supplies one provider request and model-limit observations used
 // by local retry policy.
 type RetryInput struct {
@@ -195,6 +206,21 @@ type SmartRetryResult struct {
 	SwitchError *AntigravityProviderSwitchError // selected provider-switch model-limit signal
 }
 
+// SmartRetryKind identifies one mutually exclusive policy selected from RPC details.
+type SmartRetryKind uint8
+
+// SmartRetryDecision carries the classification, effective wait, and normalized
+// model selected for a native Antigravity failure. Its zero value selects no
+// structured retry handling.
+type SmartRetryDecision struct {
+	// Kind selects how callers interpret WaitDuration and ModelName. None leaves
+	// both fields zero; every recognized kind supplies a positive wait and a
+	// nonempty normalized model.
+	Kind         SmartRetryKind // selected structured retry policy
+	WaitDuration time.Duration  // effective retry or cooldown duration
+	ModelName    string         // normalized upstream model identity
+}
+
 // AntigravitySmartRetryInfo combines normalized model identity, parsed wait,
 // and accumulated capacity-reason observations.
 type AntigravitySmartRetryInfo struct {
@@ -266,7 +292,8 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		category = ClassifyAntigravity429(respBody)
 	}
 
-	shouldSmartRetry, shouldRateLimitModel, waitDuration, modelName, isModelCapacityExhausted := ShouldTriggerAntigravitySmartRetry(p.Native, respBody)
+	decision := ClassifyAntigravitySmartRetry(p.Native, respBody)
+	waitDuration := decision.WaitDuration
 
 	// Attempt enabled credits only after explicit quota classification and
 	// current credit eligibility, so an ordinary model wait does not alone spend
@@ -275,7 +302,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		category == Antigravity429QuotaExhausted &&
 		p.OveragesEnabled &&
 		!p.CreditsExhausted() {
-		result := s.AttemptCreditsOveragesRetry(p, baseURL, modelName, waitDuration, resp.StatusCode, respBody)
+		result := s.AttemptCreditsOveragesRetry(p, baseURL, decision.ModelName, waitDuration, resp.StatusCode, respBody)
 		if result.Handled && result.Resp != nil {
 			return &SmartRetryResult{
 				Action: SmartRetryActionBreakWithResp,
@@ -287,10 +314,10 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 	// Handle long model delays before short-retry dispatch; the single-provider
 	// 503 exception bounds local waiting while other paths mark a deadline and
 	// clear affinity.
-	if shouldRateLimitModel {
+	if decision.Kind == SmartRetryModelLimit {
 		// A single-provider 503 waits in place so local throttling does not add another delay.
 		if resp.StatusCode == http.StatusServiceUnavailable && p.SingleProvider {
-			return s.HandleSingleProviderRetryInPlace(p, resp, respBody, baseURL, waitDuration, modelName)
+			return s.HandleSingleProviderRetryInPlace(p, resp, respBody, baseURL, waitDuration, decision.ModelName)
 		}
 
 		rateLimitDuration := waitDuration
@@ -300,10 +327,10 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 			rateLimitDuration = AntigravityDefaultRateLimitDuration
 		}
 		logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d oauth_long_delay model=%s provider=%d upstream_retry_delay=%v body=%s (model rate limit, switch provider)",
-			p.Prefix, resp.StatusCode, modelName, p.ProviderID, rateLimitDuration, s.Options.TruncateForLog(respBody, 200))
+			p.Prefix, resp.StatusCode, decision.ModelName, p.ProviderID, rateLimitDuration, s.Options.TruncateForLog(respBody, 200))
 
 		resetAt := time.Now().Add(rateLimitDuration)
-		if !s.Options.SetModelLimits(modelName, resp.StatusCode, resetAt, false) {
+		if !s.Options.SetModelLimits(decision.ModelName, resp.StatusCode, resetAt, false) {
 			s.Options.HandleError(resp.StatusCode, resp.Header, respBody)
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d rate_limited provider=%d (no model mapping)", p.Prefix, resp.StatusCode, p.ProviderID)
 		}
@@ -313,7 +340,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 			Action: SmartRetryActionBreakWithResp,
 			SwitchError: &AntigravityProviderSwitchError{
 				OriginalProviderID: p.ProviderID,
-				RateLimitedModel:   modelName,
+				RateLimitedModel:   decision.ModelName,
 				IsStickySession:    p.IsStickySession,
 			},
 		}
@@ -322,26 +349,26 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 	// Select same-provider retry for short structured waits or capacity, keeping
 	// capacity on its independent attempt budget instead of consuming the
 	// ordinary retry count.
-	if shouldSmartRetry {
+	if decision.Kind == SmartRetryShort || decision.Kind == SmartRetryCapacity {
 		var lastRetryResp *http.Response
 		var lastRetryBody []byte
 
 		// Override both attempts and wait for accumulated capacity, since its fixed
 		// local retry policy disregards the upstream long-delay observation.
 		maxAttempts := AntigravitySmartRetryMaxAttempts
-		if isModelCapacityExhausted {
+		if decision.Kind == SmartRetryCapacity {
 			maxAttempts = AntigravityModelCapacityRetryMaxAttempts
 			waitDuration = AntigravityModelCapacityRetryWait
 
 			// Read the cooldown before this sequence starts; the lookup reserves no
 			// active retry work, so concurrently admitted sequences may each continue.
-			if modelName != "" {
+			if decision.ModelName != "" {
 				modelCapacityExhaustedMu.RLock()
-				cooldownUntil, exists := modelCapacityExhaustedUntil[modelName]
+				cooldownUntil, exists := modelCapacityExhaustedUntil[decision.ModelName]
 				modelCapacityExhaustedMu.RUnlock()
 				if exists && time.Now().Before(cooldownUntil) {
 					log.Printf("%s status=%d model_capacity_exhausted_dedup model=%s provider=%d cooldown_until=%v (skip retry)",
-						p.Prefix, resp.StatusCode, modelName, p.ProviderID, cooldownUntil.Format("15:04:05"))
+						p.Prefix, resp.StatusCode, decision.ModelName, p.ProviderID, cooldownUntil.Format("15:04:05"))
 					return &SmartRetryResult{
 						Action: SmartRetryActionBreakWithResp,
 						Resp: &http.Response{
@@ -356,7 +383,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			log.Printf("%s status=%d oauth_smart_retry attempt=%d/%d delay=%v model=%s provider=%d",
-				p.Prefix, resp.StatusCode, attempt, maxAttempts, waitDuration, modelName, p.ProviderID)
+				p.Prefix, resp.StatusCode, attempt, maxAttempts, waitDuration, decision.ModelName, p.ProviderID)
 
 			// Wait before dispatching again and let caller cancellation stop this
 			// sequence; the initial failure bytes remain available for terminal handling.
@@ -390,9 +417,9 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 				// Clear capacity state when a retry leaves 429/503, including a different
 				// HTTP failure, because this sequence terminates on that broader response
 				// classification.
-				if isModelCapacityExhausted && modelName != "" {
+				if decision.Kind == SmartRetryCapacity && decision.ModelName != "" {
 					modelCapacityExhaustedMu.Lock()
-					delete(modelCapacityExhaustedUntil, modelName)
+					delete(modelCapacityExhaustedUntil, decision.ModelName)
 					modelCapacityExhaustedMu.Unlock()
 				}
 				return &SmartRetryResult{Action: SmartRetryActionBreakWithResp, Resp: retryResp}
@@ -418,13 +445,13 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 				_ = retryResp.Body.Close()
 			}
 
-			// Refresh the wait only for noncapacity sequences with another remaining
-			// attempt, leaving capacity intervals fixed despite later supplier delay
-			// observations.
-			if !isModelCapacityExhausted && attempt < maxAttempts && lastRetryBody != nil {
-				newShouldRetry, _, newWaitDuration, _, _ := ShouldTriggerAntigravitySmartRetry(p.Native, lastRetryBody)
-				if newShouldRetry && newWaitDuration > 0 {
-					waitDuration = newWaitDuration
+			// Refresh noncapacity waits from later short or capacity decisions only.
+			// Later model limits leave this sequence unchanged, while an initial
+			// capacity decision retains its fixed interval and separate retry budget.
+			if decision.Kind != SmartRetryCapacity && attempt < maxAttempts && lastRetryBody != nil {
+				newDecision := ClassifyAntigravitySmartRetry(p.Native, lastRetryBody)
+				if (newDecision.Kind == SmartRetryShort || newDecision.Kind == SmartRetryCapacity) && newDecision.WaitDuration > 0 {
+					waitDuration = newDecision.WaitDuration
 				}
 			}
 		}
@@ -443,16 +470,16 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		// Return captured capacity failure from this provider after its dedicated
 		// sequence, recording a later admission deadline while already running
 		// sequences remain independent.
-		if isModelCapacityExhausted {
+		if decision.Kind == SmartRetryCapacity {
 			// Write the deadline after exhaustion so later sequences can skip capacity
 			// retries; this update does not interrupt or reserve already admitted work.
-			if modelName != "" {
+			if decision.ModelName != "" {
 				modelCapacityExhaustedMu.Lock()
-				modelCapacityExhaustedUntil[modelName] = time.Now().Add(AntigravityModelCapacityCooldown)
+				modelCapacityExhaustedUntil[decision.ModelName] = time.Now().Add(AntigravityModelCapacityCooldown)
 				modelCapacityExhaustedMu.Unlock()
 			}
 			log.Printf("%s status=%d smart_retry_exhausted_model_capacity attempts=%d model=%s provider=%d body=%s (model capacity exhausted, not switching provider)",
-				p.Prefix, resp.StatusCode, maxAttempts, modelName, p.ProviderID, s.Options.TruncateForLog(retryBody, 200))
+				p.Prefix, resp.StatusCode, maxAttempts, decision.ModelName, p.ProviderID, s.Options.TruncateForLog(retryBody, 200))
 			return &SmartRetryResult{
 				Action: SmartRetryActionBreakWithResp,
 				Resp: &http.Response{
@@ -467,7 +494,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		// Leave model cooldown decisions to the outer orchestration.
 		if resp.StatusCode == http.StatusServiceUnavailable && p.SingleProvider {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d smart_retry_exhausted_single_provider attempts=%d model=%s provider=%d body=%s (return 503 directly)",
-				p.Prefix, resp.StatusCode, AntigravitySmartRetryMaxAttempts, modelName, p.ProviderID, s.Options.TruncateForLog(retryBody, 200))
+				p.Prefix, resp.StatusCode, AntigravitySmartRetryMaxAttempts, decision.ModelName, p.ProviderID, s.Options.TruncateForLog(retryBody, 200))
 			return &SmartRetryResult{
 				Action: SmartRetryActionBreakWithResp,
 				Resp: &http.Response{
@@ -479,10 +506,10 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 		}
 
 		log.Printf("%s status=%d smart_retry_exhausted attempts=%d model=%s provider=%d upstream_retry_delay=%v body=%s (switch provider)",
-			p.Prefix, resp.StatusCode, maxAttempts, modelName, p.ProviderID, rateLimitDuration, s.Options.TruncateForLog(retryBody, 200))
+			p.Prefix, resp.StatusCode, maxAttempts, decision.ModelName, p.ProviderID, rateLimitDuration, s.Options.TruncateForLog(retryBody, 200))
 
 		resetAt := time.Now().Add(rateLimitDuration)
-		s.Options.SetModelLimits(modelName, resp.StatusCode, resetAt, true)
+		s.Options.SetModelLimits(decision.ModelName, resp.StatusCode, resetAt, true)
 
 		// Clear affinity after recording model limiting so the outer switch signal
 		// can select another provider while retaining the original sticky-session
@@ -493,7 +520,7 @@ func (s *RetryAdapter) HandleSmartRetry(p RetryInput, resp *http.Response, respB
 			Action: SmartRetryActionBreakWithResp,
 			SwitchError: &AntigravityProviderSwitchError{
 				OriginalProviderID: p.ProviderID,
-				RateLimitedModel:   modelName,
+				RateLimitedModel:   decision.ModelName,
 				IsStickySession:    p.IsStickySession,
 			},
 		}
@@ -606,13 +633,13 @@ func (s *RetryAdapter) HandleSingleProviderRetryInPlace(
 		lastRetryBody, _ = io.ReadAll(io.LimitReader(retryResp.Body, 8<<10))
 		_ = retryResp.Body.Close()
 
-		// Read the latest delay only when another attempt remains, then clamp it
-		// before the following timer so upstream changes cannot exceed per-wait
-		// limits.
+		// Accept every recognized later delay without changing the initial retry
+		// path or model. Clamp before the next timer so even a model-limit decision
+		// stays within the single-provider per-wait budget.
 		if attempt < AntigravitySingleProviderSmartRetryMaxAttempts && lastRetryBody != nil {
-			_, _, newWaitDuration, _, _ := ShouldTriggerAntigravitySmartRetry(p.Native, lastRetryBody)
-			if newWaitDuration > 0 {
-				waitDuration = max(min(newWaitDuration, AntigravitySingleProviderSmartRetryMaxWait), AntigravitySmartRetryMinWait)
+			newDecision := ClassifyAntigravitySmartRetry(p.Native, lastRetryBody)
+			if newDecision.WaitDuration > 0 {
+				waitDuration = max(min(newDecision.WaitDuration, AntigravitySingleProviderSmartRetryMaxWait), AntigravitySmartRetryMinWait)
 			}
 		}
 	}
@@ -1117,9 +1144,9 @@ func ParseAntigravitySmartRetryInfo(body []byte) *AntigravitySmartRetryInfo {
 	}
 }
 
-// ShouldTriggerAntigravitySmartRetry selects retry and cooldown observations
+// ClassifyAntigravitySmartRetry selects retry and cooldown observations
 // for native requests. A false native flag or unrecognized body returns all
-// zero selections, and model identity comes from normalized RPC metadata.
+// zero fields, and model identity comes from normalized RPC metadata.
 //
 // Accumulated capacity wins over the delay threshold and uses the fixed
 // capacity wait. Otherwise a delay at or above seven seconds selects model
@@ -1127,33 +1154,45 @@ func ParseAntigravitySmartRetryInfo(body []byte) *AntigravitySmartRetryInfo {
 // one-second minimum. Missing or nonpositive parsed delays already use the
 // thirty-second default, so incomplete delay data can select long-delay
 // handling rather than a short retry.
-func ShouldTriggerAntigravitySmartRetry(native bool, respBody []byte) (shouldRetry bool, shouldRateLimitModel bool, waitDuration time.Duration, modelName string, isModelCapacityExhausted bool) {
+func ClassifyAntigravitySmartRetry(native bool, respBody []byte) SmartRetryDecision {
 	if !native {
-		return false, false, 0, "", false
+		return SmartRetryDecision{}
 	}
 
 	info := ParseAntigravitySmartRetryInfo(respBody)
 	if info == nil {
-		return false, false, 0, "", false
+		return SmartRetryDecision{}
 	}
 
 	// Capacity wins over other accumulated reasons and parsed delay because its
 	// recovery uses the independent fixed wait on the current provider.
 	if info.IsModelCapacityExhausted {
-		return true, false, AntigravityModelCapacityRetryWait, info.ModelName, true
+		return SmartRetryDecision{
+			Kind:         SmartRetryCapacity,
+			WaitDuration: AntigravityModelCapacityRetryWait,
+			ModelName:    info.ModelName,
+		}
 	}
 
 	// Long provider-model limits request a cooldown and provider switch.
 	// Missing upstream delays have already received the default duration.
 	if info.RetryDelay >= AntigravityRateLimitThreshold {
-		return false, true, info.RetryDelay, info.ModelName, false
+		return SmartRetryDecision{
+			Kind:         SmartRetryModelLimit,
+			WaitDuration: info.RetryDelay,
+			ModelName:    info.ModelName,
+		}
 	}
 
 	// Raise short parsed delays to the local minimum before provider dispatch
 	// so fractional supplier hints cannot form an immediate repeated request.
-	waitDuration = max(info.RetryDelay, AntigravitySmartRetryMinWait)
+	waitDuration := max(info.RetryDelay, AntigravitySmartRetryMinWait)
 
-	return true, false, waitDuration, info.ModelName, false
+	return SmartRetryDecision{
+		Kind:         SmartRetryShort,
+		WaitDuration: waitDuration,
+		ModelName:    info.ModelName,
+	}
 }
 
 // NormalizeAntigravityModelName trims, lowercases, and removes supported

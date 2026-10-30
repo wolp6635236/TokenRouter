@@ -190,7 +190,7 @@ func (b *geminiMessageAttemptBridge) Forward(state textflow.AttemptState) textfl
 	}
 	// Capture after slot waits so retry commitment observes this forwarding’s
 	// bytes independently of headers or keepalives already written during admission.
-	b.writerSizeBeforeForward = b.c.Writer.Size()
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	if b.provider.Record.Platform == capability.PlatformAntigravity {
 		b.result, err = b.binding().forwardAntigravityGemini(
 			requestCtx,
@@ -210,7 +210,7 @@ func (b *geminiMessageAttemptBridge) Forward(state textflow.AttemptState) textfl
 		b.providerReleaseFunc()
 	}
 	b.binding().reportSchedule(b.selection, b.provider.Record.ID, err == nil, b.result)
-	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: b.c.Writer.Size() != b.writerSizeBeforeForward}
+	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != b.writerSizeBeforeForward}
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
 	out.Attempt.RetryCommitted = out.OutputChanged
 	if retry, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {

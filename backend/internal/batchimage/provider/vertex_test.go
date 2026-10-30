@@ -109,6 +109,34 @@ func TestVertexProvider_SupportsOnlyGeminiServiceAccount(t *testing.T) {
 	require.False(t, platform.SupportsProvider(&providercore.Record{Platform: capability.PlatformGemini, Type: capability.ProviderTypeServiceAccount, Credentials: map[string]any{}}))
 }
 
+// TestVertexProviderAdmissionRetainsExistingJobs disables new creation through
+// protocol policy or missing storage. Persisted jobs must still be polled and
+// cancelled through their original service-account credentials and upstream identity.
+func TestVertexProviderAdmissionRetainsExistingJobs(t *testing.T) {
+	for _, scenario := range []string{"protocol closed", "storage missing"} {
+		t.Run(scenario, func(t *testing.T) {
+			name := "projects/proj/locations/global/batchPredictionJobs/job-1"
+			client := &fakeVertexBatchClient{got: &VertexBatchPredictionJob{Name: name, State: "JOB_STATE_RUNNING"}}
+			platform := newTestVertexProvider(client, &fakeVertexObjectStore{})
+			record := vertexServiceAccount()
+			if scenario == "protocol closed" {
+				record.Credentials["upstream_protocols"] = []string{}
+			} else {
+				platform.opts.ManagedGCSBucket = ""
+			}
+			candidates := &Candidates{Registry: batchimage.NewRegistry[BatchImageProvider](platform)}
+			require.False(t, candidates.Project(record).CanSubmit(batchimage.BatchImageProviderVertex))
+			require.True(t, platform.SupportsProvider(record))
+			job := vertexJobWithName(name)
+			state, err := platform.Get(context.Background(), job, record)
+			require.NoError(t, err)
+			require.NotNil(t, state)
+			require.NoError(t, platform.Cancel(context.Background(), job, record))
+			require.Equal(t, name, client.cancelledName)
+		})
+	}
+}
+
 // TestVertexProvider_MissingServiceAccountRejected submits an empty Gemini
 // service-account record. The provider returns the missing-service-account
 // error, protecting submission from attempting object or job operations with

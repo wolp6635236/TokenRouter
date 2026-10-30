@@ -855,6 +855,7 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 		conditions = append(conditions, usageRequestIDCondition("", len(args)+1))
 		args = append(args, id)
 	}
+	conditions, args = appendRequestSourceCondition(conditions, args, filters.RequestSource, "")
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
 	conditions, args = appendNativeCompactionV2WhereCondition(conditions, args, filters.NativeCompactionV2, "")
@@ -883,7 +884,8 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(SUM(COALESCE(provider_stats_cost, total_cost) * COALESCE(provider_rate_multiplier, 1)), 0) as total_provider_cost,
-			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
+			COALESCE(AVG(duration_ms), 0) as avg_duration_ms,
+			COUNT(*) FILTER (WHERE system_usage->>'cost_state' IN ('unknown','partial'))
 		FROM %s
 		%s
 	`, source, buildWhere(conditions))
@@ -931,6 +933,7 @@ func (r *Store) getStatsWithFilters(ctx context.Context, filters UsageLogFilters
 			&stats.TotalActualCost,
 			&totalProviderCost,
 			&stats.AverageDurationMs,
+			&stats.IncompleteCostRequests,
 		)
 	}
 	// Inbound details can fail independently of summary totals. Retain an empty
@@ -1088,6 +1091,11 @@ func (r *Store) getEndpointStatsByColumnWithFilters(ctx context.Context, endpoin
 		query += " AND team_id IS NULL"
 	}
 	query, args = appendUsageLogModelQueryFilter(query, args, filters.Model, filters.ModelFilterSource)
+	sourceConditions, sourceArgs := appendRequestSourceCondition(nil, args, filters.RequestSource, "")
+	if len(sourceConditions) > 0 {
+		query += " AND " + strings.Join(sourceConditions, " AND ")
+	}
+	args = sourceArgs
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
 	if filters.BillingType != nil {
@@ -1187,6 +1195,11 @@ func (r *Store) getEndpointPathStatsWithFilters(ctx context.Context, startTime, 
 		query += " AND team_id IS NULL"
 	}
 	query, args = appendUsageLogModelQueryFilter(query, args, filters.Model, filters.ModelFilterSource)
+	sourceConditions, sourceArgs := appendRequestSourceCondition(nil, args, filters.RequestSource, "")
+	if len(sourceConditions) > 0 {
+		query += " AND " + strings.Join(sourceConditions, " AND ")
+	}
+	args = sourceArgs
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, filters.RequestType, filters.Stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, filters.NativeCompactionV2, "")
 	if filters.BillingType != nil {
@@ -1316,18 +1329,19 @@ func (r *Store) GetProviderUsageStats(ctx context.Context, providerID int64, sta
 	}
 
 	summary := ProviderUsageSummary{
-		Days:              daysCount,
-		ActualDaysUsed:    actualDaysUsed,
-		TotalCost:         totalProviderCost,
-		TotalUserCost:     totalUserCost,
-		TotalStandardCost: totalStandardCost,
-		TotalRequests:     totalRequests,
-		TotalTokens:       totalTokens,
-		AvgDailyCost:      totalProviderCost / float64(actualDaysUsed),
-		AvgDailyUserCost:  totalUserCost / float64(actualDaysUsed),
-		AvgDailyRequests:  float64(totalRequests) / float64(actualDaysUsed),
-		AvgDailyTokens:    float64(totalTokens) / float64(actualDaysUsed),
-		AvgDurationMs:     avgDuration,
+		IncompleteCostRequests: data.incompleteCostRequests,
+		Days:                   daysCount,
+		ActualDaysUsed:         actualDaysUsed,
+		TotalCost:              totalProviderCost,
+		TotalUserCost:          totalUserCost,
+		TotalStandardCost:      totalStandardCost,
+		TotalRequests:          totalRequests,
+		TotalTokens:            totalTokens,
+		AvgDailyCost:           totalProviderCost / float64(actualDaysUsed),
+		AvgDailyUserCost:       totalUserCost / float64(actualDaysUsed),
+		AvgDailyRequests:       float64(totalRequests) / float64(actualDaysUsed),
+		AvgDailyTokens:         float64(totalTokens) / float64(actualDaysUsed),
+		AvgDurationMs:          avgDuration,
 	}
 
 	todayStr := r.calendar.Now().Format("2006-01-02")

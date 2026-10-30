@@ -129,7 +129,7 @@ backend/
 │   │   ├── httpapi/                                     MCP 传输、管理页面 API 和既有管理路由分发
 │   │   └── rediscache/                                  原子确认状态与加密临时文件
 │   ├── identity/                                        用户、登录身份、会话、强认证和绑定
-│   │   ├── authconfig/                                  登录配置值、地址与钉钉配置解析
+│   │   ├── authconfig/                                  登录配置值、地址、钉钉配置与微信模式/Scope 规则
 │   │   ├── contact/                                     邮箱规范化等联系方式纯规则
 │   │   ├── httpapi/                                     HTTP 路由、鉴权接入与输入输出适配
 │   │   │   ├── authctx/                                 已认证用户、会话和角色的 HTTP 上下文
@@ -270,6 +270,7 @@ backend/
 │   │   ├── jev/                                          Jev SystemOne 单次上游请求
 │   │   ├── kimi/                                        Kimi 模型、用量及错误识别
 │   │   ├── ollama/                                      Ollama Cloud 会话用量与兼容请求
+│   │   ├── opencode/                                    OpenCode 认证、会话头和 Go 用量查询
 │   │   ├── openai/                                      OpenAI/Codex 认证、请求、媒体与连接资源
 │   │   │   ├── liveattestation/                         Darwin 本机认证，其他平台返回不支持
 │   │   │   └── ws/                                      Responses 握手、连接池与参数更新
@@ -303,6 +304,7 @@ backend/
 │       ├── identity/                                    用户、登录身份、会话、强认证和绑定集成测试
 │       ├── identityhttp/                                身份 HTTP 集成测试
 │       ├── maintenance/                                 备份与系统维护集成测试
+│       ├── mcp/                                         MCP 管理输出与业务 DTO 的跨模块测试
 │       ├── migrations/                                  数据库迁移集成测试
 │       ├── payment/                                     外部支付订单、渠道、履约与退款集成测试
 │       ├── pricing_contract/                            跨模块定价集成测试

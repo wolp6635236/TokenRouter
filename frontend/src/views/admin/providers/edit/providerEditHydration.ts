@@ -17,14 +17,18 @@ import {
 } from '@/components/provider/form/headerOverrides'
 import { readPlanType } from '@/components/provider/form/planType'
 import {
+  apiKeyPreset,
   isCustomGrokBaseUrl,
   cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
+  derivedEndpointSlots,
+  providerModeChoices,
   type CnNativeApiProtocol,
+  type EndpointSlotAddresses,
 } from '@/components/provider/form/providerEndpoints'
 import { readUpstreamBalanceAlert } from '@/utils/upstreamBalanceAlert'
-import { readCodexImageToolMode } from '@/utils/codexImageToolMode'
+import { readCodexImageToolMode, readCodexImageResponsesModel } from '@/utils/codexImageToolMode'
 import { RESPONSES_WS_POOLED, readResponsesWSConnectionMode } from '@/utils/responsesWsConnection'
 import { normalizeOpenAICompactMode } from '@/utils/openaiLegacyConfiguration'
 import {
@@ -40,7 +44,7 @@ import {
 //
 // Secret input refs stay empty where the server supplies only presence flags. CN addresses
 // are restored from protocol-specific values before the legacy forwarding address fills a
-// missing entry. The calling component suppresses its endpoint watchers through the next
+// missing entry; root-derived platforms restore only their saved overrides. The calling component suppresses its endpoint watchers through the next
 // Vue tick while this synchronous work runs, preventing stored custom addresses from being
 // replaced by presets.
 
@@ -281,6 +285,7 @@ export function hydrateProviderEditDraft(
     openAIOAuthClientPolicy,
     codexFingerprintMode,
     codexImageToolMode,
+    codexImageResponsesModel,
     anthropicPassthroughEnabled,
     anthropicAPIKeyAuthScheme,
     webSearchEmulationMode,
@@ -556,6 +561,7 @@ export function hydrateProviderEditDraft(
   openAIOAuthClientPolicy.value = 'any'
   codexFingerprintMode.value = 'off'
   codexImageToolMode.value = 'inherit'
+  codexImageResponsesModel.value = ''
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
@@ -585,6 +591,7 @@ export function hydrateProviderEditDraft(
       openAIImagesURLToB64JSON.value = extra?.images_url_to_b64_json === true
     }
     codexImageToolMode.value = readCodexImageToolMode(extra)
+    codexImageResponsesModel.value = readCodexImageResponsesModel(extra)
     responsesWSConnectionMode.value = readResponsesWSConnectionMode(extra)
     if (newProvider.type === 'oauth') {
       openAIOAuthClientPolicy.value = normalizeOpenAIOAuthClientPolicy(
@@ -725,12 +732,34 @@ export function hydrateProviderEditDraft(
   }
   if (newProvider.type === 'apikey' && newProvider.credentials) {
     const credentials = newProvider.credentials as Record<string, unknown>
+    // A missing or unsupported saved mode restores the platform's first mode choice.
+    const modeChoices = providerModeChoices(newProvider.platform)
+    if (modeChoices.length > 0) {
+      editProviderMode.value =
+        modeChoices.find((choice) => choice.value === credentials.provider_mode)?.value ??
+        modeChoices[0]!.value
+    }
+    const storedSlotAddresses =
+      (credentials.api_base_urls as Record<string, unknown> | undefined) || {}
+    const derivedSlots = derivedEndpointSlots(newProvider.platform, '', editProviderMode.value)
+    if (derivedSlots.length > 0) {
+      // Blank derived slots follow the service root, so only saved overrides are restored.
+      const nextSlotAddresses: EndpointSlotAddresses = {
+        chat_completions: '',
+        anthropic: '',
+        responses: '',
+      }
+      for (const { slot } of derivedSlots) {
+        const stored = storedSlotAddresses[slot]
+        nextSlotAddresses[slot] = typeof stored === 'string' ? stored.trim() : ''
+      }
+      editAdaptiveBaseUrls.value = nextSlotAddresses
+    }
     if (
       newProvider.platform === 'kimi' ||
       newProvider.platform === 'zhipu' ||
       newProvider.platform === 'deepseek'
     ) {
-      editProviderMode.value = credentials.provider_mode === 'coding' ? 'coding' : 'payg'
       // Unified upstream_protocols selects the adaptive endpoint editor even for an empty
       // array; older credentials retain their single-protocol editing mode.
       const storedProtocol =
@@ -754,8 +783,7 @@ export function hydrateProviderEditDraft(
         newProvider.platform,
         editProviderMode.value,
       )
-      const storedBaseUrls =
-        (credentials.api_base_urls as Record<string, unknown> | undefined) || {}
+      const storedBaseUrls = storedSlotAddresses
       const legacyBaseUrl =
         typeof credentials.base_url === 'string' ? credentials.base_url.trim() : ''
       const storedChatBaseUrl =
@@ -797,23 +825,11 @@ export function hydrateProviderEditDraft(
       }
     }
     const platformDefaultUrl =
-      newProvider.platform === 'jev'
-        ? 'https://api.typesafe.ai'
-        : newProvider.platform === 'openai'
-          ? 'https://api.openai.com'
-          : newProvider.platform === 'gemini'
-            ? 'https://generativelanguage.googleapis.com'
-            : newProvider.platform === 'grok'
-              ? 'https://api.x.ai/v1'
-              : newProvider.platform === 'kimi' ||
-                  newProvider.platform === 'zhipu' ||
-                  newProvider.platform === 'deepseek'
-                ? defaultCNBaseUrl(
-                    newProvider.platform,
-                    editProviderMode.value,
-                    editApiProtocol.value,
-                  )
-                : 'https://api.anthropic.com'
+      newProvider.platform === 'kimi' ||
+      newProvider.platform === 'zhipu' ||
+      newProvider.platform === 'deepseek'
+        ? defaultCNBaseUrl(newProvider.platform, editProviderMode.value, editApiProtocol.value)
+        : apiKeyPreset(newProvider.platform).defaultBaseUrl
     editBaseUrl.value =
       ['kimi', 'zhipu', 'deepseek'].includes(newProvider.platform) &&
       newProvider.type === 'apikey' &&

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,12 +72,13 @@ type dashboardSnapshotV2Response struct {
 // dashboardSnapshotV2Filters carries parsed scalar and optional selectors
 // captured before shared loading.
 type dashboardSnapshotV2Filters struct {
-	UserID     int64  // filter actor user identifier
-	APIKeyID   int64  // filter key identifier
-	ProviderID int64  // filter provider identifier
-	GroupID    int64  // filter group identifier
-	TeamID     int64  // filter team identifier
-	Model      string // trend model equality selector
+	RequestSource string // customer or system request selector
+	UserID        int64  // filter actor user identifier
+	APIKeyID      int64  // filter key identifier
+	ProviderID    int64  // filter provider identifier
+	GroupID       int64  // filter group identifier
+	TeamID        int64  // filter team identifier
+	Model         string // trend model equality selector
 	// RequestType and Stream retain their optional query meaning. Parsing a
 	// nonempty request category clears Stream selection, so malformed legacy
 	// stream text is ignored when a category was supplied.
@@ -89,6 +91,7 @@ type dashboardSnapshotV2Filters struct {
 // dashboardSnapshotV2CacheKey identifies the captured query selections and
 // included administrator response sections.
 type dashboardSnapshotV2CacheKey struct {
+	RequestSource string `json:"request_source"` // customer or system request selector
 	// StartTime and EndTime encode UTC bounds at RFC3339 second precision.
 	// Fractional-second or location differences can match the same cached
 	// response despite exact loader bounds and display locations.
@@ -165,6 +168,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		TeamID:             filters.TeamID,
 		Model:              filters.Model,
 		RequestType:        filters.RequestType,
+		RequestSource:      filters.RequestSource,
 		Stream:             filters.Stream,
 		BillingType:        filters.BillingType,
 		NativeCompactionV2: filters.NativeCompactionV2,
@@ -266,7 +270,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.NativeCompactionV2,
-		)
+			filters.RequestSource)
 		if err != nil {
 			return nil, errors.New("failed to get usage trend")
 		}
@@ -288,7 +292,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.NativeCompactionV2,
-		)
+			filters.RequestSource)
 		if err != nil {
 			return nil, errors.New("failed to get model statistics")
 		}
@@ -309,7 +313,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			filters.Stream,
 			filters.BillingType,
 			filters.NativeCompactionV2,
-		)
+			filters.RequestSource)
 		if err != nil {
 			return nil, errors.New("failed to get group statistics")
 		}
@@ -400,6 +404,13 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		return nil, err
 	}
 	filters.NativeCompactionV2 = nativeCompactionV2
+	filters.RequestSource = strings.TrimSpace(c.Query("request_source"))
+	if filters.RequestSource == "" {
+		filters.RequestSource = usage.SourceUser
+	}
+	if !usage.ValidRequestSource(filters.RequestSource) {
+		return nil, fmt.Errorf("invalid request_source")
+	}
 
 	return filters, nil
 }

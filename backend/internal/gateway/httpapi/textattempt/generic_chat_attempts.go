@@ -28,8 +28,8 @@ import (
 //
 // The result and writer-size change answer separate loop questions. A result
 // can retain partial usage while an error remains. Gin changes size from -1 to
-// zero on first header commitment, so a size change can close this attempt's
-// retry window before body bytes exist; prior commitment can also predate the
+// zero on header-only commitment without heartbeats, so a size change can
+// close this attempt's retry window before body bytes exist; prior commitment can also predate the
 // attempt. Provider ownership returns after the exchange before scheduling
 // feedback, while completion later captures
 // admitted funding and original request attribution. Missing compatibility
@@ -152,9 +152,9 @@ func (b *genericChatAttemptBridge) Forward(_ textflow.AttemptState) textflow.Out
 		return textflow.Outcome{Skip: true}
 	}
 	// Compare size around this exchange for the loop's retry decision.
-	// Gin's first header commitment changes -1 to zero even before body
-	// bytes are written.
-	b.writerSizeBeforeForward = b.c.Writer.Size()
+	// Recorded heartbeats keep the baseline at -1; header-only commitment
+	// without recorded bytes still changes it to zero before body output.
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	b.forwardBody = b.body
 	// Rebuild model replacement from retained client bytes for this
 	// attempt, keeping the original requested name available for completion
@@ -200,7 +200,7 @@ func (b *genericChatAttemptBridge) Forward(_ textflow.AttemptState) textflow.Out
 	}
 	b.binding().reportSchedule(b.selection, b.provider.Record.ID, err == nil, b.result)
 
-	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: b.c.Writer.Size() != b.writerSizeBeforeForward}
+	out := textflow.Outcome{Attempt: messageObservedAttempt(b.result, err), Err: err, HasResult: b.result != nil, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != b.writerSizeBeforeForward}
 	out.Attempt.HTTPCommitted = b.c.Writer.Written()
 	out.Attempt.RetryCommitted = out.OutputChanged
 	var policy *anthropic.BetaBlockedError

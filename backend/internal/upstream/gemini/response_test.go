@@ -1,15 +1,72 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 )
+
+// nativeStreamTestSink retains native frames for SDK wire-format assertions.
+type nativeStreamTestSink struct {
+	bytes.Buffer // delivered response bytes
+}
+
+// Begin accepts metadata without changing the fixture's captured response bytes.
+func (s *nativeStreamTestSink) Begin(upstream.OutputHead) error { return nil }
+
+// Emit records synchronous payload delivery for the native stream fixture.
+func (s *nativeStreamTestSink) Emit(event upstream.OutputEvent) error {
+	_, err := s.Write(event.Data)
+	return err
+}
+
+// TestNativeSSEValidationAndFraming exercises native and wrapped provider streams.
+// Successful responses preserve complete JSON frames, while missing completion and
+// explicit provider errors cannot become apparently successful empty responses.
+func TestNativeSSEValidationAndFraming(t *testing.T) {
+	first := `{"candidates":[{"content":{"parts":[{"text":"first"}]}}]}`
+	last := `{"candidates":[{"content":{"parts":[{"text":"last"}]},"finishReason":"STOP"}]}`
+	for _, tc := range []struct {
+		name  string // selected failure scenario
+		body  string // upstream SSE bytes
+		oauth bool   // wrapped response mode
+		fails bool   // expected failure result
+	}{
+		{"rest", "data: " + first + "\n\ndata: " + last + "\n\n", false, false},
+		{"oauth", "data: {\"response\":" + first + "}\n\ndata: {\"response\":" + last + "}\n\n", true, false},
+		{"done", "data: " + first + "\n\ndata: [DONE]\n\n", false, false},
+		{"empty", "", false, true},
+		{"missing completion", "data: " + first + "\n\n", false, true},
+		{"provider error", "data: {\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"fixture quota\"}}\n\n", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &nativeStreamTestSink{}
+			adapter := ResponseAdapter{Options: ResponseOptions{ObserveImages: func([]byte) {}}}
+			response := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.body))}
+			_, err := adapter.HandleNativeStreamingResponse(upstream.NewOutputContext(sink), response, time.Now(), tc.oauth)
+			if tc.fails {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.NotContains(t, sink.String(), "[DONE]")
+			require.NotContains(t, sink.String(), "\n\n\n")
+			for frame := range strings.SplitSeq(strings.TrimSuffix(sink.String(), "\n\n"), "\n\n") {
+				require.True(t, strings.HasPrefix(frame, "data: "), frame)
+				require.True(t, json.Valid([]byte(strings.TrimPrefix(frame, "data: "))), frame)
+			}
+		})
+	}
+}
 
 // TestConvertGeminiToClaudeMessageOmitsInlineDataForAnthropicMessages converts
 // text, image, and tool parts with the image option enabled and disabled. It

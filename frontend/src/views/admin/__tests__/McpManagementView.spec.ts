@@ -1,8 +1,9 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import McpManagementView from '../McpManagementView.vue'
-// The compiler-enabled build renders the checked-in locale strings; production
-// uses precompiled messages with the runtime-only Vue I18n alias.
+// The compiler-enabled distribution renders checked-in locale strings directly,
+// keeping this fixture independent of the runtime alias selected by application builds.
 import { createI18n } from '../../../../node_modules/vue-i18n/dist/vue-i18n.mjs'
 import type { StepUpController } from '@/composables/useStepUp'
 import en from '@/i18n/locales/en/admin/mcp'
@@ -11,7 +12,8 @@ import zh from '@/i18n/locales/zh/admin/mcp'
 // McpManagementView.spec.ts exercises permission selection and token creation through
 // the page's actual form events. API replacements distinguish failed writes from
 // successful creation followed by failed readback, protecting both retained drafts
-// and immediate credential delivery from unrelated list refresh failures.
+// and immediate credential delivery from unrelated list refresh failures. Incoming
+// operation links use the real dialog shell to verify modal review and dismissal.
 
 // Shared API replacements allow each case to select its write and readback outcomes.
 const api = vi.hoisted(() => ({
@@ -31,7 +33,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('@/api/admin/mcp', () => api)
 // Route fixtures select incoming confirmation or file workflows before mounting the page.
-const route = vi.hoisted(() => ({ name: 'AdminMCP', query: {} as Record<string, string> }))
+const route = reactive({ name: 'AdminMCP', query: {} as Record<string, string> })
 const routerReplace = vi.hoisted(() => vi.fn())
 const saveAs = vi.hoisted(() => vi.fn())
 vi.mock('file-saver', () => ({ saveAs }))
@@ -107,25 +109,22 @@ const catalogue = [
   },
 ]
 
-// page mounts form-bearing slots while replacing unrelated shell and overlay machinery.
+// page mounts the actual dialog shell while replacing unrelated layout and table machinery.
 function page() {
   return mount(McpManagementView, {
     global: {
       stubs: {
         AppLayout: { template: '<main><slot /></main>' },
         TablePageLayout: {
-          template: '<div><slot name="actions"/><slot name="filters"/><slot name="table"/></div>',
+          template:
+            '<div><div data-test="page-actions"><slot name="actions"/></div><slot name="filters"/><slot name="table"/></div>',
         },
         DataTable: {
           props: ['data'],
           template:
             '<div><template v-for="row in data"><slot name="cell-name" :row="row"/><slot name="cell-prefix" :row="row" :value="row.prefix"/><slot name="cell-enabled" :row="row"/><slot v-if="row.source === \'oauth\'" name="cell-connection_expires_at" :row="row" :value="row.connection_expires_at"/><slot name="cell-actions" :row="row"/></template><slot v-if="!data?.length" name="empty"/></div>',
         },
-        BaseDialog: {
-          props: ['show', 'title'],
-          template:
-            '<section v-if="show"><h2>{{ title }}</h2><slot/><slot name="footer"/></section>',
-        },
+        BaseDialog: false,
         Teleport: true,
         MotionTransition: { props: ['name'], template: '<slot />' },
         ConfirmDialog: true,
@@ -187,6 +186,132 @@ describe('MCP token management', () => {
     api.getOAuthStatus.mockResolvedValue({ enabled: false, issuer: '', resource: '' })
     api.listOperations.mockResolvedValue(catalogue)
   })
+
+  // An incoming confirmation opens its modal before the review request finishes.
+  // The preview and approval action stay inside the dialog, and cancellation never approves it.
+  it('opens operation confirmation in a modal and dismisses only its URL parameter', async () => {
+    route.query = { confirmation_id: 'modal-review', retained: 'yes' }
+    let resolveReview!: (review: unknown) => void
+    api.getConfirmation.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveReview = resolve)),
+    )
+    routerReplace.mockImplementation(async ({ query }) => {
+      route.query = query
+    })
+    const wrapper = page()
+    const modal = wrapper.get('[role="dialog"][aria-modal="true"]')
+    expect(modal.text()).toContain('common.loading')
+    await flushPromises()
+    resolveReview({
+      id: 'modal-review',
+      state: 'pending',
+      operation: catalogue[1],
+      preview: '{"name":"Reviewed user"}',
+    })
+    await flushPromises()
+    expect(modal.text()).toContain('admin.mcp.review')
+    expect(modal.text()).toContain('Create user')
+    expect(modal.text()).toContain('Reviewed user')
+    expect(modal.text()).toContain('admin.mcp.approve')
+    expect(wrapper.get('[data-test="page-actions"]').text()).not.toContain('Reviewed user')
+    await clickText(wrapper, 'common.cancel')
+    await flushPromises()
+    expect(routerReplace).toHaveBeenCalledWith({ query: { retained: 'yes' } })
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(api.approveConfirmation).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  // An expired or unavailable confirmation cannot supply a usable preview.
+  // Its failure stays visible inside the modal, with a retry that can restore approval controls.
+  it('reports confirmation load failures and retries inside the modal', async () => {
+    route.query = { confirmation_id: 'retry-review' }
+    api.getConfirmation.mockRejectedValueOnce(new Error('Confirmation unavailable'))
+    const wrapper = page()
+    await flushPromises()
+    const modal = wrapper.get('[role="dialog"]')
+    expect(modal.get('[role="alert"]').text()).toBe('Confirmation unavailable')
+    expect(modal.text()).not.toContain('admin.mcp.approve')
+    expect(wrapper.get('[data-test="page-actions"]').text()).not.toContain(
+      'Confirmation unavailable',
+    )
+    api.getConfirmation.mockResolvedValue({
+      id: 'retry-review',
+      state: 'pending',
+      operation: catalogue[1],
+      preview: '{}',
+    })
+    await modal
+      .findAll('button')
+      .find((button) => button.text() === 'admin.mcp.refresh')!
+      .trigger('click')
+    await flushPromises()
+    expect(modal.find('[role="alert"]').exists()).toBe(false)
+    expect(modal.text()).toContain('admin.mcp.approve')
+    wrapper.unmount()
+  })
+
+  // Approval waits for TOTP while the operation review remains visible underneath.
+  // Dismissal is blocked during verification, and successful approval replaces the action with its result.
+  it('keeps the modal open through verification and shows the approved result', async () => {
+    route.query = { confirmation_id: 'approve-review' }
+    const review = {
+      id: 'approve-review',
+      state: 'pending',
+      operation: catalogue[1],
+      preview: '{}',
+    }
+    api.getConfirmation.mockResolvedValue(review)
+    api.approveConfirmation.mockRejectedValueOnce({ code: 'STEP_UP_REQUIRED' })
+    const wrapper = page()
+    await flushPromises()
+    await clickText(wrapper, 'admin.mcp.approve')
+    await flushPromises()
+    const controller = stepUpController(wrapper)
+    expect(controller.visible.value).toBe(true)
+    await wrapper.get('button[aria-label="Close modal"]').trigger('click')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(routerReplace).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="dialog"]').text()).toContain('common.processing')
+    api.approveConfirmation.mockResolvedValue(undefined)
+    api.getConfirmation.mockResolvedValue({ ...review, state: 'approved' })
+    controller.onVerified()
+    await flushPromises()
+    expect(api.approveConfirmation).toHaveBeenCalledTimes(2)
+    expect(api.approveConfirmation).toHaveBeenLastCalledWith('approve-review')
+    const modal = wrapper.get('[role="dialog"]')
+    expect(modal.text()).toContain('admin.mcp.approved')
+    expect(modal.findAll('button').some((button) => button.text() === 'admin.mcp.approve')).toBe(
+      false,
+    )
+    expect(modal.text()).toContain('common.close')
+    wrapper.unmount()
+  })
+
+  // A previous approval or consumed request can be revisited through its link.
+  // The modal displays its server state and never offers another approval action.
+  it.each(['approved', 'consumed'])(
+    'shows the %s confirmation result without approval',
+    async (state) => {
+      route.query = { confirmation_id: 'completed-review' }
+      api.getConfirmation.mockResolvedValue({
+        id: 'completed-review',
+        state,
+        operation: catalogue[1],
+        preview: '{}',
+      })
+      const wrapper = page()
+      await flushPromises()
+      const modal = wrapper.get('[role="dialog"]')
+      expect(modal.get('[role="status"]').text()).toBe(`admin.mcp.${state}`)
+      expect(modal.findAll('button').some((button) => button.text() === 'admin.mcp.approve')).toBe(
+        false,
+      )
+      expect(api.approveConfirmation).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
 
   // Two different rows request verification before the first response arrives.
   // The second request waits through the first prompt, and both rows recover after cancellation or verification.

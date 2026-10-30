@@ -40,11 +40,6 @@ func (r *idempotencyCleanupRepoStub) TryReclaim(context.Context, int64, string, 
 	return false, nil
 }
 
-// ExtendProcessingLock returns false because cleanup tests renew no processing deadlines.
-func (r *idempotencyCleanupRepoStub) ExtendProcessingLock(context.Context, int64, string, time.Time, time.Time) (bool, error) {
-	return false, nil
-}
-
 // MarkSucceeded succeeds inertly because cleanup scenarios store no callback outcomes.
 func (r *idempotencyCleanupRepoStub) MarkSucceeded(context.Context, int64, int, string, time.Time) error {
 	return nil

@@ -74,7 +74,7 @@ var duplicateProviderDiscardedExtraKeys = map[string]struct{}{
 	"grok_billing_snapshot":                  {},
 	"qoder_quota_snapshot":                   {},
 	"qoder_quota_updated_at":                 {},
-	CNUsageMonitorSnapshotExtraKey:           {},
+	UsageMonitorSnapshotExtraKey:             {},
 	"antigravity_credits_overages":           {},
 	"antigravity_force_token_refresh":        {},
 	"antigravity_force_token_refresh_at":     {},

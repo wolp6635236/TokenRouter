@@ -67,8 +67,8 @@ func TestResponseModelBatchRoundTrip(t *testing.T) {
 		log, err := scanUsageLog(integrationDB.QueryRowContext(ctx, "SELECT "+usageLogSelectColumns+" FROM usage_logs WHERE id=$1", state.ID))
 		require.NoError(t, err)
 		want := prepared[key].args
-		require.Equal(t, want[len(want)-3], nullString(log.UpstreamResponseModel))
-		require.Equal(t, want[len(want)-2], log.UpstreamModelMismatch)
+		require.Equal(t, want[len(want)-5], nullString(log.UpstreamResponseModel))
+		require.Equal(t, want[len(want)-4], log.UpstreamModelMismatch)
 	}
 	// Execute the acknowledgement-only and direct shapes with populated response
 	// evidence, then compare their raw readback to the same supplied diagnostics.

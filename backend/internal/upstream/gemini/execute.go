@@ -188,6 +188,8 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		output.Header("x-request-id", result.RequestID)
 	}
 	response := target.Response
+	response.Context = ctx
+	response.Stream.Candidates = exchange.CandidateCount
 	var modelObserver protocol.ResponseModelObserver
 	defer func() { result.UpstreamResponseModel = modelObserver.Model() }()
 	priorRaw := response.ObserveRaw

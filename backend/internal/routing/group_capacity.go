@@ -215,22 +215,7 @@ func (s *CapacityService) getGroupCapacitiesBatch(ctx context.Context, groupIDs 
 			providerIDs = append(providerIDs, row.Provider.ID)
 		}
 
-		results[idx].ConcurrencyMax += acc.Concurrency
-
-		if maxSessions := acc.MaxSessions; maxSessions > 0 {
-			results[idx].SessionsMax += maxSessions
-			// Bounded session counts use the default idle duration when the provider
-			// snapshot supplies no positive timeout for interpreting active sessions.
-			timeout := time.Duration(acc.SessionIdleTimeoutMinutes) * time.Minute
-			if timeout <= 0 {
-				timeout = 5 * time.Minute
-			}
-			sessionTimeouts[acc.ID] = timeout
-		}
-
-		if rpm := acc.BaseRPM; rpm > 0 {
-			results[idx].RPMMax += rpm
-		}
+		accumulateProviderCapacity(&results[idx], sessionTimeouts, acc)
 	}
 
 	if len(providerIDs) == 0 {
@@ -384,27 +369,12 @@ func (s *CapacityService) GetGroupCapacity(ctx context.Context, groupID int64) (
 
 	providerIDs := make([]int64, 0, len(providers))
 	sessionTimeouts := make(map[int64]time.Duration)
-	var concurrencyMax, sessionsMax, rpmMax int
+	var limits GroupCapacitySummary
 
 	for i := range providers {
 		acc := &providers[i]
 		providerIDs = append(providerIDs, acc.ID)
-		concurrencyMax += acc.Concurrency
-
-		if ms := acc.MaxSessions; ms > 0 {
-			sessionsMax += ms
-			// Apply the same idle-duration default as batch summaries so bounded
-			// provider sessions use comparable counting windows on either read path.
-			timeout := time.Duration(acc.SessionIdleTimeoutMinutes) * time.Minute
-			if timeout <= 0 {
-				timeout = 5 * time.Minute
-			}
-			sessionTimeouts[acc.ID] = timeout
-		}
-
-		if rpm := acc.BaseRPM; rpm > 0 {
-			rpmMax += rpm
-		}
+		accumulateProviderCapacity(&limits, sessionTimeouts, *acc)
 	}
 
 	// Ignore counter errors while using any returned entries, keeping configured
@@ -416,12 +386,12 @@ func (s *CapacityService) GetGroupCapacity(ctx context.Context, groupID int64) (
 	}
 
 	var sessionsMap map[int64]int
-	if sessionsMax > 0 && s.sessionLimitCache != nil {
+	if limits.SessionsMax > 0 && s.sessionLimitCache != nil {
 		sessionsMap, _ = s.sessionLimitCache.GetActiveSessionCountBatch(ctx, providerIDs, sessionTimeouts)
 	}
 
 	var rpmMap map[int64]int
-	if rpmMax > 0 && s.rpmCache != nil {
+	if limits.RPMMax > 0 && s.rpmCache != nil {
 		rpmMap, _ = s.rpmCache.GetRPMBatch(ctx, providerIDs)
 	}
 
@@ -438,10 +408,36 @@ func (s *CapacityService) GetGroupCapacity(ctx context.Context, groupID int64) (
 
 	return GroupCapacitySummary{
 		ConcurrencyUsed: concurrencyUsed,
-		ConcurrencyMax:  concurrencyMax,
+		ConcurrencyMax:  limits.ConcurrencyMax,
 		SessionsUsed:    sessionsUsed,
-		SessionsMax:     sessionsMax,
+		SessionsMax:     limits.SessionsMax,
 		RPMUsed:         rpmUsed,
-		RPMMax:          rpmMax,
+		RPMMax:          limits.RPMMax,
 	}, nil
+}
+
+// accumulateProviderCapacity adds one eligible provider's configured limits to
+// a group summary and records its bounded-session timeout. Callers supply a
+// nonnil summary and timeout map after applying their path's membership
+// filtering; each call contributes once, including nonpositive concurrency.
+// Session and RPM maxima contribute only when positive, so unbounded members do
+// not cancel bounded limits. The shared timeout map retains the latest bounded
+// session duration for each provider, using five minutes when the converted
+// duration is nonpositive.
+func accumulateProviderCapacity(summary *GroupCapacitySummary, sessionTimeouts map[int64]time.Duration, capacity provider.CapacitySnapshot) {
+	summary.ConcurrencyMax += capacity.Concurrency
+	if capacity.MaxSessions > 0 {
+		summary.SessionsMax += capacity.MaxSessions
+		// Convert stored minutes to the duration expected by session-count readers.
+		timeout := time.Duration(capacity.SessionIdleTimeoutMinutes) * time.Minute
+		if timeout <= 0 {
+			// A bounded session limit without a usable duration still needs an expiry
+			// window for active-session counting, including snapshots with unset values.
+			timeout = 5 * time.Minute
+		}
+		sessionTimeouts[capacity.ID] = timeout
+	}
+	if capacity.BaseRPM > 0 {
+		summary.RPMMax += capacity.BaseRPM
+	}
 }

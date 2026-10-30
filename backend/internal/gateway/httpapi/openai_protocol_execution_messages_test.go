@@ -2087,7 +2087,7 @@ func TestForwardAsAnthropic_EventNamedTerminalWithKeepaliveReturns(t *testing.T)
 		Body:       upstreamStream,
 	}}
 
-	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Response: OpenAIResponseOptions{StreamKeepaliveInterval: 5}}, transport: upstream})
+	svc := newResponsesFixture(responsesFixtureInputs{options: &responsesFixtureOptions{Response: OpenAIResponseOptions{}}, transport: upstream})
 	provider := &gatewayprovider.ExecutionProvider{
 		Record: providercore.Record{
 			LoadLocation: time.LoadLocation, ID: 1,
@@ -3212,7 +3212,7 @@ func TestForwardAsAnthropic_ForceChatCompletionsStreamingClosesOpenBlockOnDone(t
 
 // TestForwardAsAnthropic_ForceChatCompletionsStreamingToolCallAggregation
 // splits one indexed tool argument across Chat chunks. It checks disabled
-// parallel mode, tool-use framing, ping ordering, tool stop reason and
+// parallel mode, tool-use framing without synthesized pings, tool stop reason and
 // observed usage.
 func TestForwardAsAnthropic_ForceChatCompletionsStreamingToolCallAggregation(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"weather in sf?"}],"tools":[{"name":"get_weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"tool_choice":{"type":"auto","disable_parallel_tool_use":true},"stream":true}`)
@@ -3250,14 +3250,13 @@ func TestForwardAsAnthropic_ForceChatCompletionsStreamingToolCallAggregation(t *
 	require.False(t, parallelToolCalls.Bool())
 
 	out := rec.Body.String()
-	require.Contains(t, out, "event: ping")
+	require.NotContains(t, out, "event: ping")
 	require.Contains(t, out, `"type":"tool_use"`)
 	require.Contains(t, out, `"name":"get_weather"`)
 	require.Contains(t, out, `"input_json_delta"`)
 	require.Contains(t, out, `"stop_reason":"tool_use"`)
 	require.Contains(t, out, "event: message_stop")
-	require.Less(t, strings.Index(out, "event: message_start"), strings.Index(out, "event: ping"))
-	require.Less(t, strings.Index(out, "event: ping"), strings.Index(out, `"type":"tool_use"`))
+	require.Less(t, strings.Index(out, "event: message_start"), strings.Index(out, `"type":"tool_use"`))
 	require.Equal(t, 6, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
 }

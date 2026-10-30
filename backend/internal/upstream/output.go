@@ -37,7 +37,10 @@ type OutputHead struct {
 	// Committed records an adapter's existing HTTP commitment. NewOutputContext
 	// retains a supplied Status only when Committed is true and Status is nonzero.
 	Committed bool // observed adapter commitment state
-	Status    int  // pending HTTP response status
+	// ContentCommitted records successful non-heartbeat payload delivery separately
+	// from HTTP commitment, allowing readers to retry after heartbeat-only output.
+	ContentCommitted bool
+	Status           int // pending HTTP response status
 	// Header carries adapter metadata. NewOutputContext copies the map values,
 	// and sinkWriter.begin supplies another copy when passing headers to Begin.
 	Header http.Header // supplied response header values
@@ -101,6 +104,10 @@ type OutputWriter interface {
 	// A writer can record header commitment before an emit fails, so this marker
 	// alone does not establish successful payload delivery.
 	Written() bool
+	// ContentWritten reports whether retry-marked payload bytes have reached the
+	// sink. Header commitment and heartbeat-only output leave this false so
+	// readers can retain their pre-content retry window.
+	ContentWritten() bool
 	// Flush requests a synchronous flush through the output sink after beginning
 	// pending metadata. It has no error result; callers inspect the owning
 	// OutputContext error for sink failures.
@@ -118,6 +125,9 @@ type sinkWriter struct {
 	status  int         // pending HTTP response status
 	started bool        // sink Begin already attempted
 	written bool        // recorded output commitment state
+	// contentWritten retains initial content state and successful retry-marked
+	// payload emission; header commitment alone never closes this retry window.
+	contentWritten bool
 	// err retains the latest Begin or Emit failure. Once nonnil, begin returns
 	// it before further sink calls, and OutputContext.Err exposes it to the platform.
 	err error // retained output sink error
@@ -222,6 +232,7 @@ func NewOutputContext(sink OutputSink) *OutputContext {
 	header := make(http.Header)
 	status := http.StatusOK
 	committed := false
+	contentCommitted := false
 	if source, ok := sink.(interface {
 		// InitialOutput supplies existing commitment and headers when conversion
 		// output initializes. The caller copies header values, so implementers can
@@ -236,11 +247,12 @@ func NewOutputContext(sink OutputSink) *OutputContext {
 		// Heartbeats may already have committed the response before codec output
 		// is constructed. Carry that observation and its nonzero status into this writer.
 		committed = head.Committed
+		contentCommitted = head.ContentCommitted
 		if committed && head.Status != 0 {
 			status = head.Status
 		}
 	}
-	return &OutputContext{Writer: &sinkWriter{sink: sink, header: header, status: status, written: committed}}
+	return &OutputContext{Writer: &sinkWriter{sink: sink, header: header, status: status, written: committed, contentWritten: contentCommitted}}
 }
 
 // Header returns the writer-owned mutable response header map for codec
@@ -248,10 +260,27 @@ func NewOutputContext(sink OutputSink) *OutputContext {
 // serialize access with writes or flushes.
 func (w *sinkWriter) Header() http.Header { return w.header }
 
-// Written reports initial adapter commitment or commitment recorded by a
-// successful Begin. A later emit error leaves this flag set, so callers
-// inspect Err separately when deciding whether output succeeded.
-func (w *sinkWriter) Written() bool { return w.written }
+// Written reports HTTP commitment recorded locally or by the live output sink.
+// A downstream heartbeat can commit after codec initialization, so staged-header
+// decisions must inspect current sink state before reporting provider headers
+// as delivered. Missing state support retains the locally recorded value.
+// A successful local Begin stays authoritative even when a supporting sink
+// omits later metadata. This query never requests Header, so reading current
+// commitment cannot stop a waiting controller or take over response preparation.
+// Observed commitment is cached because HTTP cannot become uncommitted again.
+func (w *sinkWriter) Written() bool {
+	if w.written {
+		return true
+	}
+	if state, ok := w.sink.(interface {
+		// OutputState reads current HTTP commitment without accessing response headers.
+		OutputState() OutputHead
+	}); ok {
+		w.written = state.OutputState().Committed
+		return w.written
+	}
+	return false
+}
 
 // WriteHeader sets the pending status until the first Begin attempt, including
 // a failed attempt. Status changes afterward are ignored; writing bytes,
@@ -313,6 +342,9 @@ func (w *sinkWriter) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
 	}
+	if len(p) > 0 && event.CommitForRetry {
+		w.contentWritten = true
+	}
 	return len(p), nil
 }
 
@@ -368,6 +400,21 @@ func (c *OutputContext) NextEvent(semantic, terminal bool) {
 	}
 }
 
+// Complete notifies the sink that generation has ended without adding payload.
+// Call after a validated transport-only terminal or after converted terminal data
+// has been consumed. Existing output failures prevent additional sink activity.
+// Constructor-provided writers forward this marker; custom writers retain their
+// existing behavior, matching NextEvent.
+func (c *OutputContext) Complete() {
+	if writer, ok := c.Writer.(*deferredOutputWriter); ok {
+		(&OutputContext{Writer: writer.writer()}).Complete()
+		return
+	}
+	if writer, ok := c.Writer.(*sinkWriter); ok && writer.err == nil {
+		writer.err = writer.sink.Emit(OutputEvent{Terminal: true, Flush: true})
+	}
+}
+
 // Status delegates a pending response status update to the conversion writer.
 // It can initialize deferred output; sinkWriter accepts the value before its
 // first Begin attempt and ignores changes afterward.
@@ -405,4 +452,23 @@ func (c *OutputContext) Err() error {
 		return writer.err
 	}
 	return nil
+}
+
+// ContentWritten reports successful retry-marked payload output through this writer.
+func (w *sinkWriter) ContentWritten() bool { return w.contentWritten }
+
+// ContentWritten reads content commitment without initializing deferred headers.
+// Before initialization it queries optional sink metadata, so waiting heartbeats
+// continue until the codec actually prepares or emits response content.
+func (w *deferredOutputWriter) ContentWritten() bool {
+	if w.output != nil {
+		return w.output.ContentWritten()
+	}
+	if state, ok := w.sink.(interface {
+		// OutputState supplies current commitment without initializing response metadata.
+		OutputState() OutputHead
+	}); ok {
+		return state.OutputState().ContentCommitted
+	}
+	return false
 }

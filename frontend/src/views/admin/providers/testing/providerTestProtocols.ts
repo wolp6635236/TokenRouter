@@ -4,20 +4,23 @@ import type { ProtocolID } from '@/api/protocols.types'
 /**
  * providerTestProtocols.ts builds endpoint choices and initial protocol selection for provider
  * connection tests. OpenAI API keys expose both text endpoints, while fixed-endpoint platforms
- * show a single informational option. CN platforms derive choices from saved native protocol
- * identifiers or legacy credential settings.
+ * show a single informational option. CN platforms and OpenCode derive choices from saved
+ * native protocol identifiers, because the test endpoint rejects protocols the provider has
+ * not enabled. OpenCode adds a leading Auto choice that lets the server pick each model's
+ * own protocol.
  *
- * An explicit empty upstream_protocols array yields no CN choices; a missing array invokes the
- * legacy compatibility mapping. This distinction keeps an intentionally empty configuration
- * separate from an older record. Default selection may prefer Chat Completions for an OpenAI
- * key whose saved capabilities omit Responses, but the available test choices still allow
- * administrators to probe either endpoint.
+ * An explicit empty upstream_protocols array yields no protocol choices; a missing array
+ * invokes the platform's legacy mapping. This distinction keeps an intentionally empty
+ * configuration separate from an older record. Default selection may prefer Chat Completions
+ * for an OpenAI key whose saved capabilities omit Responses, but the available test choices
+ * still allow administrators to probe either endpoint.
  */
 
 /**
  * ProviderTestProtocol names explicit endpoint selectors accepted by the provider-test request.
  */
-export type ProviderTestProtocol = 'responses' | 'chat_completions' | 'anthropic' | 'systemone'
+export type ProviderTestProtocol =
+  'responses' | 'chat_completions' | 'anthropic' | 'systemone' | 'gemini'
 
 /**
  * ProviderTestProtocolOption pairs a request selector with its human-readable endpoint display.
@@ -45,23 +48,45 @@ export interface ProviderTestProtocolPlan {
 }
 
 /**
- * CN_PLATFORMS identifies providers whose endpoint choices follow saved native protocols or the
- * legacy api_protocol compatibility mapping.
+ * ENABLED_PROTOCOLS maps saved native protocol identifiers to test request values; array order
+ * determines the displayed endpoint order.
  */
-const CN_PLATFORMS = new Set(['kimi', 'zhipu', 'deepseek'])
-
-/**
- * CN_PROTOCOLS maps saved native protocol identifiers to test request values; array order
- * determines the displayed CN endpoint order.
- */
-const CN_PROTOCOLS: Array<{
+const ENABLED_PROTOCOLS: Array<{
   id: ProtocolID // saved native protocol identifier
   value: ProviderTestProtocol // test request protocol selector
 }> = [
   { id: 'openai_chat_completions', value: 'chat_completions' },
   { id: 'anthropic_messages', value: 'anthropic' },
   { id: 'openai_responses', value: 'responses' },
+  { id: 'gemini_generate_content', value: 'gemini' },
+  { id: 'systemone', value: 'systemone' },
 ]
+
+/**
+ * EnabledProtocolPlatform describes a platform whose test choices follow its saved native
+ * protocols.
+ */
+interface EnabledProtocolPlatform {
+  // auto is a leading choice that omits the protocol so the server selects it per model.
+  auto?: ProviderTestProtocolOption
+  // legacy derives choices for records saved before upstream_protocols existed.
+  legacy: (provider: Provider) => ProviderTestProtocol[]
+}
+
+/**
+ * ENABLED_PROTOCOL_PLATFORMS lists platforms whose test choices are their enabled protocols.
+ * CN records may predate upstream_protocols and use their api_protocol setting; OpenCode
+ * records without the array enable every native protocol.
+ */
+const ENABLED_PROTOCOL_PLATFORMS: Partial<Record<string, EnabledProtocolPlatform>> = {
+  kimi: { legacy: legacyCNProtocols },
+  zhipu: { legacy: legacyCNProtocols },
+  deepseek: { legacy: legacyCNProtocols },
+  opencode: {
+    auto: option('native', 'Auto', 'OpenCode'),
+    legacy: () => ENABLED_PROTOCOLS.map((item) => item.value),
+  },
+}
 
 /**
  * option constructs one endpoint choice with its value, label, and displayed request path.
@@ -89,6 +114,14 @@ function messagesOption() {
 }
 
 /**
+ * systemOneOption returns the SystemOne decision endpoint choice. Its value lets the dialog
+ * show the decision form whether the endpoint is fixed or selected among several protocols.
+ */
+function systemOneOption() {
+  return option('systemone', 'SystemOne', '/v1/systemone')
+}
+
+/**
  * responsesOption returns a Responses choice with the platform-specific displayed path.
  * DeepSeek uses the root responses endpoint; the other callers display the versioned
  * OpenAI-compatible endpoint path.
@@ -100,13 +133,22 @@ function responsesOption(platform: string) {
 }
 
 /**
- * cnOption selects a display choice for one CN test protocol. Chat and Messages map directly,
- * while all remaining values use the platform-specific Responses endpoint choice.
+ * protocolOption selects the display choice for one enabled test protocol. Responses uses the
+ * platform-specific path; the other protocols display fixed endpoint paths.
  */
-function cnOption(value: ProviderTestProtocol, platform: string) {
-  if (value === 'chat_completions') return chatOption()
-  if (value === 'anthropic') return messagesOption()
-  return responsesOption(platform)
+function protocolOption(value: ProviderTestProtocol, platform: string) {
+  switch (value) {
+    case 'chat_completions':
+      return chatOption()
+    case 'anthropic':
+      return messagesOption()
+    case 'gemini':
+      return option('gemini', 'Gemini', ':generateContent')
+    case 'systemone':
+      return systemOneOption()
+    default:
+      return responsesOption(platform)
+  }
 }
 
 /**
@@ -142,10 +184,11 @@ function legacyCNProtocols(provider: Provider): ProviderTestProtocol[] {
  * between them. A missing provider produces an empty plan. OpenAI API keys can probe both text
  * endpoints, while OAuth records receive the fixed Responses choice.
  *
- * CN records use their saved protocol array when present, including an empty array. Older
- * records with no array use legacy protocol compatibility rules. Other recognized platforms
- * receive one native display option whose value tells request construction to omit an explicit
- * protocol. Unrecognized platforms have no endpoint choices.
+ * CN and OpenCode records use their saved protocol array when present, including an empty
+ * array. Older records with no array use the platform's legacy rules. OpenCode's leading Auto
+ * choice keeps the plan selectable even with one enabled protocol. Other recognized platforms
+ * receive one fixed option; its native value, or SystemOne for Jev, tells request
+ * construction to omit an explicit protocol. Unrecognized platforms have no endpoint choices.
  */
 export function providerTestProtocolPlan(provider: Provider | null): ProviderTestProtocolPlan {
   if (!provider) return { options: [], selectable: false }
@@ -160,22 +203,22 @@ export function providerTestProtocolPlan(provider: Provider | null): ProviderTes
     return { options: [responsesOption(platform)], selectable: false }
   }
 
-  if (CN_PLATFORMS.has(platform)) {
+  const enabledPlatform = ENABLED_PROTOCOL_PLATFORMS[platform]
+  if (enabledPlatform) {
     const enabled = enabledProtocols(provider)
     const values = enabled
-      ? CN_PROTOCOLS.filter((item) => enabled.includes(item.id)).map((item) => item.value)
-      : legacyCNProtocols(provider)
-    return {
-      options: values.map((value) => cnOption(value, platform)),
-      selectable: values.length > 1,
-    }
+      ? ENABLED_PROTOCOLS.filter((item) => enabled.includes(item.id)).map((item) => item.value)
+      : enabledPlatform.legacy(provider)
+    const options = values.map((value) => protocolOption(value, platform))
+    if (enabledPlatform.auto && options.length > 0) options.unshift(enabledPlatform.auto)
+    return { options, selectable: options.length > 1 }
   }
 
   // Fixed-endpoint platforms expose a native display choice; request construction uses that
   // sentinel to omit an explicit protocol override.
   switch (platform) {
     case 'jev':
-      return { options: [option('native', 'SystemOne', '/v1/systemone')], selectable: false }
+      return { options: [systemOneOption()], selectable: false }
     case 'anthropic':
       return { options: [option('native', 'Messages', '/v1/messages')], selectable: false }
     case 'grok':

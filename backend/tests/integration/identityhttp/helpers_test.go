@@ -2320,19 +2320,7 @@ func bindAuthHTTPFixture(t *testing.T, h *authHTTPFixture) {
 		v, e := h.settingSvc.oauth.GetGoogleOneTapConfig(ctx)
 		return identityhttp.GoogleOneTapOptions{ClientID: v.ClientID, FrontendRedirectURL: v.FrontendRedirectURL}, e
 	}})
-	apiBase := func(ctx context.Context) string {
-		if h.settingSvc == nil {
-			return ""
-		}
-		// An unreadable aggregate setting supplies no API base, leaving absolute
-		// callback reconstruction to ResolveWeChatOAuthAbsoluteURL and its request
-		// inputs.
-		v, e := h.settingSvc.composite.GetAllSettings(ctx)
-		if e != nil || v == nil {
-			return ""
-		}
-		return strings.TrimSpace(v.APIBaseURL)
-	}
+
 	// Use a nonblank runtime frontend callback when its read succeeds; missing
 	// readers, failed reads or blank values select the shared WeChat callback
 	// path.
@@ -2347,18 +2335,26 @@ func bindAuthHTTPFixture(t *testing.T, h *authHTTPFixture) {
 	}}
 	if h.settingSvc != nil {
 		wechatOptions.LoadConfig = func(ctx context.Context, mode string) (identitycore.WeChatOAuthOptions, error) {
-			base := apiBase(ctx)
 			v, e := h.settingSvc.oauth.GetWeChatConnectOAuthConfig(ctx)
 			if e != nil {
 				return identitycore.WeChatOAuthOptions{}, e
 			}
-			return identitycore.WeChatOAuthOptions{Mode: mode, AppID: v.AppIDForMode(mode), AppSecret: v.AppSecretForMode(mode), Scope: v.ScopeForMode(mode), RedirectURI: v.RedirectURL, FrontendCallback: v.FrontendRedirectURL, APIBaseURL: base, OpenEnabled: v.OpenEnabled, MPEnabled: v.MPEnabled}, nil
+			return identitycore.WeChatOAuthOptions{
+				Mode:             mode,
+				AppID:            v.AppIDForMode(mode),
+				AppSecret:        v.AppSecretForMode(mode),
+				Scope:            v.ScopeForMode(mode),
+				RedirectURI:      v.RedirectURL,
+				FrontendCallback: v.FrontendRedirectURL,
+				OpenEnabled:      v.OpenEnabled,
+				MPEnabled:        v.MPEnabled,
+			}, nil
 		}
 	}
 	wechat := identityhttp.NewWeChatHandler(pending, bind, provider.WeChatClient{TokenURL: wechatOAuthAccessTokenURL, UserInfoURL: wechatOAuthUserInfoURL}, wechatOptions)
 	h.AuthenticationHandler = &identityhttp.AuthenticationHandler{Session: session, Pending: pending, Bind: bind, LinuxDo: identityhttp.NewLinuxDoHandler(pending, bind, provider.LinuxDoClient{}, linux), OIDC: identityhttp.NewOIDCHandler(pending, bind, provider.OIDCClient{}, oidc), Email: email, Google: google, WeChat: wechat, DingTalk: identityhttp.NewDingTalkHandler(pending, bind, syncer, identityhttp.DingTalkHTTPOptions{LoadConfig: dingConfig, RegistrationEnabled: registration})}
-	h.WeChatPaymentHandler = paymenthttp.NewWeChatPaymentHandler(paymenthttp.WeChatPaymentHTTPOptions{Config: wechat.GetConfig, CallbackURL: func(ctx context.Context, c *gin.Context) string {
-		return identityhttp.ResolveWeChatOAuthAbsoluteURL(apiBase(ctx), c, "/api/v1/auth/oauth/wechat/payment/callback")
+	h.WeChatPaymentHandler = paymenthttp.NewWeChatPaymentHandler(paymenthttp.WeChatPaymentHTTPOptions{Config: wechat.GetConfig, CallbackURL: func(_ context.Context, c *gin.Context) string {
+		return identityhttp.ResolveWeChatOAuthAbsoluteURL(c, "/api/v1/auth/oauth/wechat/payment/callback")
 	}, Resume: h.paymentResume, Exchange: func(ctx context.Context, v identitycore.WeChatOAuthOptions, code string) (paymenthttp.WeChatPaymentToken, error) {
 		value, err := provider.ExchangeWeChatOAuthCode(ctx, provider.WeChatOptions{AppID: v.AppID, AppSecret: v.AppSecret, TokenURL: wechatOAuthAccessTokenURL}, code)
 		if err != nil {

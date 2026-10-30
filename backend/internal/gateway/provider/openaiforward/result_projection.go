@@ -9,14 +9,25 @@ import (
 // gateway, and compatibility reader types.
 // Forwarding results carry measured usage alongside caller, billing, and vendor
 // identities for completion processing. Conversion allocates a destination
-// record and copies values, while headers, mutable collections, and pointer
-// values remain shared; warning conversion additionally allocates its outer
-// warning record.
+// record and copies values. Headers, mutable collections, and pointers other
+// than NativeUsage remain shared; warning conversion additionally allocates its
+// outer warning record.
+//
+// Messages readers also supply normalized native usage with uncached input and
+// separate cache buckets, including cache lifetimes and processing speed. Each
+// conversion copies this observation independently so downstream updates cannot
+// alter the reader result. The inclusive OpenAI usage remains available for
+// compatibility consumers; completion selects the native observation as a whole
+// to keep cache tokens from contributing twice to the billable input count.
 
 // ToForwardResult converts a package result into gateway completion data,
-// returning nil for nil input. Header maps, slices, and pointer values retain
-// their storage; a warning gets a new outer record with its response bytes
-// still shared.
+// returning nil for nil input. Header maps, slices, and pointers other than
+// NativeUsage retain their storage. A warning gets a new outer record with its
+// response bytes still shared. NativeUsage receives an independent value copy,
+// including its uncached input, cache lifetimes, and speed. Keeping this
+// observation separate from inclusive OpenAI Usage lets completion choose one
+// complete interpretation and prevents later normalization from changing the
+// supplied result.
 func ToForwardResult(result *Result) *forwardcore.OpenAIResult {
 	if result == nil {
 		return nil
@@ -56,6 +67,10 @@ func ToForwardResult(result *Result) *forwardcore.OpenAIResult {
 		ImageInputSize:              result.ImageInputSize,
 		ImageOutputSizes:            result.ImageOutputSizes,
 	}
+	if result.NativeUsage != nil {
+		usage := *result.NativeUsage
+		value.NativeUsage = &usage
+	}
 	if result.UpstreamWarning != nil {
 		value.UpstreamWarning = &forwardcore.UpstreamWarning{StatusCode: result.UpstreamWarning.StatusCode, ResponseBody: result.UpstreamWarning.ResponseBody, Message: result.UpstreamWarning.Message}
 	}
@@ -63,9 +78,13 @@ func ToForwardResult(result *Result) *forwardcore.OpenAIResult {
 }
 
 // FromForwardResult converts gateway completion data into a package result,
-// returning nil for nil input. Header maps, slices, and pointer values retain
-// their storage; a warning gets a new outer record with its response bytes
-// still shared.
+// returning nil for nil input. Header maps, slices, and pointers other than
+// NativeUsage retain their storage. A warning gets a new outer record with its
+// response bytes still shared. NativeUsage receives an independent value copy,
+// including its uncached input, cache lifetimes, and speed. Keeping this
+// observation separate from inclusive OpenAI Usage lets completion choose one
+// complete interpretation and prevents later normalization from changing the
+// supplied result.
 func FromForwardResult(r *forwardcore.OpenAIResult) *Result {
 	if r == nil {
 		return nil
@@ -104,6 +123,10 @@ func FromForwardResult(r *forwardcore.OpenAIResult) *Result {
 		ImageSize:                   r.ImageSize,
 		ImageInputSize:              r.ImageInputSize,
 		ImageOutputSizes:            r.ImageOutputSizes,
+	}
+	if r.NativeUsage != nil {
+		usage := *r.NativeUsage
+		value.NativeUsage = &usage
 	}
 	if r.UpstreamWarning != nil {
 		value.UpstreamWarning = &forwardcore.UpstreamWarning{StatusCode: r.UpstreamWarning.StatusCode, ResponseBody: r.UpstreamWarning.ResponseBody, Message: r.UpstreamWarning.Message}

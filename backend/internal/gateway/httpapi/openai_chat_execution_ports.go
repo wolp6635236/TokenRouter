@@ -53,7 +53,7 @@ func (p *openAIChatExecutionAdapter) PrepareChat(ctx context.Context) (openaiexe
 	if _, err := PrepareCodexIdentity(ctx, p.c, p.s.Requests.Providers, provider); err != nil {
 		return openaiexecution.ChatProfile{}, err
 	}
-	return openaiexecution.ChatProfile{MessagesProfile: openaiexecution.MessagesProfile{Profile: openAIForwardProfile(provider), ID: provider.Record.ID, GrokOAuth: provider.View().IsGrokOAuth(), Shadow: provider.View().IsShadow()}, Protocol: provider.Route.Protocol(), Adaptive: gatewayprovider.ExecutionProtocolTarget(provider).IsAdaptiveAPIProtocol(), SupportsNativeCN: provider.View().SupportsNativeCNResponses(), CNProvider: provider.View().IsCNProvider(), OpenAIAPIKey: provider.View().IsOpenAIApiKey()}, nil
+	return openaiexecution.ChatProfile{MessagesProfile: openaiexecution.MessagesProfile{Profile: openAIForwardProfile(provider), ID: provider.Record.ID, GrokOAuth: provider.View().IsGrokOAuth(), Shadow: provider.View().IsShadow()}, Protocol: provider.Route.Protocol(), Adaptive: gatewayprovider.ExecutionProtocolTarget(provider).IsAdaptiveAPIProtocol(), NativeResponsesSupported: provider.View().SupportsAPIKeyResponses(), ProtocolSlotDefaults: provider.View().HasProtocolEndpointDefaults(), OpenAIAPIKey: provider.View().IsOpenAIApiKey()}, nil
 }
 
 // DispatchChat delegates the selected route and converts its forward result

@@ -31,5 +31,8 @@ func (r *PriceResolver) ResolveImageUnitPrice(ctx context.Context, input Pricing
 // price cannot use catalog image fallback; missing or invalid unit
 // prices return ErrModelPricingUnavailable.
 func (s *Calculator) resolvedImageUnitPrice(model, size string, resolved *ResolvedPricing) (float64, error) {
+	if resolved != nil && resolved.LookupModel != nil {
+		model = *resolved.LookupModel
+	}
 	return pricing.ResolveImageUnitPrice(resolved, s.RawModelPricing(model), size)
 }

@@ -150,7 +150,7 @@ func (s *GeminiProviderTest) buildGeminiAPIKeyRequest(ctx context.Context, value
 		return nil, fmt.Errorf("no API key available")
 	}
 
-	baseURL := value.GetCredential("base_url")
+	baseURL := value.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
 	if baseURL == "" {
 		baseURL = geminicli.AIStudioBaseURL
 	}
@@ -172,6 +172,7 @@ func (s *GeminiProviderTest) buildGeminiAPIKeyRequest(ctx context.Context, value
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", apiKey)
 	s.applyUserAgent(req)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	return req, nil
 }

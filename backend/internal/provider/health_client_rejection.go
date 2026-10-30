@@ -7,20 +7,20 @@ import (
 )
 
 // health_client_rejection.go selects provider health actions for classified
-// bad-request and payment-required failures.
-// Classified 400 failures can describe an account problem even when their HTTP
-// status resembles an invalid request. Organization failure has precedence,
-// Anthropic credit exhaustion has its own platform check, and
-// identity-verification failure selects account handling after those cases.
-// Other 400 classifications return false for later request handling.
+// bad-request and payment-required failures. Classified 400 failures can
+// describe an account problem even when their HTTP status resembles an invalid
+// request. Organization failure has precedence, Anthropic credit exhaustion has
+// its own platform check, and identity-verification failure selects account
+// handling after those cases. Other 400 classifications return false for later
+// request handling.
 //
-// A 402 decision first routes CN providers to their recoverable balance-pause
-// command. An OpenAI workspace classification gets its specific diagnostic;
-// remaining platforms enter ordinary payment-required authentication failure.
-// These methods choose health scope and message, while the delegated commands
-// own runtime notification, storage and logged failures. Their true result
-// identifies handled classification, so callers retain that choice
-// independently of persistence outcomes.
+// A 402 decision first routes Kimi, Zhipu, and DeepSeek providers to their
+// recoverable balance-pause command. An OpenAI workspace classification gets
+// its specific diagnostic; remaining platforms enter ordinary payment-required
+// authentication failure. These methods choose health scope and message, while
+// the delegated commands own runtime notification, storage and logged failures.
+// Their true result identifies handled classification, so callers retain that
+// choice independently of persistence outcomes.
 
 // ClientRejectionObservation holds upstream account and billing classifications
 // used by provider health selection.
@@ -34,8 +34,9 @@ type ClientRejectionObservation struct {
 	CreditBalanceExhausted       bool // credit balance exhausted
 	IdentityVerificationRequired bool // account verification required
 	// WorkspaceDeactivated selects the specific OpenAI diagnostic in
-	// ApplyPaymentRequired after CN balance handling; TeamLinkedHealth receives
-	// its own separately classified deactivation flag.
+	// ApplyPaymentRequired after Kimi, Zhipu, and DeepSeek balance handling;
+	// TeamLinkedHealth receives its own separately classified deactivation
+	// flag.
 	WorkspaceDeactivated bool
 }
 
@@ -68,8 +69,8 @@ func (s *HealthService) ApplyBadRequest(ctx context.Context, provider *Record, o
 
 // ApplyPaymentRequired selects provider health handling for HTTP 402 and
 // returns true for the handled response. Supply a usable service and provider.
-// CN records enter ApplyCNInsufficientBalance first, retaining that command's
-// temporary recovery policy.
+// Kimi, Zhipu, and DeepSeek records enter ApplyInsufficientBalance first,
+// retaining that command's temporary recovery policy.
 //
 // OpenAI workspace deactivation gets a dedicated account-error message; other
 // payment failures use the supplied message or built-in billing diagnostic. The
@@ -77,10 +78,11 @@ func (s *HealthService) ApplyBadRequest(ctx context.Context, provider *Record, o
 // failures do not change this handled result, and a true return therefore
 // identifies response classification rather than an affected database row.
 func (s *HealthService) ApplyPaymentRequired(ctx context.Context, provider *Record, observation ClientRejectionObservation) bool {
-	// Insufficient balance on supported CN platforms is recoverable after a top-up.
-	// Use a temporary pause so cooldown or recovery checks can restore scheduling.
-	if provider.IsCNProvider() {
-		s.ApplyCNInsufficientBalance(ctx, provider, observation.Message)
+	// Insufficient balance on supported Kimi, Zhipu, and DeepSeek platforms is
+	// recoverable after a top-up. Use a temporary pause so cooldown or recovery
+	// checks can restore scheduling.
+	if provider.UsesTemporaryBalanceCooldown() {
+		s.ApplyInsufficientBalance(ctx, provider, observation.Message)
 		return true
 	}
 	if provider.Platform == capability.PlatformOpenAI && observation.WorkspaceDeactivated {

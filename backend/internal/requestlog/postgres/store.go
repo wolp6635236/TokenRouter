@@ -30,6 +30,27 @@ import (
 // database snapshot or one globally sorted page. Task rows then update matching
 // alias-linked details in place.
 
+// findUsageSQL selects visible usage identities before loading their diagnostic
+// payloads, preserving one result per stored row across overlapping ID sources.
+const findUsageSQL = `WITH selected_usage AS MATERIALIZED (
+ SELECT id,created_at FROM (
+  SELECT id,created_at,user_id,team_id FROM usage_logs WHERE request_id=ANY($1::text[])
+  UNION
+  SELECT id,created_at,user_id,team_id FROM usage_logs WHERE NOT $5 AND upstream_request_id=$4
+  UNION
+  SELECT id,created_at,user_id,team_id FROM usage_logs
+   WHERE system_usage IS NOT NULL AND system_usage->>'parent_request_id'=$4
+ ) matches
+ WHERE ($3 OR user_id=$2 OR team_id IN
+  (SELECT team_id FROM team_memberships WHERE user_id=$2 AND role='owner' AND left_at IS NULL))
+ ORDER BY created_at DESC LIMIT 101
+)
+SELECT u.id,COALESCE(u.request_id,''),u.created_at,COALESCE(u.user_id,0),COALESCE(u.team_id,0),COALESCE(u.api_key_id,0),
+ COALESCE(u.requested_model,u.model),u.input_tokens,u.output_tokens,u.actual_cost,u.duration_ms,u.timings,u.request_source,u.system_usage,
+ CASE WHEN u.system_usage->>'cost_state' = 'unknown' THEN NULL ELSE COALESCE(u.provider_stats_cost,u.total_cost)*COALESCE(u.provider_rate_multiplier,1) END
+ FROM selected_usage JOIN usage_logs u ON u.id=selected_usage.id
+ ORDER BY selected_usage.created_at DESC`
+
 // Store persists versioned request snapshots and reads retained
 // ownership-filtered diagnostic records.
 type Store struct {
@@ -205,13 +226,17 @@ func (s *Store) Find(ctx context.Context, id string, userID int64, admin bool) (
 // request ID and usage_recorded state, which does not establish HTTP success.
 // Requested model wins when nonnull. ensureDetail leaves its input index
 // unchanged, so repeated historical rows without a stored summary can create
-// separate details.
+// separate details. The parent-run branch explicitly requires system metadata
+// to match the partial parent index used for internal-request searches.
+//
+// Matching branches union narrow rows containing the usage primary key, keeping
+// different charges with the same request ID distinct. Ownership filtering and
+// the shared newest-row limit precede payload retrieval in one SQL snapshot.
+// Materializing that bounded selection prevents the payload join from widening
+// the lookup, while sorting after the union keeps a missing parent-index
+// statistic from favoring a full time-index scan within a limited branch.
 func (s *Store) findUsage(ctx context.Context, ids []string, searchID string, userID int64, admin, exact bool, result *[]requestlog.Detail, index map[string]int) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(request_id,''),created_at,user_id,COALESCE(team_id,0),api_key_id,
- COALESCE(requested_model,model),input_tokens,output_tokens,actual_cost,duration_ms,timings
- FROM usage_logs WHERE (request_id = ANY($1::text[]) OR (NOT $5 AND upstream_request_id=$4))
- AND ($3 OR user_id=$2 OR team_id IN (SELECT team_id FROM team_memberships WHERE user_id=$2 AND role='owner' AND left_at IS NULL))
- ORDER BY created_at DESC LIMIT 101`, pq.Array(ids), userID, admin, searchID, exact)
+	rows, err := s.db.QueryContext(ctx, findUsageSQL, pq.Array(ids), userID, admin, searchID, exact)
 	if err != nil {
 		return err
 	}
@@ -223,9 +248,22 @@ func (s *Store) findUsage(ctx context.Context, ids []string, searchID string, us
 		var usage requestlog.Usage
 		var timingsJSON []byte
 		var usageDuration sql.NullInt64
+		var systemJSON []byte
+		var providerCost sql.NullFloat64
 		if err = rows.Scan(&usage.ID, &record.RequestID, &record.StartedAt, &record.UserID, &record.TeamID, &record.APIKeyID,
-			&usage.Model, &usage.InputTokens, &usage.OutputTokens, &usage.ActualCost, &usageDuration, &timingsJSON); err != nil {
+			&usage.Model, &usage.InputTokens, &usage.OutputTokens, &usage.ActualCost, &usageDuration, &timingsJSON, &usage.RequestSource, &systemJSON, &providerCost); err != nil {
 			return err
+		}
+		if admin && providerCost.Valid {
+			usage.ProviderCost = &providerCost.Float64
+		}
+		if len(systemJSON) > 0 {
+			if err := json.Unmarshal(systemJSON, &usage.SystemUsage); err != nil {
+				return err
+			}
+			if usage.SystemUsage != nil {
+				record.ParentRequestID = usage.SystemUsage.ParentRequestID
+			}
 		}
 		if len(timingsJSON) > 0 {
 			if err := json.Unmarshal(timingsJSON, &usage.Timings); err != nil {

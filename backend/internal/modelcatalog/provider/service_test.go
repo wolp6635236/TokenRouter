@@ -42,7 +42,7 @@ const (
 		"claude-opus-4-6-20260101":{"cost":{"input":6,"output":30}}
 	}},
 	"openai":{"models":{"gpt-5.4":{"cost":{"input":2.5,"output":15}}}},
-	"relay":{"models":{
+	"ollama-cloud":{"models":{
 		"claude-opus-4-6":{"cost":{"input":1,"output":2}},
 		"claude-opus-4-6-discount":{"cost":{"input":0,"output":0}},
 		"gpt-5.4":{"cost":{"input":1,"output":3}}
@@ -1208,9 +1208,9 @@ func TestModelsCatalogFallbackIsStable(t *testing.T) {
 }
 
 // TestModelsCatalogFallbackOriginAndSupplements compares original-provider and
-// relay prices through live and copied query services. Unknown variants remain
-// unresolved, catalog fields resist supplement replacement, and an exact new
-// supplement model becomes priced.
+// hosted service prices through live and copied query services. Unknown
+// variants remain unresolved, catalog fields resist supplement replacement,
+// and an exact new supplement model becomes priced.
 func TestModelsCatalogFallbackOriginAndSupplements(t *testing.T) {
 	dir := t.TempDir()
 	patch := filepath.Join(dir, "supplement.json")
@@ -1227,12 +1227,12 @@ func TestModelsCatalogFallbackOriginAndSupplements(t *testing.T) {
 				require.Nil(t, reader.GetModelPricing(model))
 			}
 		}
-		require.InDelta(t, 1e-6, reader.GetModelPricing("relay/claude-opus-4-6").InputCostPerToken, 1e-12)
-		require.Equal(t, "unpriced", reader.GetModelPricing("relay/claude-opus-4-6-thinking").Source)
+		require.InDelta(t, 1e-6, reader.GetModelPricing("ollama-cloud/claude-opus-4-6").InputCostPerToken, 1e-12)
+		require.Equal(t, "unpriced", reader.GetModelPricing("ollama-cloud/claude-opus-4-6-thinking").Source)
 		for _, model := range []string{"gpt-5.4-20990101", "gpt-5.4-openai-compact"} {
 			require.Nil(t, reader.GetModelPricing(model))
 		}
-		require.InDelta(t, 1e-6, reader.GetModelPricing("relay/gpt-5.4").InputCostPerToken, 1e-12)
+		require.InDelta(t, 1e-6, reader.GetModelPricing("ollama-cloud/gpt-5.4").InputCostPerToken, 1e-12)
 	}
 	check(service, 5e-6)
 	check(service.ReadOnlySnapshot(), 5e-6)
@@ -1246,17 +1246,23 @@ func TestModelsCatalogFallbackOriginAndSupplements(t *testing.T) {
 	require.InDelta(t, 8e-6, service.GetModelPricing("claude-opus-4-7").InputCostPerToken, 1e-12)
 }
 
-// TestModelsCatalogFallbackDoesNotBorrowRelayOnlyModel publishes one relay
-// record for a bare Claude identity. Its exact name can resolve that sole
-// price, while a thinking suffix remains unresolved in live and snapshot
-// queries.
+// TestModelsCatalogFallbackDoesNotBorrowRelayOnlyModel publishes public Claude
+// metadata alongside a filtered relay quote. Public attributes remain available,
+// while bare and qualified prices stay unpriced and unknown suffixes stay absent.
 func TestModelsCatalogFallbackDoesNotBorrowRelayOnlyModel(t *testing.T) {
-	remote := &catalogRemoteFixture{body: []byte(`{"providers":{"relay":{"models":{"claude-opus-4-6":{"cost":{"input":1,"output":2}}}}}}`)}
+	remote := &catalogRemoteFixture{body: []byte(`{"models":{"anthropic/claude-opus-4-6":{"limit":{"context":200000}}},"providers":{"relay":{"models":{"claude-opus-4-6":{"cost":{"input":1,"output":2}}}}}}`)}
 	service := NewService(Options{DataDir: t.TempDir(), RemoteURL: "https://models.dev/catalog.json"}, remote)
 	require.NoError(t, service.ForceUpdate())
-	require.NotNil(t, service.GetModelPricing("claude-opus-4-6"))
-	require.Nil(t, service.GetModelPricing("claude-opus-4-6-thinking"))
-	require.Nil(t, service.ReadOnlySnapshot().GetModelPricing("claude-opus-4-6-thinking"))
+	for _, reader := range []*Service{service, service.ReadOnlySnapshot()} {
+		require.Nil(t, reader.GetModelPricing("claude-opus-4-6"))
+		price := reader.GetModelPricing("relay/claude-opus-4-6")
+		require.NotNil(t, price)
+		require.Equal(t, "unpriced", price.Source)
+		require.True(t, price.TokenPricingAbsent)
+		require.Equal(t, 200000, *reader.ModelAttributes("claude-opus-4-6").Context)
+		require.Nil(t, reader.ModelAttributes("relay/claude-opus-4-6").Context)
+		require.Nil(t, reader.GetModelPricing("claude-opus-4-6-thinking"))
+	}
 }
 
 // TestModelsCatalogExactMediaSupplementKeepsExplicitZero supplies different
@@ -1352,8 +1358,8 @@ func TestModelsCatalogInvalidLocalReloadReportsError(t *testing.T) {
 }
 
 // TestModelsCatalogMistralNativeAlias compares bare and qualified original
-// Mistral identities with a relay record. Original metadata and prices must
-// agree across its aliases, while the relay retains its distinct input price.
+// Mistral identities with a filtered relay record. Original metadata and prices
+// must agree across its aliases, while the relay is absent from default prices.
 func TestModelsCatalogMistralNativeAlias(t *testing.T) {
 	service := NewService(Options{DataDir: t.TempDir()}, nil)
 	require.NoError(t, service.Initialize())
@@ -1363,8 +1369,10 @@ func TestModelsCatalogMistralNativeAlias(t *testing.T) {
 	require.Equal(t, qualified, plain)
 	require.Equal(t, service.ModelAttributes("mistral/devstral-latest"), service.ModelAttributes("devstral-latest"))
 	require.NotNil(t, service.ModelAttributes("devstral-latest").Context)
-	// The qualified relay ID selects its separate input rate.
-	require.InDelta(t, 0.44e-6, catalogPriceForTest(t, service, "requesty/devstral-latest").InputPricePerToken, 1e-12)
+	removed := service.GetModelPricing("requesty/devstral-latest")
+	require.Equal(t, "unpriced", removed.Source)
+	require.True(t, removed.TokenPricingAbsent)
+	require.NotContains(t, service.ModelIDs(), "requesty/devstral-latest")
 }
 
 // TestModelsCatalogOfflineManualUpdate uses a regular file where the cache

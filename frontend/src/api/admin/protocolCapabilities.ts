@@ -171,3 +171,12 @@ export function nativeProtocolOptions(platform: string, type: string, authMode =
     )?.protocols ?? []
   )
 }
+
+/**
+ * protocolName returns the catalog display name of a protocol ID. Before the
+ * catalog loads, or for an ID it does not list, the ID itself is returned so
+ * labels stay readable.
+ */
+export function protocolName(id: ProtocolID): string {
+  return protocolCatalog.value?.protocols.find((item) => item.id === id)?.name ?? id
+}

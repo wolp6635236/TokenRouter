@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/httpclient"
 )
 
 // anthropic_request.go builds authenticated Anthropic requests with
@@ -45,7 +47,8 @@ type NativeAnthropicRequestOptions struct {
 }
 
 // NativeAnthropicTargetURL validates a trimmed configured base and appends
-// /v1/messages after removing trailing slashes. A blank base returns a
+// /v1/messages through the version-aware endpoint joiner. Existing versioned
+// roots and complete message endpoints retain their path. A blank base returns a
 // provider-specific error, and validator failures are wrapped before any target
 // address is returned.
 func NativeAnthropicTargetURL(providerID int64, baseURL string, validate func(string) (string, error)) (string, error) {
@@ -57,7 +60,7 @@ func NativeAnthropicTargetURL(providerID int64, baseURL string, validate func(st
 	if err != nil {
 		return "", fmt.Errorf("invalid base_url: %w", err)
 	}
-	return strings.TrimRight(validatedURL, "/") + "/v1/messages", nil
+	return httpclient.BuildOpenAIEndpointURL(validatedURL, "/v1/messages"), nil
 }
 
 // BuildNativeAnthropicRequest returns an authenticated native Messages request

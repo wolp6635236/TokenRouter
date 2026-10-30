@@ -90,9 +90,8 @@ func messageExecutionOptions(cfg *config.Config) messageforward.Options {
 	options.FailoverOn400 = cfg.Gateway.FailoverOn400
 	options.GeminiDebugHeaders = cfg.Gateway.GeminiDebugResponseHeaders
 	options.MaxLineSize = cfg.Gateway.MaxLineSize
-	// Stream intervals and keepalives use durations converted from configured seconds.
+	// Upstream idle intervals use durations converted from configured seconds.
 	options.StreamInterval = time.Duration(cfg.Gateway.StreamDataIntervalTimeout) * time.Second
-	options.StreamKeepalive = time.Duration(cfg.Gateway.StreamKeepaliveInterval) * time.Second
 	if cfg.Gateway.UpstreamResponseReadMaxBytes > 0 {
 		options.ResponseReadLimit = cfg.Gateway.UpstreamResponseReadMaxBytes
 	}

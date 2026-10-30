@@ -2,6 +2,7 @@ package timing
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -202,5 +203,77 @@ func TestClientInstrumentationDoesNotMutateOriginal(t *testing.T) {
 	}
 	if WrapRoundTripper(instrumented.Transport) != instrumented.Transport {
 		t.Fatal("WrapRoundTripper wrapped an already instrumented transport twice")
+	}
+}
+
+// TestDoTracksHeaderWaitLifetime observes both successful and failed transports.
+// Request stages must expose the pending wait during Do and release it on
+// every return, even when dependency timing has not been enabled.
+func TestDoTracksHeaderWaitLifetime(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		ctx, stages := WithStages(t.Context(), time.Now(), nil)
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			if !stages.UpstreamHeadersPending() {
+				t.Error("dispatch did not publish header wait")
+			}
+			if fail {
+				return nil, errors.New("fixture transport failure")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+		})}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://upstream.test", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := Do(client, req)
+		if (err != nil) != fail {
+			t.Fatalf("unexpected dispatch error: %v", err)
+		}
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if stages.UpstreamHeadersPending() {
+			t.Fatal("returned dispatch retained its header wait")
+		}
+	}
+}
+
+// TestDoKeepsOverlappingHeaderWaitsSeparate completes one of two pending HTTP
+// dispatches. Downstream liveness must continue treating headers as pending
+// until the other dispatch also finishes, including a failed second request.
+func TestDoKeepsOverlappingHeaderWaitsSeparate(t *testing.T) {
+	ctx, stages := WithStages(t.Context(), time.Now(), nil)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	finished := make(chan error, 2)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		started <- struct{}{}
+		<-release
+		return nil, errors.New("fixture transport failure")
+	})}
+	for range 2 {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://upstream.test", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			_, dispatchErr := Do(client, req)
+			finished <- dispatchErr
+		}()
+	}
+	<-started
+	<-started
+	if !stages.UpstreamHeadersPending() {
+		t.Error("concurrent dispatches were not pending")
+	}
+	release <- struct{}{}
+	<-finished
+	if !stages.UpstreamHeadersPending() {
+		t.Error("one completed request cleared the other wait")
+	}
+	release <- struct{}{}
+	<-finished
+	if stages.UpstreamHeadersPending() {
+		t.Error("all requests finished but headers remained pending")
 	}
 }

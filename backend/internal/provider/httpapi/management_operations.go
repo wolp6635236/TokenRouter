@@ -825,7 +825,8 @@ var ManagementOperations = map[string]*adminapi.Operation{
 		Title:  "Sync Upstream Models",
 		Description: "SyncUpstreamModels loads provider credentials and requests a live supported-model list. " +
 			"Lookup failures map to 404, configuration or unsupported errors to 400, and other query " +
-			"failures to sanitized 502 responses.",
+			"failures to sanitized 502 responses. The query uses saved provider settings and rejects " +
+			"configuration overrides. OpenCode also returns catalogue protocol suggestions.",
 		Method:      "POST",
 		Path:        "/api/v1/admin/providers/:id/models/sync-upstream",
 		Response:    "json",
@@ -1568,10 +1569,11 @@ type ProviderBatchClearErrorRequest struct {
 
 // ProviderModelsSyncPreviewRequest carries the administrative request decoded by its existing HTTP handler.
 type ProviderModelsSyncPreviewRequest struct {
-	Platform string `json:"platform" binding:"required"` // temporary upstream platform identifier
-	Type     string `json:"type" binding:"required"`     // temporary provider authentication kind
-	BaseURL  string `json:"base_url"`                    // temporary upstream root URL
-	APIKey   string `json:"api_key" binding:"required"`  // temporary upstream API key
+	ProviderMode string `json:"provider_mode,omitempty"`     // selected OpenCode service mode
+	Platform     string `json:"platform" binding:"required"` // temporary upstream platform identifier
+	Type         string `json:"type" binding:"required"`     // temporary provider authentication kind
+	BaseURL      string `json:"base_url"`                    // temporary upstream root URL
+	APIKey       string `json:"api_key" binding:"required"`  // temporary upstream API key
 }
 
 // GrokOAuthProviderCreateRequest carries the administrative request decoded by its existing HTTP handler.

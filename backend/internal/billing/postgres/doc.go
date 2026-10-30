@@ -11,6 +11,7 @@
 // File groups:
 //   - balance.go, available_balance.go: update balances, initialize funds, and deduct available balances.
 //   - settlement.go, usage_dedup_retention.go: settle funds, coordinate task writes, and archive deduplication records.
+//   - system_usage.go: commits internal expense evidence, provider quotas, and transaction-bound usage rows.
 //   - key_usage.go, member_usage.go: accumulate API Key and member usage and reset windows.
 //   - provider_usage.go, provider_usage_store.go, provider_quota_expressions.go: write provider usage, handle
 //     quota periods, and notify changes.

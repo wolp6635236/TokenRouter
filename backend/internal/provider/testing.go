@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // testing.go normalizes provider test requests, coordinates guarded execution,
@@ -33,17 +34,18 @@ import (
 // TestRoute values identify execution families selected from provider metadata
 // before a prepared test request reaches its platform target.
 const (
-	TestRouteClaude      TestRoute = iota // default Anthropic execution family
-	TestRouteCNAdaptive                   // CN configured-protocol adaptive test
-	TestRouteCNResponses                  // CN shared Responses execution
-	TestRouteCNChat                       // CN fixed Chat execution
-	TestRouteCNAnthropic                  // CN fixed Messages execution
-	TestRouteOpenAI                       // OpenAI platform execution family
-	TestRouteGemini                       // Gemini platform execution family
-	TestRouteGrok                         // Grok platform execution family
-	TestRouteAntigravity                  // Antigravity platform execution family
-	TestRouteQoder                        // Qoder platform execution family
-	TestRouteJev                          // Jev SystemOne execution family
+	TestRouteClaude              TestRoute = iota // default Anthropic execution family
+	TestRouteTextAPIKeyAdaptive                   // Kimi/Zhipu/DeepSeek configured-protocol adaptive test
+	TestRouteTextAPIKeyResponses                  // Kimi/Zhipu/DeepSeek shared Responses execution
+	TestRouteTextAPIKeyChat                       // Kimi/Zhipu/DeepSeek fixed Chat execution
+	TestRouteTextAPIKeyMessages                   // Kimi/Zhipu/DeepSeek fixed Messages execution
+	TestRouteOpenAI                               // OpenAI platform execution family
+	TestRouteGemini                               // Gemini platform execution family
+	TestRouteGrok                                 // Grok platform execution family
+	TestRouteAntigravity                          // Antigravity platform execution family
+	TestRouteQoder                                // Qoder platform execution family
+	TestRouteJev                                  // Jev SystemOne execution family
+	TestRouteOpenCode                             // OpenCode per-model protocol family
 
 	// Provider test-type and mode strings normalize administrator selections and
 	// recognized legacy arguments before a request reaches its platform executor.
@@ -76,12 +78,15 @@ type TestEvent struct {
 // test. Its pointed kind and SystemOne bytes remain caller-owned and stable
 // until Test returns.
 type TestRequest struct {
+	RequestSource  string // internal caller source, never upstream controlled
+	RequestedModel string // original model before group mapping
+	OperatorUserID *int64 // optional initiating administrator identifier
 	// ProtocolRoute fixes a group probe's entry and upstream endpoint together.
 	// Its zero value retains the standalone Protocol selector and type inference.
 	ProtocolRoute TestProtocolRoute
 	// SystemOne carries structured decision input by shared byte storage. Nonempty
-	// input requires a Jev provider, and the caller keeps its bytes stable through
-	// execution.
+	// input requires a provider whose native protocols include SystemOne, and the
+	// caller keeps its bytes stable through execution.
 	SystemOne json.RawMessage
 
 	ProviderID int64 // selected provider record identifier
@@ -319,6 +324,21 @@ func NewTestService(loader TestLoader, options TestOptions) *TestService {
 // cannot match the retained write error in the target result, Test joins that
 // error into the returned chain; a matching target result is returned unchanged.
 func (s *TestService) Test(ctx context.Context, request TestRequest, sink TestEventSink) error {
+	if _, exists := usage.SystemRequestFromContext(ctx); !exists {
+		source := request.RequestSource
+		if source == "" {
+			source = usage.SourceProviderTest
+			if request.Automatic {
+				source = usage.SourceScheduledTest
+			}
+		}
+		requestedModel := request.RequestedModel
+		if requestedModel == "" {
+			requestedModel = request.Model
+		}
+		ctx = usage.WithSystemRequest(ctx, usage.SystemRequest{MappedModel: request.Model, Source: source, OperatorUserID: request.OperatorUserID, GroupID: request.GroupID, RequestedModel: requestedModel, Automatic: request.Automatic})
+	}
+
 	if s.options.PrepareContext != nil {
 		ctx = s.options.PrepareContext(ctx)
 	}
@@ -341,14 +361,16 @@ func (s *TestService) Test(ctx context.Context, request TestRequest, sink TestEv
 // original request before preparation replaces its copied Mode.
 //
 // Kind presence and platform metadata decide eligibility: structured decision
-// input requires Jev; explicit images require OpenAI, Gemini, or Grok and select
-// default mode. A known explicit image protocol bypasses the separate provider
-// protocol check. Other selected protocols use testProtocolAllowed. CN routing
+// input requires a platform whose native protocols include SystemOne; explicit
+// images require OpenAI, Gemini, or Grok and select default mode. A known
+// explicit image protocol bypasses the separate provider protocol check. Other
+// selected protocols use testProtocolAllowed. Kimi, Zhipu, and DeepSeek routing
 // uses APIProtocol: adaptive, Responses, and Chat select their dedicated
-// families, while other values select Messages. Remaining platforms choose their
-// family with Anthropic as the default. Routed probes validate the exact endpoint
-// and retain its protocol pair in the execution context. Target execution receives the original
-// borrowed payload storage.
+// families, while other values select Messages. Remaining platforms choose
+// their family with Anthropic as the default. Routed probes validate the exact
+// endpoint for the requested model and retain its protocol pair in the
+// execution context. Target execution receives the original borrowed payload
+// storage.
 func (s *TestService) execute(ctx context.Context, request TestRequest, sink TestEventSink) error {
 	if request.Protocol != "" && TestProtocolID(request.Protocol) == "" {
 		return s.fail(ctx, sink, "Invalid test protocol")
@@ -373,10 +395,10 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 	}
 	info := target.Information()
 	if request.ProtocolRoute != (TestProtocolRoute{}) {
-		if request.Protocol != "" || mode != ProviderTestModeDefault || !request.ProtocolRoute.SupportsProvider(info.ProviderSnapshot) {
+		if request.Protocol != "" || mode != ProviderTestModeDefault || !request.ProtocolRoute.SupportsProvider(info.ProviderSnapshot, request.Model) {
 			return s.fail(ctx, sink, fmt.Sprintf("Provider test cannot execute route %s -> %s", request.ProtocolRoute.ClientProtocol, request.ProtocolRoute.UpstreamProtocol))
 		}
-		ctx = context.WithValue(ctx, testProtocolRouteKey{}, request.ProtocolRoute)
+		ctx = WithTestProtocolRoute(ctx, request.ProtocolRoute)
 		// Routed probes select their operation from the client entry. Text entries
 		// cannot switch to an Images endpoint because a model also declares images.
 		kind, explicit = ProviderTestTypeText, true
@@ -391,46 +413,52 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 			}
 		}
 	}
-	if (kind == ProviderTestTypeDecision || len(request.SystemOne) > 0) && info.Platform != PlatformJev {
-		return s.fail(ctx, sink, "Decision tests require a Jev provider")
+	native := capability.NativeProtocolOptions(info.Platform, info.Type, info.AuthMode)
+	if (kind == ProviderTestTypeDecision || len(request.SystemOne) > 0) && !slices.Contains(native, capability.ProtocolSystemOne) {
+		return s.fail(ctx, sink, "Decision tests require a provider with SystemOne support")
 	}
 	if explicit && kind == ProviderTestTypeImage && info.Platform != PlatformOpenAI && info.Platform != PlatformGemini && info.Platform != PlatformGrok {
 		return s.fail(ctx, sink, fmt.Sprintf("Image tests are not supported for platform %s", info.Platform))
 	}
-	if request.Protocol != "" && kind != ProviderTestTypeImage && !testProtocolAllowed(info, request.Protocol) {
+	if request.Protocol != "" && kind != ProviderTestTypeImage && !testProtocolAllowed(info, native, request.Protocol) {
 		return s.fail(ctx, sink, fmt.Sprintf("Test protocol %s is not supported for this provider", request.Protocol))
 	}
 	prepared := PreparedTestRequest{TestRequest: request, TestType: kind, ExplicitType: explicit}
-	// CN target execution consumes Route together with its configured protocol.
-	// Choose that combination after eligibility validation; other platform targets
-	// receive their corresponding prepared family.
+	// Kimi, Zhipu, and DeepSeek target execution consumes Route together with
+	// its configured protocol. Choose that combination after eligibility
+	// validation; other platform targets receive their corresponding prepared
+	// family.
 	prepared.Mode = mode
-	switch info.Platform {
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
+	if platformRuleRegistry[info.Platform].text != nil {
 		switch info.APIProtocol {
 		case APIProtocolAdaptive:
-			prepared.Route = TestRouteCNAdaptive
+			prepared.Route = TestRouteTextAPIKeyAdaptive
 		case APIProtocolResponses:
-			prepared.Route = TestRouteCNResponses
+			prepared.Route = TestRouteTextAPIKeyResponses
 		case APIProtocolChatCompletions:
-			prepared.Route = TestRouteCNChat
+			prepared.Route = TestRouteTextAPIKeyChat
 		default:
-			prepared.Route = TestRouteCNAnthropic
+			prepared.Route = TestRouteTextAPIKeyMessages
 		}
-	case PlatformOpenAI:
-		prepared.Route = TestRouteOpenAI
-	case PlatformGemini:
-		prepared.Route = TestRouteGemini
-	case PlatformGrok:
-		prepared.Route = TestRouteGrok
-	case PlatformAntigravity:
-		prepared.Route = TestRouteAntigravity
-	case PlatformJev:
-		prepared.Route = TestRouteJev
-	case PlatformQoder:
-		prepared.Route = TestRouteQoder
-	default:
-		prepared.Route = TestRouteClaude
+	} else {
+		switch info.Platform {
+		case PlatformOpenAI:
+			prepared.Route = TestRouteOpenAI
+		case PlatformGemini:
+			prepared.Route = TestRouteGemini
+		case PlatformGrok:
+			prepared.Route = TestRouteGrok
+		case PlatformAntigravity:
+			prepared.Route = TestRouteAntigravity
+		case PlatformJev:
+			prepared.Route = TestRouteJev
+		case PlatformQoder:
+			prepared.Route = TestRouteQoder
+		case PlatformOpenCode:
+			prepared.Route = TestRouteOpenCode
+		default:
+			prepared.Route = TestRouteClaude
+		}
 	}
 	return target.Execute(ctx, prepared, sink)
 }
@@ -441,6 +469,8 @@ func (s *TestService) execute(ctx context.Context, request TestRequest, sink Tes
 // provider loading.
 func TestProtocolID(protocol string) capability.ProtocolID {
 	switch protocol {
+	case "gemini":
+		return capability.ProtocolGeminiGenerateContent
 	case APIProtocolSystemOne:
 		return capability.ProtocolSystemOne
 	case APIProtocolAnthropic:
@@ -455,26 +485,30 @@ func TestProtocolID(protocol string) capability.ProtocolID {
 }
 
 // testProtocolAllowed reports whether provider metadata permits a selected test
-// protocol. Jev requires enabled SystemOne, while CN providers require the
-// corresponding ID in EnabledProtocols. OpenAI API keys allow Responses or Chat
-// regardless of that slice; other OpenAI types permit Responses.
+// protocol. OpenAI API keys allow Responses or Chat regardless of enabled
+// protocols, and other OpenAI types permit Responses. Jev, OpenCode, and Kimi,
+// Zhipu, and DeepSeek targets honor the selection, so they allow a protocol
+// that is both enabled and among the supplied native options for the provider's
+// type.
 //
-// Platform determines which metadata contributes to this decision, so one
-// enabled-protocol rule cannot replace these branches. Other platforms reject
-// explicit text protocol selection. execute calls this helper after spelling
-// validation and image eligibility; explicit images skip this check once their
-// protocol spelling is known.
-func testProtocolAllowed(info TestTargetInfo, protocol string) bool {
+// Remaining platforms run one fixed probe and reject explicit text protocol
+// selection. execute calls this helper after spelling validation and image
+// eligibility; explicit images skip this check once their protocol spelling is
+// known.
+func testProtocolAllowed(info TestTargetInfo, native []capability.ProtocolID, protocol string) bool {
+	if platformRuleRegistry[info.Platform].text != nil {
+		selected := TestProtocolID(protocol)
+		return slices.Contains(info.EnabledProtocols, selected) && slices.Contains(native, selected)
+	}
 	switch info.Platform {
-	case PlatformJev:
-		return protocol == APIProtocolSystemOne && slices.Contains(info.EnabledProtocols, capability.ProtocolSystemOne)
 	case PlatformOpenAI:
 		if info.Type == ProviderTypeAPIKey {
 			return protocol == APIProtocolResponses || protocol == APIProtocolChatCompletions
 		}
 		return protocol == APIProtocolResponses
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
-		return slices.Contains(info.EnabledProtocols, TestProtocolID(protocol))
+	case PlatformJev, PlatformOpenCode:
+		selected := TestProtocolID(protocol)
+		return slices.Contains(info.EnabledProtocols, selected) && slices.Contains(native, selected)
 	default:
 		return false
 	}

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
@@ -49,6 +50,13 @@ type Stages struct {
 	// response observes each opened upstream response without consuming it. Set
 	// before sharing the context; readers invoke it synchronously on their exchange.
 	response func(context.Context, *http.Response)
+	// upstreamRequestListener is replaced and copied under mu, then invoked
+	// outside it so downstream writers can query streaming state without deadlock.
+	upstreamRequestListener func(context.Context)
+	lastUpstreamActivity    atomic.Int64 // latest upstream activity UnixNano
+	// upstreamHeaderWaits counts HTTP dispatches that have not returned headers
+	// or an error. Do owns increments and deferred decrements across all outcomes.
+	upstreamHeaderWaits atomic.Int64
 }
 
 // stageBody measures original reads without buffering or retaining request bytes.
@@ -70,6 +78,7 @@ func WithStages(ctx context.Context, start time.Time, response func(context.Cont
 		return ctx, s
 	}
 	s := &Stages{start: start, events: make(map[string]int64), response: response}
+	s.ObserveUpstreamActivity(start)
 	return context.WithValue(ctx, stageKey{}, s), s
 }
 
@@ -423,3 +432,32 @@ func (s *Stages) SetContentLength(length int64) {
 	defer s.mu.Unlock()
 	s.events["request_content_length"] = length
 }
+
+// SetUpstreamRequestListener registers the downstream header-wait observer.
+// Passing nil removes it; callers finish outstanding dispatches before releasing
+// the writer captured by a previously copied callback.
+func (s *Stages) SetUpstreamRequestListener(fn func(context.Context)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstreamRequestListener = fn
+}
+
+// listener copies the current dispatch observer under the collector mutex.
+// Invoke the returned callback after releasing this lock because observers may
+// query other synchronized request observations, including Streaming.
+func (s *Stages) listener() func(context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstreamRequestListener
+}
+
+// ObserveUpstreamActivity records transport activity, including upstream heartbeat bytes.
+func (s *Stages) ObserveUpstreamActivity(at time.Time) { s.lastUpstreamActivity.Store(at.UnixNano()) }
+
+// LastUpstreamActivity returns the latest transport activity for downstream stall checks.
+func (s *Stages) LastUpstreamActivity() time.Time { return time.Unix(0, s.lastUpstreamActivity.Load()) }
+
+// UpstreamHeadersPending reports whether an HTTP dispatch still awaits response headers.
+// It remains true across downstream heartbeat commitment; body inactivity starts
+// governing keepalives only after those transport waits have finished.
+func (s *Stages) UpstreamHeadersPending() bool { return s.upstreamHeaderWaits.Load() > 0 }

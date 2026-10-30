@@ -489,3 +489,16 @@ func TestPricingRequestToService_NilPriceFields(t *testing.T) {
 	require.Nil(t, r.ImageOutputPrice)
 	require.Nil(t, r.PerRequestPrice)
 }
+
+// TestPricingReferenceWireRoundTrip preserves references through HTTP conversion.
+// An empty override card remains valid, while explicit zero is rejected beside
+// the reference because zero represents a configured free price.
+func TestPricingReferenceWireRoundTrip(t *testing.T) {
+	cards := pricingRequestToService([]modelPricingRequest{{Models: []string{"custom-*"}, ReferenceModel: "target"}})
+	require.NoError(t, (routing.PricingConfigValidation{}).PricingEntries(cards))
+	response := pricingToResponse(&cards[0])
+	require.Equal(t, "target", response.ReferenceModel)
+	require.Equal(t, []string{"custom-*"}, response.Models)
+	cards[0].InputPrice = float64Ptr(0)
+	require.Error(t, (routing.PricingConfigValidation{}).PricingEntries(cards))
+}

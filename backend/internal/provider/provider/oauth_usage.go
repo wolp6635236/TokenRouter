@@ -18,6 +18,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/anthropic"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
+	"github.com/TokenFlux/TokenRouter/internal/usage"
 )
 
 // oauth_usage.go issues OpenAI and Anthropic usage requests with provider
@@ -101,6 +102,8 @@ func (s *OAuthUsageTransport) profile(value *provider.Record) *tlsfingerprint.Pr
 // takes precedence over status errors, allowing useful observations from a
 // rate-limited probe.
 func (s *OAuthUsageTransport) ProbeOpenAI(ctx context.Context, value *provider.Record) (map[string]any, error) {
+	ctx = usage.WithSystemRequest(ctx, usage.SystemRequest{Source: usage.SourceQuotaProbe, RequestedModel: openai.CodexUsageProbeModel, Automatic: true})
+
 	if value == nil || !value.IsOAuth() {
 		return nil, nil
 	}

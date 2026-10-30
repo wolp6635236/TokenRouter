@@ -13,6 +13,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/gateway/requeststate"
 	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/routing"
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/bedrock"
 )
@@ -819,5 +820,22 @@ func TestPreparedModelPolicyParity(t *testing.T) {
 				require.Equal(t, live.LimitKeys(ctx, model), prepared.LimitKeys(ctx, model))
 			}
 		}
+	}
+}
+
+// TestCapturedOrdinaryEmptyMappingRetainsRequestModel creates an admitted route
+// with an explicit empty provider mapping. Capturing model selection must retain
+// the existing ordinary-provider fallback instead of producing an empty wire name.
+func TestCapturedOrdinaryEmptyMappingRetainsRequestModel(t *testing.T) {
+	for _, platform := range []string{capability.PlatformAnthropic, capability.PlatformGemini, capability.PlatformKimi} {
+		t.Run(platform, func(t *testing.T) {
+			const model = "fixture-model"
+			target := NewExecutionProvider(&providercore.Record{ID: 17, Platform: platform, Type: capability.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "fixture", "model_mapping": map[string]any{model: ""}}})
+			ctx := requeststate.WithClientProtocol(t.Context(), capability.ProtocolAnthropicMessages)
+			ctx = requeststate.WithRoutePlan(ctx, routing.Plan(routing.PlanInput{RequestedModel: model, ClientProtocol: capability.ProtocolAnthropicMessages}))
+			selected, err := ProviderForProtocolAttempt(ctx, target)
+			require.NoError(t, err)
+			require.Equal(t, model, ExecutionModelPolicy(selected).UpstreamModel(ctx, model))
+		})
 	}
 }

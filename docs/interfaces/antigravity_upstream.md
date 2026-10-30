@@ -98,7 +98,9 @@ Antigravity 的名称和通用候选来自统一目录。默认映射保留 `gem
 
 `upstream/antigravity.Executor` 处理 Claude、Gemini、Chat 和 Responses 请求，完成一次平台交换、恢复和输出，并关闭最终的响应体。它负责提供商内的普通重试、智能重试、credits 请求和进程内的模型容量冷却。网关编排负责提供商切换、付款主体和资金完成。`gateway/provider/googleforward.Antigravity` 传入本次凭据、转换选项和同步输出。`Probe` 复用平台重试并测试指定的提供商，探测请求无需获取用户或提供商的请求槽。
 
-流通过同步的 `OutputSink` 输出，每种协议的前导缓冲、非流式收集、心跳、首 token 和断开后的尾部读取规则各自保持。结果区分已观测的 usage、是否已经服务和错误；HTTP 提交和重试窗口的关闭，与语义输出分开判断，失败时的结算按 Antigravity 入口的完成资格判断。使用记录在请求期间固定实际提供商的平台，后台完成器只使用这份固定下来的结果。
+流通过同步的 `OutputSink` 输出，每种协议保留前导缓冲、非流式收集、首 token 和断开后的尾部读取规则；下游心跳由 HTTP 层统一负责，上游心跳在读取侧消费，见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)。结果区分已观测的 usage、是否已经服务和错误；HTTP 提交和重试窗口的关闭，与语义输出分开判断，失败时的结算按 Antigravity 入口的完成资格判断。使用记录在请求期间固定实际提供商的平台，后台完成器只使用这份固定下来的结果。
+
+Gemini 原生输出和其非流式 SSE 汇总使用共享的 [Gemini 流生命周期](gemini_upstream.md#gemini_stream_lifecycle)，包括完整帧规范化、多候选终态、空事件保活、空闲截止和五秒用量尾部上限。该路径不再逐行追加分隔符，也不向客户端发送 DONE 或注释心跳；Claude 和 OpenAI 兼容输出保留各自的转换实现。
 
 OAuth 会话、交换后的一次性删除、项目和套餐发现、隐私设置和验证，由 `provider.AntigravityAuthorization` 编排。原生客户端只执行供应商协议，报文变体在 `protocol/google`。token provider 的 project 回填冷却、缓存键、八秒的请求刷新预算、后台十五分钟的刷新资格和 CAS 都保持兼容。额度展示、credits 和模型窗口、INTERNAL 500 的惩罚，由提供商模块负责；共享缓存、计数器和发布接口使用已有的实例。
 

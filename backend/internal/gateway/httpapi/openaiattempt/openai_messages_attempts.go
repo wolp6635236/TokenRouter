@@ -162,7 +162,7 @@ func (b *openAIMessageAttemptBridge) Forward() textflow.ResponseOutcome {
 	// conversion, keeping each provider attempt from inheriting mutable
 	// output from the previous conversion.
 	attemptBody := b.mappedBodyForMessages(b.groupMappingMsg.Mapped, b.groupMappingMsg.MappedModel)
-	b.writerSizeBeforeForward = b.c.Writer.Size()
+	b.writerSizeBeforeForward = gatewayhttp.HeartbeatAdjustedWrittenSize(b.c)
 	// Retire provider capacity after policy rejection or exchange return,
 	// while retaining the result for native interception, Cyber processing,
 	// and completion capture by the loop.
@@ -286,7 +286,7 @@ func (b *openAIMessageAttemptBridge) RetryReady(failure *textflow.AttemptFailure
 	// Cyber warning handling can emit Messages output. Recheck actual bytes
 	// against the captured baseline before replay so another provider
 	// cannot extend that started response.
-	if b.c.Writer.Size() != b.writerSizeBeforeForward {
+	if gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) != b.writerSizeBeforeForward {
 		b.binding().observeOpenAIProviderHealthFailure(b.c.Request.Context(), b.provider, err)
 		b.binding().handleAnthropicFailoverExhausted(b.c, failoverErr, true)
 		return false
@@ -361,7 +361,7 @@ func (b *openAIMessageAttemptBridge) OtherFailure(err error) {
 	// Cyber warning callbacks can write Messages errors. Recheck
 	// communication and byte observations before supplying a default
 	// response so their terminal output is retained.
-	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || b.c.Writer.Size() == b.writerSizeBeforeForward) {
+	if !upstreamErrorAlreadyCommunicated && (!recordedWarning || gatewayhttp.HeartbeatAdjustedWrittenSize(b.c) == b.writerSizeBeforeForward) {
 		b.wroteFallback = b.binding().ensureAnthropicErrorResponse(b.c, *b.streamStarted)
 	}
 	b.reqLog.Warn("openai_messages.forward_failed",

@@ -39,70 +39,77 @@
           </span>
         </div>
 
-        <!-- Billing mode badge -->
         <span
-          class="flex-shrink-0 rounded-full bg-primary-100 px-2 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+          v-if="entry.reference_mode"
+          class="min-w-0 break-all text-sm text-gray-600 dark:text-gray-300"
+          >→ {{ entry.reference_model }}</span
         >
-          {{ billingModeLabel }}
-        </span>
-        <span
-          v-if="
-            entry.price_multiplier !== null &&
-            entry.price_multiplier !== undefined &&
-            entry.price_multiplier !== ''
-          "
-          class="flex-shrink-0 rounded-compact bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-600 dark:text-gray-300"
-        >
-          {{ entry.price_multiplier }}x
-        </span>
-        <span
-          v-if="
-            props.showFastModeMultiplier &&
-            entry.billing_mode === 'token' &&
-            entry.fast_mode_multiplier !== null &&
-            entry.fast_mode_multiplier !== undefined &&
-            entry.fast_mode_multiplier !== ''
-          "
-          class="flex-shrink-0 rounded-compact bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-        >
-          Fast {{ entry.fast_mode_multiplier }}x
-        </span>
-        <span
-          v-if="
-            props.enableTierMultipliers &&
-            entry.billing_mode === 'token' &&
-            effectiveFastMultiplier !== null &&
-            effectiveFastMultiplier !== undefined &&
-            effectiveFastMultiplier !== ''
-          "
-          class="flex-shrink-0 rounded-compact bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-        >
-          Fast {{ effectiveFastMultiplier }}x
-        </span>
-        <span
-          v-if="
-            props.enableTierMultipliers &&
-            entry.billing_mode === 'token' &&
-            entry.flex_multiplier !== null &&
-            entry.flex_multiplier !== undefined &&
-            entry.flex_multiplier !== ''
-          "
-          class="flex-shrink-0 rounded-compact bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-        >
-          Flex {{ entry.flex_multiplier }}x
-        </span>
-        <span
-          v-if="
-            props.enableTierMultipliers &&
-            entry.billing_mode === 'token' &&
-            entry.max_reasoning_effort_multiplier !== null &&
-            entry.max_reasoning_effort_multiplier !== undefined &&
-            entry.max_reasoning_effort_multiplier !== ''
-          "
-          class="flex-shrink-0 rounded-compact bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-        >
-          Max {{ entry.max_reasoning_effort_multiplier }}x
-        </span>
+        <template v-else>
+          <!-- Billing mode badge -->
+          <span
+            class="flex-shrink-0 rounded-full bg-primary-100 px-2 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300"
+          >
+            {{ billingModeLabel }}
+          </span>
+          <span
+            v-if="
+              entry.price_multiplier !== null &&
+              entry.price_multiplier !== undefined &&
+              entry.price_multiplier !== ''
+            "
+            class="flex-shrink-0 rounded-compact bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-600 dark:text-gray-300"
+          >
+            {{ entry.price_multiplier }}x
+          </span>
+          <span
+            v-if="
+              props.showFastModeMultiplier &&
+              entry.billing_mode === 'token' &&
+              entry.fast_mode_multiplier !== null &&
+              entry.fast_mode_multiplier !== undefined &&
+              entry.fast_mode_multiplier !== ''
+            "
+            class="flex-shrink-0 rounded-compact bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+          >
+            Fast {{ entry.fast_mode_multiplier }}x
+          </span>
+          <span
+            v-if="
+              props.enableTierMultipliers &&
+              entry.billing_mode === 'token' &&
+              effectiveFastMultiplier !== null &&
+              effectiveFastMultiplier !== undefined &&
+              effectiveFastMultiplier !== ''
+            "
+            class="flex-shrink-0 rounded-compact bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+          >
+            Fast {{ effectiveFastMultiplier }}x
+          </span>
+          <span
+            v-if="
+              props.enableTierMultipliers &&
+              entry.billing_mode === 'token' &&
+              entry.flex_multiplier !== null &&
+              entry.flex_multiplier !== undefined &&
+              entry.flex_multiplier !== ''
+            "
+            class="flex-shrink-0 rounded-compact bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+          >
+            Flex {{ entry.flex_multiplier }}x
+          </span>
+          <span
+            v-if="
+              props.enableTierMultipliers &&
+              entry.billing_mode === 'token' &&
+              entry.max_reasoning_effort_multiplier !== null &&
+              entry.max_reasoning_effort_multiplier !== undefined &&
+              entry.max_reasoning_effort_multiplier !== ''
+            "
+            class="flex-shrink-0 rounded-compact bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+          >
+            Max {{ entry.max_reasoning_effort_multiplier }}x
+          </span>
+        </template>
       </div>
 
       <!-- The expanded header displays the translated price-entry label. -->
@@ -114,6 +121,8 @@
       <button
         v-if="removable"
         type="button"
+        :aria-label="t('common.delete')"
+        :title="t('common.delete')"
         @click.stop="emit('remove')"
         class="flex-shrink-0 rounded-compact p-1 text-gray-400 hover:text-red-500"
       >
@@ -124,359 +133,397 @@
     <!-- Collapsing retains mounted inputs, and form-field-reveal expands the card before validation attempts to focus an invalid field. -->
     <Collapse :open="!collapsed">
       <div>
-        <!-- Header: Models + Billing Mode -->
-        <div
-          class="mt-3 grid grid-cols-1 items-start gap-2"
-          :class="
-            props.showFastModeMultiplier && entry.billing_mode === 'token'
-              ? 'sm:grid-cols-[minmax(0,1fr)_10rem_8rem_8rem]'
-              : 'sm:grid-cols-[minmax(0,1fr)_10rem_8rem]'
-          "
-        >
-          <div>
-            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {{ t('admin.pricing.form.models', '模型列表') }} <span class="text-red-500">*</span>
-            </label>
-            <ModelTagInput
-              :models="entry.models"
-              :platform="props.platform"
-              @update:models="onModelsUpdate($event)"
-              :placeholder="
-                t('admin.pricing.form.modelsPlaceholder', '输入模型名后按回车添加，支持通配符 *')
-              "
-              class="mt-1"
-            />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {{ t('admin.pricing.form.billingMode', '计费模式') }}
-            </label>
-            <Select
-              :modelValue="entry.billing_mode"
-              @update:modelValue="onBillingModeUpdate($event as BillingMode)"
-              :options="billingModeOptions"
-              class="mt-1"
-            />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {{ t('admin.pricing.form.priceMultiplier', '定价倍率') }}
-            </label>
-            <input
-              :value="entry.price_multiplier"
-              @input="emitField('price_multiplier', ($event.target as HTMLInputElement).value)"
-              type="number"
-              step="any"
-              min="0"
-              class="input mt-1 text-sm"
-              :placeholder="t('admin.pricing.form.priceMultiplierPlaceholder', '不调整')"
-            />
-          </div>
-          <div v-if="props.showFastModeMultiplier && entry.billing_mode === 'token'">
-            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {{ t('admin.pricing.form.fastModeMultiplier', 'Fast 模式倍率') }}
-            </label>
-            <input
-              :value="entry.fast_mode_multiplier"
-              @input="emitField('fast_mode_multiplier', ($event.target as HTMLInputElement).value)"
-              type="number"
-              step="any"
-              min="0"
-              class="input mt-1 text-sm"
-              data-testid="fast-mode-multiplier"
-              :placeholder="t('admin.pricing.form.fastModeMultiplierPlaceholder', '例如 2')"
-            />
-          </div>
-        </div>
-
-        <!-- Token mode -->
-        <div v-if="entry.billing_mode === 'token'">
-          <!-- Default prices (fallback when no interval matches) -->
-          <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
-            {{ t('admin.pricing.form.defaultPrices', '默认价格（未命中区间时使用）') }}
-            <span class="ml-1 font-normal text-gray-400">$/MTok</span>
-          </label>
-          <div class="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.inputPrice', '输入')
-              }}</label>
-              <input
-                :value="entry.input_price"
-                @input="emitField('input_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.outputPrice', '输出')
-              }}</label>
-              <input
-                :value="entry.output_price"
-                @input="emitField('output_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.cacheWrite5mPrice', '缓存写入（5m）')
-              }}</label>
-              <input
-                :value="entry.cache_write_price"
-                @input="emitField('cache_write_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.cacheWrite1hPrice', '缓存写入（1h）')
-              }}</label>
-              <input
-                :value="entry.cache_write_1h_price"
-                @input="
-                  emitField('cache_write_1h_price', ($event.target as HTMLInputElement).value)
-                "
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.cacheReadPrice', '缓存读取')
-              }}</label>
-              <input
-                :value="entry.cache_read_price"
-                @input="emitField('cache_read_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.imageInputPrice', '图片输入')
-              }}</label>
-              <input
-                :value="entry.image_input_price"
-                @input="emitField('image_input_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">{{
-                t('admin.pricing.form.imageTokenPrice', '图片输出')
-              }}</label>
-              <input
-                :value="entry.image_output_price"
-                @input="emitField('image_output_price', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0"
-                class="input mt-0.5 text-sm"
-                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-              />
-            </div>
-          </div>
-
-          <div
-            v-if="props.enableTierMultipliers"
-            class="mt-3 grid max-w-2xl grid-cols-1 gap-2 sm:grid-cols-3"
-          >
-            <div>
-              <label class="text-xs text-gray-400">
-                {{ t('admin.pricing.form.fastMultiplier', 'Fast / Priority 倍率') }}
-              </label>
-              <input
-                :value="effectiveFastMultiplier"
-                @input="emitField('fast_multiplier', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                :min="preservingLegacyFreeFast ? 0 : 0.000001"
-                class="input mt-0.5 text-sm"
-                data-testid="fast-multiplier"
-                :placeholder="t('admin.pricing.form.multiplierPlaceholder', '沿用默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">
-                {{ t('admin.pricing.form.flexMultiplier', 'Flex 倍率') }}
-              </label>
-              <input
-                :value="entry.flex_multiplier"
-                @input="emitField('flex_multiplier', ($event.target as HTMLInputElement).value)"
-                type="number"
-                step="any"
-                min="0.000001"
-                class="input mt-0.5 text-sm"
-                data-testid="flex-multiplier"
-                :placeholder="t('admin.pricing.form.multiplierPlaceholder', '沿用默认')"
-              />
-            </div>
-            <div>
-              <label class="text-xs text-gray-400">
-                {{ t('admin.pricing.form.maxReasoningEffortMultiplier', 'Max 推理倍率') }}
-              </label>
-              <input
-                :value="entry.max_reasoning_effort_multiplier"
-                @input="
-                  emitField(
-                    'max_reasoning_effort_multiplier',
-                    ($event.target as HTMLInputElement).value,
-                  )
-                "
-                type="number"
-                step="any"
-                min="0.000001"
-                class="input mt-0.5 text-sm"
-                data-testid="max-reasoning-effort-multiplier"
-                :placeholder="maxReasoningEffortMultiplierPlaceholder"
-              />
-            </div>
-          </div>
-
-          <!-- Group and shared price configurations use the same context interval editor. -->
-          <RuleListEditor
-            class="mt-3"
-            :items="entry.intervals || []"
-            @remove="removeInterval"
-            test-id="pricing-token-intervals"
-            v-if="!hideTokenIntervals"
-            :title="t('admin.pricing.form.intervals')"
-            hint="(min, max]"
-            :add-label="t('admin.pricing.form.addInterval')"
-            @add="addInterval"
-          >
-            <template #row="{ item: iv, index: idx }">
-              <IntervalRow
-                :interval="iv"
-                :mode="entry.billing_mode"
-                @update="updateInterval(idx, $event)"
-              />
-            </template>
-          </RuleListEditor>
-
-          <TimePricingSection
-            v-if="enableTimePricing"
-            :model-value="entry.time_pricing"
-            @update:model-value="emit('update', { ...entry, time_pricing: $event })"
+        <div v-if="allowReference" class="mt-4">
+          <label class="input-label">{{ t('admin.pricing.ruleMode') }}</label>
+          <Select
+            :model-value="entry.reference_mode ? 'reference' : 'custom'"
+            :aria-label="t('admin.pricing.ruleMode')"
+            :options="[
+              { value: 'custom', label: t('admin.pricing.customMode') },
+              { value: 'reference', label: t('admin.pricing.referenceMode') },
+            ]"
+            @update:model-value="
+              emit('update', { ...entry, reference_mode: $event === 'reference' })
+            "
           />
         </div>
-
-        <!-- Per-request mode -->
-        <div v-else-if="entry.billing_mode === 'per_request'">
-          <!-- Default per-request price -->
-          <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
-            {{ t('admin.pricing.form.defaultPerRequestPrice', '默认单次价格（未命中层级时使用）') }}
-            <span class="ml-1 font-normal text-gray-400">$</span>
-          </label>
-          <div class="mt-1 w-48">
-            <input
-              :value="entry.per_request_price"
-              @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
-              type="number"
-              step="any"
-              min="0"
-              class="input text-sm"
-              :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+        <div v-if="allowReference && entry.reference_mode" class="mt-4 space-y-4">
+          <div
+            ><label class="input-label">{{ t('admin.pricing.form.models') }}</label>
+            <ModelTagInput
+              :models="entry.models"
+              :show-hint="false"
+              @update:models="emit('update', { ...entry, models: $event })"
             />
           </div>
-
-          <!-- Tiers -->
-          <RuleListEditor
-            class="mt-3"
-            :items="entry.intervals || []"
-            @remove="removeInterval"
-            test-id="pricing-request-intervals"
-            :title="t('admin.pricing.form.requestTiers')"
-            :add-label="t('admin.pricing.form.addTier')"
-            :empty-text="t('admin.pricing.form.noTiersYet')"
-            @add="addInterval"
-          >
-            <template #row="{ item: iv, index: idx }">
-              <IntervalRow
-                :interval="iv"
-                :mode="entry.billing_mode"
-                @update="updateInterval(idx, $event)"
-              />
-            </template>
-          </RuleListEditor>
+          <ModelReferenceInput
+            :model-value="entry.reference_model || ''"
+            @update:model-value="emit('update', { ...entry, reference_model: $event })"
+          />
         </div>
-
-        <!-- Image and video pricing fields. -->
-        <div v-else-if="entry.billing_mode === 'image' || entry.billing_mode === 'video'">
-          <!-- The default media amount uses USD per second for video and USD per image for image billing. -->
-          <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
-            {{
-              entry.billing_mode === 'video'
-                ? t('admin.pricing.form.defaultVideoPrice', '默认视频价格（未命中层级时使用）')
-                : t('admin.pricing.form.defaultImagePrice', '默认图片价格（未命中层级时使用）')
-            }}
-            <span class="ml-1 font-normal text-gray-400">{{
-              entry.billing_mode === 'video' ? '$/s' : '$/image'
-            }}</span>
-          </label>
-          <div class="mt-1 w-48">
-            <input
-              :value="entry.per_request_price"
-              @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
-              type="number"
-              step="any"
-              min="0"
-              class="input text-sm"
-              :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
-            />
-          </div>
-
-          <!-- Resolution-based image and video tiers. -->
-          <RuleListEditor
-            class="mt-3"
-            :items="entry.intervals || []"
-            @remove="removeInterval"
-            test-id="pricing-media-intervals"
-            :title="
-              entry.billing_mode === 'video'
-                ? t('admin.pricing.form.videoTiers')
-                : t('admin.pricing.form.imageTiers')
+        <template v-else>
+          <!-- Header: Models + Billing Mode -->
+          <div
+            class="mt-3 grid grid-cols-1 items-start gap-2"
+            :class="
+              props.showFastModeMultiplier && entry.billing_mode === 'token'
+                ? 'sm:grid-cols-[minmax(0,1fr)_10rem_8rem_8rem]'
+                : 'sm:grid-cols-[minmax(0,1fr)_10rem_8rem]'
             "
-            :add-label="t('admin.pricing.form.addTier')"
-            @add="addMediaTier"
           >
-            <template #row="{ item: iv, index: idx }">
-              <IntervalRow
-                :interval="iv"
-                :mode="entry.billing_mode"
-                @update="updateInterval(idx, $event)"
+            <div>
+              <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.pricing.form.models', '模型列表') }} <span class="text-red-500">*</span>
+              </label>
+              <ModelTagInput
+                :models="entry.models"
+                :show-hint="false"
+                :platform="props.platform"
+                @update:models="onModelsUpdate($event)"
+                :placeholder="
+                  t('admin.pricing.form.modelsPlaceholder', '输入模型名后按回车添加，支持通配符 *')
+                "
+                class="mt-1"
               />
-            </template>
-          </RuleListEditor>
-        </div>
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.pricing.form.billingMode', '计费模式') }}
+              </label>
+              <Select
+                :modelValue="entry.billing_mode"
+                @update:modelValue="onBillingModeUpdate($event as BillingMode)"
+                :options="billingModeOptions"
+                class="mt-1"
+              />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.pricing.form.priceMultiplier', '定价倍率') }}
+              </label>
+              <input
+                :value="entry.price_multiplier"
+                @input="emitField('price_multiplier', ($event.target as HTMLInputElement).value)"
+                type="number"
+                step="any"
+                min="0"
+                class="input mt-1 text-sm"
+                :placeholder="t('admin.pricing.form.priceMultiplierPlaceholder', '不调整')"
+              />
+            </div>
+            <div v-if="props.showFastModeMultiplier && entry.billing_mode === 'token'">
+              <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.pricing.form.fastModeMultiplier', 'Fast 模式倍率') }}
+              </label>
+              <input
+                :value="entry.fast_mode_multiplier"
+                @input="
+                  emitField('fast_mode_multiplier', ($event.target as HTMLInputElement).value)
+                "
+                type="number"
+                step="any"
+                min="0"
+                class="input mt-1 text-sm"
+                data-testid="fast-mode-multiplier"
+                :placeholder="t('admin.pricing.form.fastModeMultiplierPlaceholder', '例如 2')"
+              />
+            </div>
+          </div>
+
+          <!-- Token mode -->
+          <div v-if="entry.billing_mode === 'token'">
+            <!-- Default prices (fallback when no interval matches) -->
+            <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{ t('admin.pricing.form.defaultPrices', '默认价格（未命中区间时使用）') }}
+              <span class="ml-1 font-normal text-gray-400">$/MTok</span>
+            </label>
+            <div class="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.inputPrice', '输入')
+                }}</label>
+                <input
+                  :value="entry.input_price"
+                  @input="emitField('input_price', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.outputPrice', '输出')
+                }}</label>
+                <input
+                  :value="entry.output_price"
+                  @input="emitField('output_price', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.cacheWrite5mPrice', '缓存写入（5m）')
+                }}</label>
+                <input
+                  :value="entry.cache_write_price"
+                  @input="emitField('cache_write_price', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.cacheWrite1hPrice', '缓存写入（1h）')
+                }}</label>
+                <input
+                  :value="entry.cache_write_1h_price"
+                  @input="
+                    emitField('cache_write_1h_price', ($event.target as HTMLInputElement).value)
+                  "
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.cacheReadPrice', '缓存读取')
+                }}</label>
+                <input
+                  :value="entry.cache_read_price"
+                  @input="emitField('cache_read_price', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.imageInputPrice', '图片输入')
+                }}</label>
+                <input
+                  :value="entry.image_input_price"
+                  @input="emitField('image_input_price', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">{{
+                  t('admin.pricing.form.imageTokenPrice', '图片输出')
+                }}</label>
+                <input
+                  :value="entry.image_output_price"
+                  @input="
+                    emitField('image_output_price', ($event.target as HTMLInputElement).value)
+                  "
+                  type="number"
+                  step="any"
+                  min="0"
+                  class="input mt-0.5 text-sm"
+                  :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+                />
+              </div>
+            </div>
+
+            <div
+              v-if="props.enableTierMultipliers"
+              class="mt-3 grid max-w-2xl grid-cols-1 gap-2 sm:grid-cols-3"
+            >
+              <div>
+                <label class="text-xs text-gray-400">
+                  {{ t('admin.pricing.form.fastMultiplier', 'Fast / Priority 倍率') }}
+                </label>
+                <input
+                  :value="effectiveFastMultiplier"
+                  @input="emitField('fast_multiplier', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  :min="preservingLegacyFreeFast ? 0 : 0.000001"
+                  class="input mt-0.5 text-sm"
+                  data-testid="fast-multiplier"
+                  :placeholder="t('admin.pricing.form.multiplierPlaceholder', '沿用默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">
+                  {{ t('admin.pricing.form.flexMultiplier', 'Flex 倍率') }}
+                </label>
+                <input
+                  :value="entry.flex_multiplier"
+                  @input="emitField('flex_multiplier', ($event.target as HTMLInputElement).value)"
+                  type="number"
+                  step="any"
+                  min="0.000001"
+                  class="input mt-0.5 text-sm"
+                  data-testid="flex-multiplier"
+                  :placeholder="t('admin.pricing.form.multiplierPlaceholder', '沿用默认')"
+                />
+              </div>
+              <div>
+                <label class="text-xs text-gray-400">
+                  {{ t('admin.pricing.form.maxReasoningEffortMultiplier', 'Max 推理倍率') }}
+                </label>
+                <input
+                  :value="entry.max_reasoning_effort_multiplier"
+                  @input="
+                    emitField(
+                      'max_reasoning_effort_multiplier',
+                      ($event.target as HTMLInputElement).value,
+                    )
+                  "
+                  type="number"
+                  step="any"
+                  min="0.000001"
+                  class="input mt-0.5 text-sm"
+                  data-testid="max-reasoning-effort-multiplier"
+                  :placeholder="maxReasoningEffortMultiplierPlaceholder"
+                />
+              </div>
+            </div>
+
+            <!-- Group and shared price configurations use the same context interval editor. -->
+            <RuleListEditor
+              class="mt-3"
+              :items="entry.intervals || []"
+              @remove="removeInterval"
+              test-id="pricing-token-intervals"
+              v-if="!hideTokenIntervals"
+              :title="t('admin.pricing.form.intervals')"
+              hint="(min, max]"
+              :add-label="t('admin.pricing.form.addInterval')"
+              @add="addInterval"
+            >
+              <template #row="{ item: iv, index: idx }">
+                <IntervalRow
+                  :interval="iv"
+                  :mode="entry.billing_mode"
+                  @update="updateInterval(idx, $event)"
+                />
+              </template>
+            </RuleListEditor>
+
+            <TimePricingSection
+              v-if="enableTimePricing"
+              :model-value="entry.time_pricing"
+              @update:model-value="emit('update', { ...entry, time_pricing: $event })"
+            />
+          </div>
+
+          <!-- Per-request mode -->
+          <div v-else-if="entry.billing_mode === 'per_request'">
+            <!-- Default per-request price -->
+            <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{
+                t('admin.pricing.form.defaultPerRequestPrice', '默认单次价格（未命中层级时使用）')
+              }}
+              <span class="ml-1 font-normal text-gray-400">$</span>
+            </label>
+            <div class="mt-1 w-48">
+              <input
+                :value="entry.per_request_price"
+                @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
+                type="number"
+                step="any"
+                min="0"
+                class="input text-sm"
+                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+              />
+            </div>
+
+            <!-- Tiers -->
+            <RuleListEditor
+              class="mt-3"
+              :items="entry.intervals || []"
+              @remove="removeInterval"
+              test-id="pricing-request-intervals"
+              :title="t('admin.pricing.form.requestTiers')"
+              :add-label="t('admin.pricing.form.addTier')"
+              :empty-text="t('admin.pricing.form.noTiersYet')"
+              @add="addInterval"
+            >
+              <template #row="{ item: iv, index: idx }">
+                <IntervalRow
+                  :interval="iv"
+                  :mode="entry.billing_mode"
+                  @update="updateInterval(idx, $event)"
+                />
+              </template>
+            </RuleListEditor>
+          </div>
+
+          <!-- Image and video pricing fields. -->
+          <div v-else-if="entry.billing_mode === 'image' || entry.billing_mode === 'video'">
+            <!-- The default media amount uses USD per second for video and USD per image for image billing. -->
+            <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{
+                entry.billing_mode === 'video'
+                  ? t('admin.pricing.form.defaultVideoPrice', '默认视频价格（未命中层级时使用）')
+                  : t('admin.pricing.form.defaultImagePrice', '默认图片价格（未命中层级时使用）')
+              }}
+              <span class="ml-1 font-normal text-gray-400">{{
+                entry.billing_mode === 'video' ? '$/s' : '$/image'
+              }}</span>
+            </label>
+            <div class="mt-1 w-48">
+              <input
+                :value="entry.per_request_price"
+                @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
+                type="number"
+                step="any"
+                min="0"
+                class="input text-sm"
+                :placeholder="t('admin.pricing.form.pricePlaceholder', '默认')"
+              />
+            </div>
+
+            <!-- Resolution-based image and video tiers. -->
+            <RuleListEditor
+              class="mt-3"
+              :items="entry.intervals || []"
+              @remove="removeInterval"
+              test-id="pricing-media-intervals"
+              :title="
+                entry.billing_mode === 'video'
+                  ? t('admin.pricing.form.videoTiers')
+                  : t('admin.pricing.form.imageTiers')
+              "
+              :add-label="t('admin.pricing.form.addTier')"
+              @add="addMediaTier"
+            >
+              <template #row="{ item: iv, index: idx }">
+                <IntervalRow
+                  :interval="iv"
+                  :mode="entry.billing_mode"
+                  @update="updateInterval(idx, $event)"
+                />
+              </template>
+            </RuleListEditor>
+          </div>
+        </template>
       </div>
     </Collapse>
   </div>
 </template>
 
 <script setup lang="ts">
+import ModelReferenceInput from '@/components/admin/model-attributes/ModelReferenceInput.vue'
 import Collapse from '@/components/common/Collapse.vue'
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -507,6 +554,7 @@ const { t } = useI18n()
 // props supplies parent-owned editor values and display controls consumed by the fields below.
 const props = withDefaults(
   defineProps<{
+    allowReference?: boolean // Enables user-price references.
     removable?: boolean // card removal enabled
     // entry is the parent-owned card draft. Scalar updates emit a copied entry, while interval
     // edits retain and mutate the existing row object.
@@ -522,6 +570,7 @@ const props = withDefaults(
     enableTierMultipliers?: boolean // tier multiplier controls enabled
   }>(),
   {
+    allowReference: false,
     removable: true,
     showFastModeMultiplier: false,
     hideTokenIntervals: false,
@@ -704,7 +753,7 @@ async function onModelsUpdate(newModels: string[]) {
   // values.
   try {
     const result = await pricingAPI.getModelDefaultPricing(addedModels[0])
-    if (result.found) {
+    if (result.found && !props.entry.reference_mode) {
       emit('update', {
         ...props.entry,
         models: newModels,

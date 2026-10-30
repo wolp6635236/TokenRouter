@@ -14,10 +14,10 @@ import (
 // request construction uses the selected upstream endpoint.
 //
 // The zero route retains ordinary provider-test inference. A populated route
-// requires a supported entry, an enabled upstream protocol, and an executor
-// for that exact combination. These checks also run after loading credentials,
-// preventing a changed provider configuration from silently selecting its
-// default endpoint between scheduling and execution.
+// requires a supported entry, an upstream protocol enabled for the probe's
+// model, and an executor for that exact combination. These checks also run
+// after loading credentials, preventing a changed provider configuration from
+// silently selecting its default endpoint between scheduling and execution.
 
 // TestProtocolRoute identifies the client entry and resolved upstream test endpoint.
 type TestProtocolRoute struct {
@@ -42,33 +42,38 @@ func GroupProbeProtocols() []capability.ProtocolID {
 	}
 }
 
-// SupportsProvider reports whether an existing test executor can execute this route.
-// Both protocol identities must be present, and provider enablement is checked
-// through the shared single-step resolver. A different resolved endpoint fails
-// rather than changing the endpoint selected by group routing.
+// SupportsProvider reports whether an existing test executor can execute this
+// route for model, the name the probe sends before provider mapping. Both
+// protocol identities must be present, and the snapshot's one-hop model
+// resolution must select exactly the upstream protocol. A different resolved
+// endpoint fails rather than changing the endpoint selected by group routing.
 //
-// Executor restrictions are narrower than gateway capabilities: Grok tests
-// currently implement Responses and image generation, for example. Keeping that
-// distinction here lets selection skip such candidates before sending requests,
-// while execution repeats the same check against the loaded provider snapshot.
-func (r TestProtocolRoute) SupportsProvider(value ProviderSnapshot) bool {
+// Resolution narrows enabled protocols to the final model's declared protocol
+// when the snapshot carries a per-model table, so a model declaring Gemini
+// accepts a Chat entry only through conversion to Gemini. Executor restrictions
+// are narrower than gateway capabilities: Grok tests currently implement
+// Responses and image generation, for example. Keeping that distinction here
+// lets selection skip such candidates before sending requests, while execution
+// repeats the same check against the loaded provider snapshot.
+func (r TestProtocolRoute) SupportsProvider(value ProviderSnapshot, model string) bool {
 	if !slices.Contains(GroupProbeProtocols(), r.ClientProtocol) || r.UpstreamProtocol == "" {
 		return false
 	}
-	resolved, ok := capability.ResolveRoute(value.Protocols(), r.ClientProtocol,
+	resolved, ok := value.ResolveModelRoute(model, r.ClientProtocol,
 		map[capability.ProtocolID][]capability.ProtocolID{r.ClientProtocol: {r.UpstreamProtocol}})
-	if !ok || resolved != r.UpstreamProtocol {
+	if !ok || resolved.Protocol != r.UpstreamProtocol {
 		return false
+	}
+	if platformRuleRegistry[value.Platform].text != nil {
+		return r.UpstreamProtocol == capability.ProtocolAnthropicMessages ||
+			r.UpstreamProtocol == capability.ProtocolOpenAIResponses ||
+			r.UpstreamProtocol == capability.ProtocolOpenAIChatCompletions
 	}
 	switch value.Platform {
 	case PlatformOpenAI:
 		return r.UpstreamProtocol == capability.ProtocolOpenAIResponses ||
 			r.UpstreamProtocol == capability.ProtocolOpenAIChatCompletions ||
 			r.UpstreamProtocol == capability.ProtocolImagesGenerations
-	case PlatformKimi, PlatformZhipu, PlatformDeepseek:
-		return r.UpstreamProtocol == capability.ProtocolAnthropicMessages ||
-			r.UpstreamProtocol == capability.ProtocolOpenAIResponses ||
-			r.UpstreamProtocol == capability.ProtocolOpenAIChatCompletions
 	case PlatformAnthropic:
 		return r.UpstreamProtocol == capability.ProtocolAnthropicMessages
 	case PlatformGemini, PlatformAntigravity:
@@ -80,6 +85,10 @@ func (r TestProtocolRoute) SupportsProvider(value ProviderSnapshot) bool {
 			r.UpstreamProtocol == capability.ProtocolImagesGenerations
 	case PlatformJev:
 		return r.UpstreamProtocol == capability.ProtocolSystemOne
+	case PlatformOpenCode:
+		// The OpenCode executor implements every protocol an OpenCode provider can
+		// enable, so the resolved route needs no further executor restriction.
+		return true
 	default:
 		return false
 	}
@@ -91,4 +100,11 @@ func (r TestProtocolRoute) SupportsProvider(value ProviderSnapshot) bool {
 func TestProtocolRouteFromContext(ctx context.Context) TestProtocolRoute {
 	route, _ := ctx.Value(testProtocolRouteKey{}).(TestProtocolRoute)
 	return route
+}
+
+// WithTestProtocolRoute retains a validated probe route for attribute lookups.
+// Callers validate both protocol identities before using this context. The
+// derived context retains the parent's cancellation and all other request values.
+func WithTestProtocolRoute(ctx context.Context, route TestProtocolRoute) context.Context {
+	return context.WithValue(ctx, testProtocolRouteKey{}, route)
 }

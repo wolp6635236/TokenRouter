@@ -10,7 +10,7 @@
 - [后端文件组织](#backend_file_layout)：新增、拆分、合并或改名后端 Go 文件和测试文件，或编写文件总览时读取，文件内的声明顺序也在这一节。
 - [生成代码与迁移](#生成代码与迁移)：修改 Ent schema、Wire 或数据库时读取。
 - [验证策略](#验证策略)：实现完成、提交之前读取。
-- [提交与文档](#提交与文档)：形成提交或维护 Project Doc 时读取。
+- [提交与文档](#提交与文档)：形成提交、创建 Issue 或 PR、维护 Project Doc 时读取。
 - [同步上游](#同步上游)：引入 upstream 的 PR 或 commit 时读取。
 - [发布](#发布)：创建版本 tag 之前读取。
 
@@ -359,6 +359,8 @@ make build
 
 Vue 的最低版本为 `3.5.42`，该版本修复了 `@vue/server-renderer` 属性名检查中的 XSS 漏洞。`frontend/pnpm-workspace.yaml` 将低于 `1.2.2` 的 `source-map-js` 依赖提升到修复版本，覆盖 Vue 编译器和 i18n 引入的索引偏移 DoS 漏洞。更新这些依赖时同步维护锁文件，并运行前端测试、生产构建和安全扫描。
 
+Vue I18n 的最低版本为 `11.4.16`，消息编译器 `@intlify/message-compiler` 固定为同一版本。该版本包含 [GHSA-83rm-6c8r-g728](https://github.com/advisories/GHSA-83rm-6c8r-g728) 的 `srcdoc` 转义修复；9.x 和 10.x 已停止维护，没有对应补丁。应用使用 Composition API，Vite 沿用 runtime 分发，11.x 默认启用 JIT，不再设置旧的 `__INTLIFY_JIT_COMPILATION__` 开关。升级时验证真实中英文词条、占位符、HTML 转义、语言切换和生产构建，并确认锁文件不再保留受影响的旧版 `@intlify` 包。
+
 Axios 的 Node 重定向依赖 `follow-redirects` 通过 workspace override 固定低版本的替换值为 `1.16.1`，修复数组形式请求头和特殊字符敏感请求头在跨域重定向时的剥离问题。对应公告为 [GHSA-q3jh-wrc6-jgq8](https://github.com/advisories/GHSA-q3jh-wrc6-jgq8) 和 [GHSA-8r9p-f939-6h3c](https://github.com/advisories/GHSA-8r9p-f939-6h3c)；安全检查继续使用现有高危例外规则。
 
 DOMPurify 用于 Markdown 页面、公告、支付说明和 SVG 图标的内容清理。直接依赖和 workspace override 的最低版本均为 `3.4.17`，包含 [GHSA-cg2g-xh64-v4q7](https://github.com/advisories/GHSA-cg2g-xh64-v4q7) 和 [GHSA-mrv2-3pqr-j5jr](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr) 的修复。更新时同步锁文件，并验证 HTML 内容清理、SVG 图形与滤镜保留、前端构建和安全审计。
@@ -369,6 +371,14 @@ DOMPurify 用于 Markdown 页面、公告、支付说明和 SVG 图标的内容�
 ## 提交与文档
 
 提交信息遵循 Conventional Commits，例如 `feat(gateway): ...`、`fix(billing): ...`、`docs(project): ...`。一次提交围绕一个可以验证的目的，生成文件、迁移和接口测试，和它们的源码变更一起提交。
+
+### GitHub Issue 与 PR
+
+人工提交 Issue 使用 [`.github/ISSUE_TEMPLATE/`](../../.github/ISSUE_TEMPLATE/) 中的英文 Bug 或功能请求表单，空白 Issue 入口关闭。普通 PR 使用[英文模板](../../.github/PULL_REQUEST_TEMPLATE.md)。Issue 与 PR 的撰写内容统一使用英文，不使用 emoji；用户原话引用保留原文。新功能先关联 Issue，较大或方向性变更先与维护者达成一致；验证记录需要实际命令或操作与观察结果，UI 变更附截图或录屏，Bug 修复说明复现过程和修复后的表现。
+
+普通模板里的隐藏说明将 Agent 引导到 [Issue 专用模板](../../.agents/github/ISSUE.md)和 [PR 专用模板](../../.agents/github/PR.md)，入口规则同时写在 [AGENTS.md](../../AGENTS.md)。Agent 模板保留工具信息、用户原始请求及后续纠正、调查证据、验证结果和未验证范围；缺少必需事实时，Agent 应先追问，不能猜测后提交。为项目所有者创建 PR 时，默认使用普通英文模板，只有所有者明确要求时才用 Agent 模板。外部贡献者由 Agent 创建 PR 时，需要声明 AI 参与。
+
+受理范围依据[提供商能力矩阵](../interfaces/upstream_provider_matrix.md)和各平台文档。受支持的 Codex、OAuth 或 coding 模式，以及 TokenRouter 自身的转发和错误处理问题，仍按模板受理；仅原样转发的上游报错和第三方服务独有的问题，应先交由对应提供方处理。验证命令按本文的[验证策略](#验证策略)选择，记录实际执行范围。模板的来源、适配记录和许可见[模板说明](../../.github/NOTICE.templates.md)。
 
 ### 前端格式化与静态检查
 

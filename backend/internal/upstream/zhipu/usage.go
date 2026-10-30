@@ -35,36 +35,36 @@ import (
 // probe model separately selects the model used by provider connectivity
 // checks.
 const (
-	// CnZhipuWindowUnknown: classify from remaining reset evidence.
-	CnZhipuWindowUnknown CnZhipuWindow = iota
-	CnZhipuWindow5h                    // five-hour usage observation slot
-	CnZhipuWindowWeekly                // weekly usage observation slot
+	// QuotaWindowUnknown: classify from remaining reset evidence.
+	QuotaWindowUnknown QuotaWindowKind = iota
+	QuotaWindow5h                      // five-hour usage observation slot
+	QuotaWindowWeekly                  // weekly usage observation slot
 
 	// DefaultTestModel selects the model used by Zhipu connection probes,
 	// independently of coding quota-window queries.
 	DefaultTestModel = "glm-4.7"
 )
 
-// CnZhipuWindow identifies the observation slot selected by a coding quota
+// QuotaWindowKind identifies the observation slot selected by a coding quota
 // unit.
-type CnZhipuWindow int
+type QuotaWindowKind int
 
 // ZhipuCodingUsageAdapter reads coding quota observations through the
 // configured usage-query transport.
 type ZhipuCodingUsageAdapter struct{}
 
 // ClassifyZhipuWindowUnit maps unit 3 to the five-hour slot and unit 6 to the
-// weekly slot. Other units return CnZhipuWindowUnknown, leaving
+// weekly slot. Other units return QuotaWindowUnknown, leaving
 // ParseZhipuTokenTiers to classify a remaining observation using reset
 // metadata.
-func ClassifyZhipuWindowUnit(unit int64) CnZhipuWindow {
+func ClassifyZhipuWindowUnit(unit int64) QuotaWindowKind {
 	switch unit {
 	case 3:
-		return CnZhipuWindow5h
+		return QuotaWindow5h
 	case 6:
-		return CnZhipuWindowWeekly
+		return QuotaWindowWeekly
 	default:
-		return CnZhipuWindowUnknown
+		return QuotaWindowUnknown
 	}
 }
 
@@ -82,18 +82,18 @@ func ClassifyZhipuWindowUnit(unit int64) CnZhipuWindow {
 // short window's reset.
 //
 // Missing or unparseable percentage values become zero. The returned values and
-// optional reset text are passed to CnUsageLimits by Query, which rejects
-// negative or nonfinite percentages, retains values above one hundred, and
-// omits unparseable reset text.
-func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
+// optional reset text are passed to PercentageUsageLimits by Query, which
+// rejects negative or nonfinite percentages, retains values above one hundred,
+// and omits unparseable reset text.
+func ParseZhipuTokenTiers(data gjson.Result) []usageview.PercentageQuotaWindow {
 	// entry keeps one allowance's percentage and separate
 	// reset-classification evidence.
 	type entry struct {
-		// resetMs and resetISO retain integer ordering evidence and
-		// formatted text. Positive resetMs values and nonempty string
-		// resets set hasReset before CnUsageLimits checks the date text.
-		// String parsing leaves resetMs zero, so its displayed reset and
-		// its ordering value remain separate observations.
+		// resetMs and resetISO retain integer ordering evidence and formatted
+		// text. Positive resetMs values and nonempty string resets set hasReset
+		// before PercentageUsageLimits checks the date text. String parsing
+		// leaves resetMs zero, so its displayed reset and its ordering value
+		// remain separate observations.
 		resetMs    int64   // sortable numeric reset value
 		hasReset   bool    // parser reset presence marker
 		percentage float64 // selected used percentage
@@ -109,13 +109,13 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 
 	classify := func(item gjson.Result, e entry) {
 		switch ClassifyZhipuWindowUnit(item.Get("unit").Int()) {
-		case CnZhipuWindow5h:
+		case QuotaWindow5h:
 			if !fiveHourSet {
 				fiveHour, fiveHourSet = e, true
 			} else {
 				unclassified = append(unclassified, e)
 			}
-		case CnZhipuWindowWeekly:
+		case QuotaWindowWeekly:
 			if !weeklySet {
 				weekly, weeklySet = e, true
 			} else {
@@ -134,10 +134,10 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 			return true
 		}
 		// An absent or unreadable percentage contributes zero here.
-		// CnUsageLimits later validates retained numeric observations,
+		// PercentageUsageLimits later validates retained numeric observations,
 		// while this parser retains the candidate's window metadata.
 		percentage := 0.0
-		if p, ok := usageclient.CnParseF64(item.Get("percentage").Value()); ok {
+		if p, ok := usageclient.ParseFloat64(item.Get("percentage").Value()); ok {
 			percentage = p
 		}
 		var (
@@ -153,13 +153,13 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 				// Normalize numeric epoch text for the usage
 				// result while retaining its integer reset value
 				// as the reset heuristic's ordering key.
-				resetISO = usageclient.CnMillisToRFC3339(resetMs)
+				resetISO = usageclient.EpochToRFC3339(resetMs)
 			case gjson.String:
 				// A string timestamp can establish reset
 				// presence and display text even though it
 				// contributes no parsed epoch to numeric
 				// candidate ordering.
-				resetISO = usageclient.CnNormalizeResetTime(nr.String())
+				resetISO = usageclient.NormalizeResetTime(nr.String())
 				hasReset = resetISO != ""
 			}
 		}
@@ -198,12 +198,12 @@ func ParseZhipuTokenTiers(data gjson.Result) []usageview.CNQuotaTier {
 		}
 	}
 
-	var tiers []usageview.CNQuotaTier
+	var tiers []usageview.PercentageQuotaWindow
 	if fiveHourSet {
-		tiers = append(tiers, usageview.CNQuotaTier{Window: "5h", UsedPercent: fiveHour.percentage, ResetAt: fiveHour.resetISO})
+		tiers = append(tiers, usageview.PercentageQuotaWindow{Window: "5h", UsedPercent: fiveHour.percentage, ResetAt: fiveHour.resetISO})
 	}
 	if weeklySet {
-		tiers = append(tiers, usageview.CNQuotaTier{Window: "7d", UsedPercent: weekly.percentage, ResetAt: weekly.resetISO})
+		tiers = append(tiers, usageview.PercentageQuotaWindow{Window: "7d", UsedPercent: weekly.percentage, ResetAt: weekly.resetISO})
 	}
 	return tiers
 }
@@ -217,7 +217,7 @@ func (*ZhipuCodingUsageAdapter) Name() string { return usageview.UpstreamUsageAd
 // optional project included only for that team request.
 func (*ZhipuCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.Request) (*usageview.UpstreamUsageInfo, error) {
 	client := usageclient.New(input)
-	endpoint, err := usageclient.CnUsageEndpoint(client.BaseURL, "/api/monitor/usage/quota/limit", false)
+	endpoint, err := usageclient.FixedUsageEndpoint(client.BaseURL, "/api/monitor/usage/quota/limit", false)
 	if err != nil {
 		return nil, usageview.ErrUpstreamUsageConfigInvalid.WithCause(err)
 	}
@@ -259,12 +259,12 @@ func (*ZhipuCodingUsageAdapter) Query(ctx context.Context, input *usagecontract.
 	if err != nil {
 		return nil, err
 	}
-	if err := usageclient.ValidateCNUsageStatus(status); err != nil {
+	if err := usageclient.UpstreamUsageHTTPError(status, true); err != nil {
 		return nil, err
 	}
 	if success := gjson.GetBytes(body, "success"); success.Exists() && !success.Bool() {
 		return nil, usageview.ErrUpstreamUsageInvalidResponse
 	}
 	tiers := ParseZhipuTokenTiers(gjson.GetBytes(body, "data"))
-	return usageclient.CnUsageLimits("zhipu", tiers)
+	return usageclient.PercentageUsageLimits("zhipu", tiers)
 }

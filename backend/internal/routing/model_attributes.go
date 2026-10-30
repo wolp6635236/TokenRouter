@@ -39,16 +39,20 @@ var (
 	ErrAttributeConfigConflict = apperror.Conflict("ATTRIBUTE_CONFIG_CONFLICT", "configuration name or group association already exists")
 )
 
-// ModelAttributeRule supplies overrides for final upstream models and matching
-// route selectors.
+// ModelAttributeRule supplies overrides or references for final upstream models
+// and matching route selectors.
 type ModelAttributeRule struct {
+	// ReferenceModel borrows the target's effective attributes in this profile.
+	// Empty retains field overrides; populated references require empty Attributes.
+	ReferenceModel string `json:"reference_model,omitempty"`
+
 	// ID connects display-name localization to the same rule during edits.
 	// EnsureModelRuleIDs fills missing IDs; Save retains submitted IDs and rejects
 	// duplicates within a profile.
 	ID string `json:"id"`
 	// Models matches final upstream identities, including expanded resource
 	// spellings. Exact matches precede wildcard rules; same-kind selection follows
-	// the match method's candidate and saved rule order.
+	// matchRule's candidate and saved rule order.
 	Models []string `json:"models"`
 	// administrator attribute override values
 	Attributes modelcatalog.Attributes `json:"attributes"`
@@ -194,6 +198,9 @@ type ModelAttributeService struct {
 // covers both previous and new group memberships; a failed save leaves
 // invalidation unperformed.
 func (s *ModelAttributeService) Save(ctx context.Context, config *ModelAttributeConfig) error {
+	if err := config.ValidateReferences(); err != nil {
+		return err
+	}
 	config.Name = strings.TrimSpace(config.Name)
 	// Bound profile names by Unicode characters before persisting administrator
 	// text.
@@ -480,17 +487,16 @@ func (s *ModelAttributeService) resolveModelRoutes(view modelcatalog.View, confi
 	return resolved
 }
 
-// match returns the first applicable rule's attributes for a model and optional
-// first target. It checks the normalized model and supplied identity candidates
-// for exact matches before considering configured trailing-star rules.
+// matchRule selects the first applicable rule for a model and optional route.
+// It checks the normalized model and expanded resource identities for exact
+// matches before considering configured trailing-star rules. The complete rule
+// retains both field overrides and its optional reference target.
 //
-// Exact matching traverses candidate names before configuration order, so the
-// supplied full identity can win over an expanded identity. Wildcard matching
-// instead traverses rules in saved order and accepts the first matching prefix
-// across the candidate names. Route selectors apply in both phases, and
-// unmatched input returns empty attributes for inheritance. Returned rule
-// values can share the profile's pointers.
-func (c *ModelAttributeConfig) match(model string, expand func(string) []string, targets ...modelcatalog.Target) modelcatalog.Attributes {
+// Exact matching traverses candidate names before configuration order, allowing
+// the supplied full identity to win over an expanded identity. Wildcard matching
+// traverses rules in saved order and accepts the first matching prefix across
+// candidate names. Route selectors apply in both phases; unmatched models return nil.
+func (c *ModelAttributeConfig) matchRule(model string, expand func(string) []string, targets ...modelcatalog.Target) *ModelAttributeRule {
 	var target modelcatalog.Target
 	if len(targets) > 0 {
 		target = targets[0]
@@ -506,7 +512,7 @@ func (c *ModelAttributeConfig) match(model string, expand func(string) []string,
 			}
 			for _, pattern := range rule.Models {
 				if strings.EqualFold(pattern, name) {
-					return rule.Attributes
+					return &rule
 				}
 			}
 		}
@@ -521,12 +527,12 @@ func (c *ModelAttributeConfig) match(model string, expand func(string) []string,
 			}
 			for _, name := range names {
 				if strings.HasPrefix(strings.ToLower(name), strings.ToLower(strings.TrimSuffix(pattern, "*"))) {
-					return rule.Attributes
+					return &rule
 				}
 			}
 		}
 	}
-	return modelcatalog.Attributes{}
+	return nil
 }
 
 // EnsureModelRuleIDs fills absent rule identifiers from model patterns and

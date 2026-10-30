@@ -37,8 +37,8 @@ import (
 // request reuse a shared budget. That budget is initialized by the sequential
 // request runner and later protected by the upstream retry types. Compact,
 // Agent Identity and field repairs remain distinct recovery decisions.
-// Successful HTTP turn-state provenance is recorded before response reading,
-// and the runner owns each body lifetime across retries and final output.
+// The output sink records turn-state provenance only while response metadata
+// remains applicable. The runner owns each body across retries and final output.
 
 // openAIResponsesRejectedFieldRetryBudgetContextKey identifies the request-wide repair allowance
 // reused by per-provider body-deduplication states during passthrough recovery.
@@ -431,14 +431,17 @@ func (p *openAIPassthroughExecutionAdapter) WrapResponseBody(r *http.Response) {
 	}
 }
 
-// ObserveProvenance records this provider as the source of a nonblank
-// turn-state header. RunPassthrough invokes it after a successful HTTP
-// response and before the response reader, so this publication does not wait
-// for confirmed client delivery.
-func (p *openAIPassthroughExecutionAdapter) ObserveProvenance(h http.Header) {
-	if ExtractCodexTurnState(h) != "" {
-		p.s.Requests.Turns.Commit(p.c, p.provider, h)
+// Sink binds passthrough header ownership to actual response metadata application.
+// A heartbeat may already have committed the client response before upstream
+// headers arrive; those undelivered values must not replace the remembered provider.
+func (p *openAIPassthroughExecutionAdapter) Sink() upstream.OutputSink {
+	sink := NewResponseSink(p.c)
+	sink.headersApplied = func(headers http.Header) {
+		if ExtractCodexTurnState(headers) != "" {
+			p.s.Requests.Turns.Commit(p.c, p.provider, headers)
+		}
 	}
+	return sink
 }
 
 // ResponseOptions binds passthrough reading, health and output callbacks to

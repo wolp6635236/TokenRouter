@@ -12,10 +12,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
 )
 
-// TestAllowOpenAICompatibleMessagesDispatchUsesProtocolCollectionForCN checks
-// nil input and group protocol collections in the listed CN cases. It checks
-// Messages admission only for the nil or explicitly allowed group fixtures.
-func TestAllowOpenAICompatibleMessagesDispatchUsesProtocolCollectionForCN(t *testing.T) {
+// TestAllowOpenAICompatibleMessagesDispatchUsesProtocolCollectionForTextAPIKeys
+// checks nil input and group protocol collections in the listed Kimi, Zhipu,
+// and DeepSeek cases. It checks Messages admission only for the nil or
+// explicitly allowed group fixtures.
+func TestAllowOpenAICompatibleMessagesDispatchUsesProtocolCollectionForTextAPIKeys(t *testing.T) {
 	require.True(t, (openAITextHTTPBackend{}).AllowsMessages(nil))
 	for _, platform := range []string{capability.PlatformKimi, capability.PlatformZhipu, capability.PlatformDeepseek} {
 		disabled := &apikey.APIKey{Group: &routing.Group{}}

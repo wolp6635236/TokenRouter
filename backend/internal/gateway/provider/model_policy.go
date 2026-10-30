@@ -26,10 +26,10 @@ import (
 // thinking variants determine the final wire identity. Compact can select a
 // dedicated outbound mapping without replacing the ordinary billing name.
 //
-// Prepared rules capture model configuration for catalogue queries; uncaptured
-// execution policies read provider rules when used. An attempt route records
-// its chosen protocol and participates in mapping resolution, keeping
-// candidate identity separate from shared provider configuration. Final
+// Prepared rules capture model configuration for catalogue queries; unplanned
+// execution policies read provider rules when used. An admitted attempt retains
+// its selected protocol and mapped model together, keeping request identity
+// separate from shared provider configuration. Final
 // scheduling names and shared image, Fable, or Gemini scopes then determine
 // model-window eligibility. Successful outbound resolution records the final
 // stage in request model tracing for response and usage correlation.
@@ -85,15 +85,16 @@ func (p ModelPolicy) finalModelWhitelisted(model string) bool {
 	return p.Record.FinalModelWhitelisted(model, provideradapter.ModelDefaults(), provideradapter.ModelRules(p.Record))
 }
 
-// forwardMappedModel resolves ordinary forwarding with captured rules when
-// present and current provider defaults otherwise. Snapshot-backed catalogue
-// checks reuse their mapping, while uncaptured execution policies read
-// configuration at the call.
+// forwardMappedModel resolves the outbound model through ResolveMapped, so an
+// admitted attempt forwards its captured model and other calls use the current
+// mapping. Nil records return empty, and a blank configured target keeps the
+// request spelling for ordinary platform normalization.
 func (p ModelPolicy) forwardMappedModel(model string) string {
-	if p.models != nil {
-		return p.models.ForwardMappedModel(model)
+	if p.Record == nil {
+		return ""
 	}
-	return provider.ResolveForwardMappedModel(p.Record, model, provideradapter.ModelDefaults())
+	mapped, matched := p.ResolveMapped(model)
+	return provider.ForwardMappedTarget(model, mapped, matched)
 }
 
 // antigravityModel resolves Antigravity model and thinking variants through
@@ -123,20 +124,20 @@ func (p ModelPolicy) Mapped(model string) string {
 	return mapped
 }
 
-// ResolveMapped applies one provider mapping hop and returns the matched flag.
+// ResolveMapped returns the admitted model or one provider mapping hop.
 // A prepared policy with no candidate uses its captured rules directly;
-// candidate-bound policies resolve through Route using the provider identity
-// and chosen map.
+// candidate-bound policies reuse their captured model for the admitted request.
+// Auxiliary model behavior is defined by AttemptRoute.ResolveModel.
 func (p ModelPolicy) ResolveMapped(model string) (string, bool) {
-	// Prepared catalogue queries without a candidate use their captured resolver;
-	// candidate routes retain provider identity when applying the supplied one-hop map.
+	// Prepared catalogue queries use their captured resolver until an attempt
+	// binds a final identity; that retained identity prevents another provider alias hop.
 	if p.models != nil {
 		if _, planned := p.Route.Candidate(); !planned {
 			return p.models.ResolveMappedModel(model)
 		}
-		return p.Route.ResolveModel(p.Record.ID, p.Record.Platform, p.models.Mapping(), model)
+		return p.Route.ResolveModel(p.Record.ID, p.models.Mapping(), model)
 	}
-	return p.Route.ResolveModel(p.Record.ID, p.Record.Platform, provider.ResolveModelMapping(p.Record, provideradapter.ModelDefaults()), model)
+	return p.Route.ResolveModel(p.Record.ID, provider.ResolveModelMapping(p.Record, provideradapter.ModelDefaults()), model)
 }
 
 // ForwardModel prefers a nonblank trimmed dispatchMapped value over requested,
@@ -163,8 +164,8 @@ func (p ModelPolicy) NormalizeOpenAI(model string) string {
 
 // RawChat chooses Chat forwarding from a resolved attempt protocol before
 // consulting provider defaults. With no route, only API Key targets qualify;
-// CN adaptive routing uses native Responses capability, while other targets
-// resolve their text-protocol extras.
+// Kimi, Zhipu, and DeepSeek adaptive routing uses native Responses capability,
+// while other targets resolve their text-protocol extras.
 func (p ModelPolicy) RawChat() bool {
 	// A resolved attempt already chose its upstream protocol. Honor it before
 	// reading provider defaults so failover candidates keep their own admitted route.
@@ -174,12 +175,12 @@ func (p ModelPolicy) RawChat() bool {
 	if p.Record == nil || p.Record.Type != capability.ProviderTypeAPIKey {
 		return false
 	}
-	if p.Record.IsCNProvider() {
+	if p.Record.HasProtocolEndpointDefaults() {
 		switch p.protocolTarget().GetAPIProtocol() {
 		case provider.APIProtocolChatCompletions:
 			return true
 		case provider.APIProtocolAdaptive:
-			return !p.Record.SupportsNativeCNResponses()
+			return !p.Record.SupportsAPIKeyResponses()
 		default:
 			return false
 		}

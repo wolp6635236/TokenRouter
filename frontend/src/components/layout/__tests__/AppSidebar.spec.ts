@@ -57,10 +57,6 @@ vi.mock('@/stores', () => ({
     fetch: vi.fn(),
   }),
 }))
-vi.mock('@/composables/useBatchImageAccess', () => ({
-  useBatchImageAccess: () => ({ canUseBatchImage: false, refreshBatchImageAccess: vi.fn() }),
-}))
-
 enableAutoUnmount(afterEach)
 beforeEach(() => {
   state.isAdmin = false

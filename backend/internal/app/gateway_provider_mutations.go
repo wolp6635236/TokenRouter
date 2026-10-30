@@ -216,17 +216,17 @@ func (r *executionProviderStore) UpdateExtra(ctx context.Context, id int64, upda
 	return r.data.UpdateExtra(ctx, id, updates)
 }
 
-// UpdateCNUsageMonitorSnapshotCAS delegates CN snapshot persistence using the
+// UpdateUsageMonitorSnapshotCAS delegates usage snapshot persistence using the
 // observed updated_at value. Nil snapshots or mismatched rows return false; a
 // nonblank clearExtraKey requests removal during the same snapshot patch.
-func (r *executionProviderStore) UpdateCNUsageMonitorSnapshotCAS(
+func (r *executionProviderStore) UpdateUsageMonitorSnapshotCAS(
 	ctx context.Context,
 	providerID int64,
 	expectedUpdatedAt time.Time,
-	snapshot *providercore.CNUsageMonitorSnapshot,
+	snapshot *providercore.UsageMonitorSnapshot,
 	clearExtraKey string,
 ) (bool, error) {
-	return r.data.UpdateCNUsageMonitorSnapshotCAS(ctx, providerID, expectedUpdatedAt, snapshot, clearExtraKey)
+	return r.data.UpdateUsageMonitorSnapshotCAS(ctx, providerID, expectedUpdatedAt, snapshot, clearExtraKey)
 }
 
 // IncrementQuotaUsed delegates provider consumption to billing usage storage

@@ -51,16 +51,24 @@ type Profile struct {
 	// Platform is the upstream platform; Name is the configured provider name;
 	// Type is the credential type.
 	Platform, Name, Type string
-	UsesCodex            bool // Codex protocol selection flag
+	// ImageResponsesModel supplies the text driver only when adapting an image-only
+	// top-level model. Explicit text models keep their separately resolved identity.
+	ImageResponsesModel string
+	UsesCodex           bool // Codex protocol selection flag
+	// HTTPContinuation retains upstream response references on admitted native
+	// HTTP Responses routes after the caller has validated ownership and affinity.
+	HTTPContinuation bool
 	// OpenAI identifies the platform; OAuth identifies OAuth credentials;
 	// OAuthLike includes compatible credential types; APIKey identifies API Key
 	// credentials.
 	OpenAI, OAuth, OAuthLike, APIKey bool
-	// Grok identifies the xAI platform; DeepSeek identifies its platform; NativeCN
-	// selects CN Responses policy; Anthropic selects Anthropic conversion; RawChat
-	// selects raw Chat forwarding; ResolvedChat identifies the resolved Chat
-	// route; Passthrough enables body passthrough.
-	Grok, DeepSeek, NativeCN, Anthropic, RawChat, ResolvedChat, Passthrough bool
+	// Grok identifies the xAI platform; EncodeResponsesClientTools selects native
+	// client-tool envelopes;
+	// StatelessResponses selects removal of stored Responses continuation;
+	// Anthropic selects Anthropic conversion; RawChat selects raw Chat
+	// forwarding; ResolvedChat identifies the resolved Chat route; Passthrough
+	// enables body passthrough.
+	Grok, EncodeResponsesClientTools, StatelessResponses, Anthropic, RawChat, ResolvedChat, Passthrough bool
 }
 
 // Rejection describes the client response and diagnostic markers for local denial.
@@ -321,7 +329,7 @@ func PreparePrelude(ctx context.Context, body []byte, profile Profile, p Prelude
 	// Native DeepSeek API Key Responses lowers client-tool shapes after namespace
 	// preparation, allowing the response adapter to restore those tools for the
 	// caller.
-	if profile.DeepSeek && profile.NativeCN && profile.APIKey && !value.Compact && p.NeedsClientTools(body) {
+	if profile.EncodeResponsesClientTools && profile.APIKey && !value.Compact && p.NeedsClientTools(body) {
 		body, err = p.AdaptClientTools(body)
 		if err != nil {
 			return nil, fmt.Errorf("adapt DeepSeek Responses client tools: %w", err)

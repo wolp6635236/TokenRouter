@@ -7,6 +7,7 @@
 - [目录解析](#目录解析)：修改 `/models`、默认模型或可请求的交集时读取。
 - [市场可见性](#市场可见性)：修改公开分组的过滤、品牌或排序时读取。
 - [目录元数据查询](#目录元数据查询)：修改名称写法、档位别名和能力来源时读取。
+- [原厂归属](#model_catalog_origins)：维护厂商别名、区域入口和原厂筛选时读取。
 - [目录价格换算](#目录价格换算)：修改 models.dev 报价的换算、补充文件或发布校验时读取。
 - [价格展示](#价格展示)：修改价格配置的价格、倍率或未知价格时读取。
 - [管理员默认价格查询](#gateway_default_pricing)：修改默认价格页或目录更新时读取。
@@ -39,6 +40,8 @@ Gemini 模型列表和创作台目录在属性配置读取失败时返回不可�
 
 分组编辑页的模型列表候选和探测模型的选项，复用 `RequestableResolver`，按已保存的分组映射、白名单检查阶段、协议和提供商能力，返回请求模型名。启用的自定义列表中的具体型号先参与资格校验，再按自定义顺序筛选。映射目标作为请求名通过检查后，也可以出现在选项里。没有保存的分组策略修改，需要保存后重新加载候选。
 
+新建和编辑分组时，自定义模型列表按已保存的配置恢复勾选与顺序，其余候选默认不勾选。管理员可以逐项选择或点击全选；关闭自定义列表后，已选择的模型仍会保存，供再次启用时恢复。加载候选后直接保存空配置，模型列表仍为空。
+
 分组探针的 `availability_probe_config.protocol` 使用统一协议 ID；缺失或空串表示「自动」，沿用提供商选择和测试类型推断。指定协议时，先按分组入口准入、模型规则和转换策略选择提供商，再将入口协议、解析出的上游协议和分组映射模型一起交给测试器。提供商映射执行一次，属性规则按最终上游模型及这两个协议匹配，历史结果记录配置中的请求模型。测试器不能执行解析出的路线时排除该候选；全部候选不满足时记录失败。管理员关闭已选入口后，保存校验要求重新选择协议或禁用探针。
 
 用户可见的分组目录提供 `models: string[]` 和 `model_protocols: Record<string, ProtocolID[]>`，后者列出每个模型当前可以请求的客户端入口。两者只用于控制台的展示和配置生成，请求时仍要做权限和资格校验。Key 列表里内嵌的分组没有带目录时，前端按分组 ID 复用可见分组列表。`/api/v1/groups/available` 的 `include_models` 默认为 `true`；使用记录和仪表盘的分组筛选传 `false`，跳过模型、协议和属性解析。
@@ -68,7 +71,19 @@ TypeSafe 品牌键为 `typesafe`，`jev`、`jev-latest` 和 `typesafe/jev-latest
 
 生产环境只使用 models.dev 的加载流程，远程入口是 `https://models.dev/catalog.json?type=all`，按 `pricing.check_interval_minutes` 检查（默认每 10 分钟），使用 ETag 条件请求和本地的内容摘要；管理员可以强制更新。程序内嵌了一份经过解析验证的压缩离线快照和官方价格补充，并附上 models.dev 的 MIT 许可。官方补充随二进制一起升级和回退，不依赖外部的资源目录。首次启动和网络故障时，可以使用磁盘上或内嵌的离线目录；缓存文件是 `models_dev_catalog.json`，完整解析成功后，通过临时文件替换。管理员接口返回版本、最近一次成功更新的时间和最近一次更新的错误。本地文件在合并之前，把旧的 `litellm_provider` 归一化为 `provider`，同时有新字段时（包括空值和 `null`）以新字段为准；内部的来源分类是 `catalog`，不会覆盖实际的数据出处。远程返回 304 时，本地层照常校验。
 
-裸模型名优先选择原厂的记录。明确的 `canonical_model_id` 归属优先；没有这个关联时，已知的原厂端点（包括 OpenAI、Anthropic、Google、xAI、Mistral 等）仍然可以被识别为原厂，不要求每个模型都出现在公共资料表里。原厂端点托管的其他作者的模型，继续按明确的 canonical 归属识别。Azure、OpenRouter 等独立的供应商，不会通过这条规则获得原厂身份；其他来源无法确定时，保留歧义，不会按遍历顺序挑一个价格。供应商限定的名称先精确匹配，已知的供应商前缀不会在查询时被删掉，从而借用其他来源的数据。只有模型公共资料的记录也能参与属性查询，不要求有价格。
+OpenCode 的服务模型索引保留 `opencode` 和 `opencode-go` 的编码及 canonical 属性身份，供同步、路由和属性解析使用。缺少 canonical 声明时，只接受完整型号匹配到唯一公共作者模型的关系。属性解析读取当前生效目录中的这个关系，计费身份和渠道价格筛选保持独立，详见 [OpenCode 上游](opencode_upstream.md#opencode_routing)。
+
+模型编码规则由已核验的 canonical 作者、完整型号及上游协议选择。服务身份继续决定 OAuth、站点和账户策略，模型别名不改变实际提供商平台。请求中未给出思考参数时的默认值与字段清理使用同一模型身份。
+
+目录解析保留全部 `models` 公共资料，并逐条筛选 `providers` 中的服务记录。原厂识别独立于网关平台、协议和已配置的提供商，未接入的视频、语音、图片等模型也可进入目录。`modelcatalog/origins.go` 维护[厂商归属](#model_catalog_origins)，明确的 `canonical_model_id` 优先于公共资料匹配、端点和型号家族规则。
+
+运行时另外保留 `amazon-bedrock`、`google-vertex`、`google-vertex-anthropic`、`ollama-cloud`、`kimi-code-plan-cn`、`kimi-code-plan-global`、`zhipuai-coding-plan` 和 `zai-coding-plan` 的完整属性与价格。这些服务继续出现在默认目录中，其原厂身份仍由同一套归属规则判断。其他未识别为原厂的记录从默认属性、价格、模型搜索和自动补全中排除。例如 Azure 上的 Microsoft Phi 和 Copilot 上的 MAI 属于原厂记录，其托管的 OpenAI、Anthropic 型号按其他作者识别。
+
+筛选在建立型号索引之前执行，远程下载、磁盘重载和内嵌快照使用相同规则。缓存保存原始响应，ETag 和校验发布流程照常执行。查询仍识别原始服务商名称，被排除的供应商限定名返回缺失，不能去掉前缀借用原厂属性或报价；页面的服务商选项由保留条目生成。本地补充和管理员已保存的价格、属性覆盖继续生效，可按完整 ID 配置所需型号。原先依赖被排除渠道默认报价的型号，在没有明确配置价格时保持未定价。
+
+裸模型名先从原厂记录中选择普通 API，没有普通 API 时再考虑原厂套餐；在选定的类别中，优先使用服务商 ID 与作者 ID 相同的主入口。价格是否为零不影响来源优先级，同级有多个候选时保留歧义。供应商限定查询保留各自的属性和报价，例如 `glm-5-turbo` 使用 Z.AI 普通 API 的报价，`zai-coding-plan/glm-5-turbo` 查询套餐记录。公共模型资料即使没有服务商记录或报价，也参与属性查询。
+
+生成别名时，完整的供应商限定名由该服务独占。没有同名服务的公共 canonical ID，可以使用明确关联到该模型的原厂记录；托管服务的记录使用自己的服务前缀查询。原厂自身带命名空间的请求 ID 继续有效。例如 `xai/grok-4.1-fast-reasoning` 保留公共模型资料，Vertex 的专属上下文和报价通过 `google-vertex/xai/grok-4.1-fast-reasoning` 查询。
 
 公开市场通过 `billing.PriceResolver.PublicQuote`，使用和实际扣费一致的价卡解析。价格和属性按完整的模型 ID 查询，只清理大小写、首尾空白和已知的 Google 资源路径；供应商限定的名称保持来源隔离。Claude 的点号和短横线、日期版本和档位后缀，都代表不同的身份，不互换，也不补全。完整的目录条目各自生效，价格、缓存、上下文阶梯和能力字段不会从基础条目拼接过来。
 
@@ -80,13 +95,44 @@ GPT-5.6 系列按完整型号查询目录。`gpt-5.6-sol/terra/luna` 与裸的 `
 
 模型属性读取 models.dev 的 `modalities.input/output`，支持文字、图片、音频、视频和 PDF。字段缺失和零长度表示未知或不适用；明确的 false 和空的模态数组会保留。本地旧价格 JSON 里的模态推断，只用于兼容价格的使用方，分组的有效属性使用上述统一解析器。
 
-裸模型名因为有多个供应商的记录而产生歧义时，属性查询在精确查询失败之后，检查这些记录的 `canonical_model_id`。所有记录都明确指向同一个公共模型、并且公共资料存在时，使用这个公共模型的属性；归属缺失、不一致或者公共资料缺失时，保持未知。供应商限定的名称不使用这条回退，已经有精确条目的也不会用公共资料补字段。属性的回退不影响价格索引和价格歧义的状态，不会借用任何中继的报价。
+裸模型名因为有多个保留服务的记录而产生歧义时，属性查询在精确查询失败之后，检查这些记录的 `canonical_model_id`。所有记录都明确指向同一个公共模型、并且公共资料存在时，使用这个公共模型的属性；归属缺失、不一致或者公共资料缺失时，保持未知。供应商限定的名称不使用这条回退，已经有精确条目的也不会用公共资料补字段。属性的回退不影响价格索引和价格歧义的状态，不会借用任何中继的报价。
 
 目录和手动配置都没有命中时，返回缺价，不再查询 Go 里的静态价格表；也不会使用日期、系列、Spark 跨型号重定向或默认型号去猜价格。离线启动使用同一份 models.dev 快照，网络失败时保留最近一次有效的目录。价格规则不作为能力查询的继承依据，也不改写公开的模型 ID 或上游的请求 ID。
 
 models.dev 的目录、属性和本地补充在同一个版本里发布，只读快照使用同样的完整身份规则。原厂的裸名和明确的供应商记录，按来源索引查询；手动填写的零价和本地新增的条目保持有效；未知型号不会按目录的遍历顺序选价格。
 
-目录从 `https://models.dev/catalog.json?type=all` 读取，包括 Jev 所属的 decision 类型。TypeSafe 直连型号的缺失属性由模型补充文件填写，渠道条目按完整 ID 查询自己的属性和报价。特殊模型可以进入属性目录和查价索引，网关可请求性仍由提供商配置及协议判断。
+目录从 `https://models.dev/catalog.json?type=all` 读取，包括 Jev 所属的 decision 类型。TypeSafe 直连型号的缺失属性由模型补充文件填写，第三方渠道报价按上述筛选规则排除。特殊模型可以进入属性目录和查价索引，网关可请求性仍由提供商配置及协议判断。
+
+<a id="model_catalog_origins"></a>
+## 原厂归属
+
+服务商 ID 表示 API 产品，模型作者 ID 表示研发厂商，两者可能不同。归属判定先读取明确的 canonical 作者；缺失时检查同一作者的公共资料，包括已经带作者前缀的请求 ID。资料仍缺失时，原厂专用入口接受新增型号，混合托管入口只接受已核验的原厂型号家族或命名空间。新版本号无需逐个登记；不能确认的新品牌或家族需要核实后补充归属。 Coding、Token 和 Step Plan 的套餐身份单独保存，用于裸名的来源优先级；套餐条目的原厂归属、明确零价和服务属性照常保留。
+
+以下关系覆盖区域、套餐和独立品牌入口，实际服务 ID 及匹配规则集中在 `origins.go`：
+
+| 服务入口 | 模型作者 | 归属依据与保留范围 |
+| --- | --- | --- |
+| MiniMax 国内、国际及 Token/Coding Plan | `minimax` | [MiniMax 文档](https://platform.minimax.io/docs/guides/quickstart)，包含文本、[视频](https://platform.minimax.io/docs/guides/video-generation)、图像和语音型号 |
+| 火山方舟、火山 Coding Plan、BytePlus | `bytedance-seed` | [火山视频 API](https://docs.volcengine.com/docs/ark/video-generation-tutorial?lang=en)、[BytePlus 视频 API](https://docs.byteplus.com/en/docs/ModelArk/create-video-generation-task-api)；Doubao、Seed、Seedance、Seedream、Dreamina 等自研家族 |
+| 阿里国内、国际、Coding/Token Plan、ModelScope | `alibaba` | [阿里模型目录](https://www.alibabacloud.com/help/en/model-studio/models)；Qwen、QwQ、QVQ、Wan、HappyHorse、HappyOyster、通义及自研语音和嵌入家族 |
+| 腾讯 Coding Plan、Token Plan、TokenHub | `tencent` | [TokenHub 文档](https://cloud.tencent.com/document/product/1823/130050)；Hunyuan、HunyuanVideo 和 HY 家族 |
+| StepFun 国内、国际及 Step Plan | `stepfun` | [国内](https://platform.stepfun.com/docs/zh/overview/concept)与[国际](https://platform.stepfun.ai/docs/en/overview/concept)官方端点 |
+| Xiaomi 各地区 Token Plan | `xiaomi` | [MiMo 平台](https://platform.xiaomimimo.com/#/docs)，地区差异保留各自服务属性 |
+| Moonshot 国内、国际及 Kimi Coding | `moonshotai` | [Moonshot](https://platform.moonshot.ai/docs/api/chat)、[Kimi Coding](https://www.kimi.com/code/docs/en/kimi-code/models.html) |
+| Zhipu、Z.AI 及 Coding Plan | `zhipuai` | [GLM 官方文档](https://docs.z.ai/guides/overview/pricing)，保留国内和国际服务身份 |
+| 百灵 Bailing | `inclusionai` | [蚂蚁百灵](https://www.antgroup.com/technology/new-tech-Technology-Antfocuses-Tabcomnent-detail/20241028001)，包含 Ling、Ring、Ming |
+| LongCat | `meituan` | [LongCat 官方 API](https://longcat.chat/platform/docs/APIDocs.html) |
+| Nova、Bedrock 的 Amazon 型号 | `amazon` | [Nova 官方端点](https://nova.amazon.com/dev/documentation)；Bedrock 另保留运行时所需的托管型号 |
+| Meta 的 Llama API | `meta` | [Meta 模型文档](https://dev.meta.ai/docs)，保留快照中的官方 Llama 入口 |
+| Arcee | `arcee-ai` | [Arcee 文档](https://docs.arcee.ai)，包括 Trinity 家族 |
+| watsonx | `ibm` | [IBM 官方目录](https://www.ibm.com/docs/en/watsonx/saas?topic=solutions-supported-foundation-models)，保留 IBM/Granite 型号 |
+| Azure、Azure Cognitive Services、GitHub Copilot | `microsoft` | [Microsoft MAI](https://microsoft.ai/news/introducingmai-code-1-flash/) 和 Phi；其他作者的托管记录按其 canonical 归属筛选 |
+| Fireworks | `fireworks` | [Ember 自研模型](https://fireworks.ai/blog/ember-1)，`accounts/fireworks/models/` 本身是托管路径，不能整段放行 |
+| Pioneer | `fastino` | [Fastino 的 Pioneer](https://fastino.ai/blog/introducing-pioneer)与[自研模型](https://fastino.ai/models/fastino-models)，保留 `fastino/` 型号 |
+
+NVIDIA、Vispark、Clarifai、Cloudflare 等混合目录通过作者命名空间和公共资料识别自研条目。Inception、Morph、Agnes、Abliteration、LucidQuery 等厂商的自研或自行训练的模型同样保留。路由器、第三方模型套餐、仅更换服务别名的条目不因提供商有自己的品牌就成为原厂模型。Liquid Inference 交易平台与 Liquid AI 的公共作者同名，二者在归属表中分开处理，Liquid AI 公共模型资料照常保留。
+
+`catalog.json?type=all` 包含上游实际导出的各类模型；模型类型、缺少 token 价格或上下文为零都不构成原厂过滤条件。仅存在于上游源码、或被其生成器标为 `v2_only` 的条目，不一定进入此接口。目录不会凭型号名称补造其属性、报价或网关能力。
 
 ## 目录价格换算
 
@@ -155,6 +201,10 @@ token 报价的单价对应价格配置分时规则的 1x 时段和非 `max` 档
 图片能力按映射后的最终路线读取 `output_modalities`。缺失表示未知，空数组或不含 image 表示不支持；混合 text/image 模型保留文本协议。图片接口、原生图片工具、创作台、批量图片和图片测试均需要明确的 image 输出声明。目录、名称前缀和价格不能补出缺失能力；管理员可用属性档案为具体路线补充声明。配置读取失败返回不可用错误。
 
 属性预览先枚举提供商和分组允许的路线，再应用草稿，所以尚未具备图片能力的配置也可以预览新增声明。普通目录则在属性解析后筛选协议，多个提供商分别判断，保留满足条件的路线。
+
+后台价格条目和属性规则支持 `reference_model`，将具体模型或末尾通配符匹配的模型映射到一个具体目标。目标使用同一档案中的生效规则，缺省字段继承目标的目录数据；价格和属性档案分别配置。映射规则与字段覆盖互斥，显示名和译文也来自目标。目标不得命中本档案的任何映射来源规则，包括通配符和不同路线条件下的规则，因此引用保持一层。目标缺失时可以保存，使用时保持未定价或属性未知。
+
+属性引用按实际路线的平台、认证、站点和协议上下文解析目标，并继续应用平台及转换器限制。预览返回 `reference_model` 标识数据来源，`target.model` 保留实际出站模型。规则编辑器支持自定义与映射模式切换，目标模型 ID 使用普通文本输入。属性编辑器在输入完成后查询目标的目录默认值作为参考。运行时、预览、市场和客户端导出共用该解析。
 
 属性配置保存在 `model_attribute_configs`，包括名称、描述、启用状态和有序的规则；分组关联表用 `group_id` 唯一约束，保证每个分组最多关联一份配置，一份配置可以供多个分组使用。规则和关联在同一个事务里保存，名称或分组冲突时整体回滚。属性配置和价格配置相互独立，停用、删除或解除关联后，恢复默认属性。
 

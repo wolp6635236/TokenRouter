@@ -27,7 +27,7 @@
         </span>
         <span
           v-else-if="discountText"
-          class="shrink-0 rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400"
+          class="badge-success shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold"
         >
           {{ discountText }}
         </span>

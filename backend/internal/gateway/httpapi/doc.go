@@ -22,6 +22,7 @@
 //   - openai_text*.go and openai_protocol_execution*.go handle OpenAI text entries and protocol execution.
 //   - openai_request*.go, codex*.go, and session_identity.go prepare outbound messages, client identity, and session IDs.
 //   - openai_response*.go, output*.go, and response_tool_restoration.go read responses, restore tool names, and write output.
+//   - sse_keepalive.go and stream_heartbeat_accounting.go own text heartbeat timing and retry byte accounting.
 //   - compact*.go identifies compact requests and handles recovery and streaming heartbeats.
 //   - grok*.go, qoder*.go, and google*.go adapt platform attempts, media, and errors.
 //   - media*.go, openai_images*.go, and openai_auxiliary*.go handle images, video, audio, search, and counting.

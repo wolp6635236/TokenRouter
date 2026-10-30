@@ -103,9 +103,9 @@ func (p *embeddingRequestAdapter) ForwardEmbedding(ctx context.Context, _ provid
 	if p.groupMapping.Mapped {
 		forwardBody = p.h.bindings.Common.Forward.ReplaceModelInBody(body, p.groupMapping.MappedModel)
 	}
-	size := p.c.Writer.Size()
+	size := gatewayhttp.HeartbeatAdjustedWrittenSize(p.c)
 	result, err := p.h.bindings.Platform.Embeddings(ctx, p.c, p.selection.Provider, forwardBody, "")
-	outcome := gatewaymedia.EmbeddingOutcome{Result: embeddingResultView(result), Err: err, OutputChanged: p.c.Writer.Size() != size}
+	outcome := gatewaymedia.EmbeddingOutcome{Result: embeddingResultView(result), Err: err, OutputChanged: gatewayhttp.HeartbeatAdjustedWrittenSize(p.c) != size}
 	if failure, ok := errors.AsType[*forwardcore.UpstreamFailoverError](err); ok {
 		outcome.Failover = true
 		outcome.StatusCode = failure.StatusCode

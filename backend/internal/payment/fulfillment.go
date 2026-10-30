@@ -17,8 +17,8 @@ import (
 // repeatable balance or subscription delivery.
 // Verified provider progress can arrive repeatedly or after a local pending
 // order was closed. Notification handling first resolves merchant identity and
-// checks applicable saved provider metadata, then conditionally records
-// payment state and resumes entitlement work. Only Stripe failure
+// checks saved provider metadata and EasyPay transaction identity, then
+// conditionally records payment state and resumes entitlement work. Only Stripe failure
 // notifications select the terminal payment-failure transition; other failure
 // callbacks are ignored before lookup.
 //
@@ -179,8 +179,12 @@ func ParseLegacyPaymentOrderID(orderID string, notFound bool) (int64, bool) {
 // ordinary audit before returning. Snapshot metadata validation separately has
 // its own absent/unrecognized-key rules and is not implied by a successful key
 // comparison. The caller retains signature verification ownership before this
-// order association stage.
+// order association stage. EasyPay observations must retain an existing
+// transaction number, because that reference also identifies later refunds.
 func (s *Fulfillment) ValidatePaymentNotificationOrder(ctx context.Context, o *Order, pk, tradeNo string, metadata map[string]string) error {
+	if err := validateEasyPayTradeNumber(o, pk, tradeNo); err != nil {
+		return err
+	}
 	instanceProviderKey := ""
 	// Discard instance-resolution errors for expected-key selection and keep the
 	// other saved/registry candidates available. Applicable snapshot metadata
@@ -203,6 +207,17 @@ func (s *Fulfillment) ValidatePaymentNotificationOrder(ctx context.Context, o *O
 			"tradeNo": tradeNo,
 		})
 		return err
+	}
+	return nil
+}
+
+// validateEasyPayTradeNumber checks a reported EasyPay transaction against a
+// previously stored nonempty reference. Other adapters retain their own
+// reference rules, including Stripe's session, invoice and intent transitions.
+func validateEasyPayTradeNumber(order *Order, providerKey, tradeNo string) error {
+	if GetBasePaymentType(providerKey) == TypeEasyPay && order.PaymentTradeNo != "" &&
+		order.PaymentTradeNo != tradeNo {
+		return fmt.Errorf("easypay transaction number conflicts with the stored order")
 	}
 	return nil
 }
@@ -378,6 +393,8 @@ func ExpectedNotificationProviderKey(registry *Registry, orderPaymentType string
 // paid and recharging delegate fulfillment directly, so that branch does not
 // rewrite payment time/trade. Completed/refunded and other unhandled states
 // return nil. Grants still use their own replay and completion conditions.
+// EasyPay transaction identity is checked again after each order reread, so a
+// concurrent paid transition cannot make a conflicting reference acceptable.
 func (s *Fulfillment) ToPaid(ctx context.Context, o *Order, tradeNo string, paid float64, pk string, metadata map[string]string) error {
 	// Keep the supplied observation's pi_ reference when the incoming Stripe
 	// identifier is an invoice, because refund queries need the payment intent.
@@ -392,6 +409,9 @@ func (s *Fulfillment) ToPaid(ctx context.Context, o *Order, tradeNo string, paid
 	// late success, while already paid/granted states follow their continuation
 	// path.
 	for range 5 {
+		if err := validateEasyPayTradeNumber(o, pk, tradeNo); err != nil {
+			return err
+		}
 		previousStatus := o.Status
 		switch previousStatus {
 		case OrderStatusPending, OrderStatusProcessing, OrderStatusExpired, OrderStatusCancelled:
@@ -474,18 +494,12 @@ func (s *Fulfillment) ExecuteFulfillment(ctx context.Context, oid int64) error {
 // returned unchanged. This executor does not itself require PaidAt, unlike
 // administrator RetryFulfillment.
 func (s *Fulfillment) ExecuteBalanceFulfillment(ctx context.Context, oid int64) error {
-	o, err := s.store.Order(ctx, oid)
+	o, err := s.loadFulfillableOrder(ctx, oid)
 	if err != nil {
-		return infraerrors.NotFound("NOT_FOUND", "order not found")
+		return err
 	}
-	if o.Status == OrderStatusCompleted {
+	if o == nil {
 		return nil
-	}
-	if IsRefundStatus(o.Status) {
-		return infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
-	}
-	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed && o.Status != OrderStatusRecharging {
-		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
 	}
 	lease, err := s.AcquirePaymentFulfillmentLease(ctx, o)
 	if err != nil {
@@ -792,18 +806,12 @@ func (s *Fulfillment) SendSubscriptionPurchaseSuccessNotification(ctx context.Co
 // retains the original error. This executor does not independently require
 // PaidAt, while administrator retry has that additional eligibility predicate.
 func (s *Fulfillment) ExecuteSubscriptionFulfillment(ctx context.Context, oid int64) error {
-	o, err := s.store.Order(ctx, oid)
+	o, err := s.loadFulfillableOrder(ctx, oid)
 	if err != nil {
-		return infraerrors.NotFound("NOT_FOUND", "order not found")
+		return err
 	}
-	if o.Status == OrderStatusCompleted {
+	if o == nil {
 		return nil
-	}
-	if IsRefundStatus(o.Status) {
-		return infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
-	}
-	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed && o.Status != OrderStatusRecharging {
-		return infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
 	}
 	if o.PlanID == nil || *o.PlanID <= 0 {
 		return infraerrors.BadRequest("INVALID_STATUS", "missing subscription info")
@@ -820,6 +828,31 @@ func (s *Fulfillment) ExecuteSubscriptionFulfillment(ctx context.Context, oid in
 		return err
 	}
 	return nil
+}
+
+// loadFulfillableOrder reads the order and admits paid, failed, or recharging
+// state for either fulfillment entry. A nil order with no error means completed
+// work; callers return without claiming a lease. Any read error becomes NOT_FOUND,
+// and refund or other unaccepted states return INVALID_STATUS. Subscription
+// fulfillment validates its plan after this shared status check.
+func (s *Fulfillment) loadFulfillableOrder(ctx context.Context, oid int64) (*Order, error) {
+	o, err := s.store.Order(ctx, oid)
+	if err != nil {
+		// Preserve the fulfillment entries' missing-order response for every read
+		// failure, including storage outages; callers do not expose the underlying
+		// lookup error.
+		return nil, infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if o.Status == OrderStatusCompleted {
+		return nil, nil
+	}
+	if IsRefundStatus(o.Status) {
+		return nil, infraerrors.BadRequest("INVALID_STATUS", "refund-related order cannot fulfill")
+	}
+	if o.Status != OrderStatusPaid && o.Status != OrderStatusFailed && o.Status != OrderStatusRecharging {
+		return nil, infraerrors.BadRequest("INVALID_STATUS", "order cannot fulfill in status "+o.Status)
+	}
+	return o, nil
 }
 
 // DoSub resumes the nonnil order's positive-plan subscription, then order

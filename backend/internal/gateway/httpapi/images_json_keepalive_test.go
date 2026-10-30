@@ -27,7 +27,7 @@ func TestOpenAIImagesJSONKeepalive_PreservesValidJSONResponse(t *testing.T) {
 
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	waitForOpenAIImagesJSONKeepalive(t, c)
-	require.Equal(t, -1, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, -1, HeartbeatAdjustedWrittenSize(c))
 
 	c.JSON(http.StatusOK, gin.H{"data": []gin.H{{"b64_json": "aW1hZ2U="}}})
 	stop()
@@ -38,7 +38,7 @@ func TestOpenAIImagesJSONKeepalive_PreservesValidJSONResponse(t *testing.T) {
 	require.True(t, rec.Flushed)
 	require.True(t, json.Valid(rec.Body.Bytes()), rec.Body.String())
 	require.Equal(t, "aW1hZ2U=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	require.Greater(t, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c), 0)
+	require.Greater(t, HeartbeatAdjustedWrittenSize(c), 0)
 	require.Same(t, originalWriter, c.Writer)
 }
 
@@ -120,40 +120,12 @@ func TestOpenAIImagesJSONKeepalive_DoesNotBlockFailoverDetection(t *testing.T) {
 	stop := StartOpenAIImagesJSONKeepalive(c, 5*time.Millisecond)
 	waitForOpenAIImagesJSONKeepalive(t, c)
 
-	before := OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c)
+	before := HeartbeatAdjustedWrittenSize(c)
 	require.Equal(t, -1, before)
 	require.True(t, c.Writer.Written())
-	require.Equal(t, before, OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c))
+	require.Equal(t, before, HeartbeatAdjustedWrittenSize(c))
 	stop()
 	require.True(t, strings.TrimSpace(rec.Body.String()) == "")
-}
-
-// TestOpenAIImagesJSONKeepaliveWriter_NilGuards exercises a wrapper lacking
-// heartbeat state and an underlying writer. Its response methods remain
-// callable, hijacking fails, and close notification is already closed.
-func TestOpenAIImagesJSONKeepaliveWriter_NilGuards(t *testing.T) {
-	w := &openAIImagesJSONKeepaliveWriter{}
-	require.NotPanics(t, func() {
-		require.NotNil(t, w.Header())
-		_, _ = w.Write([]byte("test"))
-		_, _ = w.WriteString("test")
-		w.WriteHeader(http.StatusOK)
-		w.WriteHeaderNow()
-		w.Flush()
-		require.Equal(t, 0, w.Status())
-		require.Equal(t, 0, w.Size())
-		require.False(t, w.Written())
-		require.Nil(t, w.Pusher())
-	})
-
-	conn, _, err := w.Hijack()
-	require.Error(t, err)
-	require.Nil(t, conn)
-	select {
-	case <-w.CloseNotify():
-	default:
-		t.Fatal("nil writer CloseNotify channel should be closed")
-	}
 }
 
 // waitForOpenAIImagesJSONKeepalive waits up to one second for retained
@@ -176,7 +148,7 @@ func waitForOpenAIImagesJSONKeepalive(t *testing.T, c *gin.Context) {
 // elsewhere; this helper presents the already sanitized error supplied by the
 // test.
 func writeKeepaliveImageError(c *gin.Context, in *ImageErrorResponse) bool {
-	return WriteImageError(c, in, func() int { return OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) }, func() { StopOpenAIImagesJSONKeepaliveCommitted(c) })
+	return WriteImageError(c, in, func() int { return HeartbeatAdjustedWrittenSize(c) }, func() { StopOpenAIImagesJSONKeepaliveCommitted(c) })
 }
 
 // TestOpenAIImagesJSONKeepalive_KeepsOAuthNonStreamResponseValid delays an

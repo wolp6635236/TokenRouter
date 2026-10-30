@@ -41,7 +41,6 @@ func provideOpenAIResponseOutput(cfg *config.Config, health *provideradapter.Ope
 		output.Options.Configured = true
 		output.Options.MaxLineSize = v.MaxLineSize
 		output.Options.StreamDataIntervalTimeout = v.StreamDataIntervalTimeout
-		output.Options.StreamKeepaliveInterval = v.StreamKeepaliveInterval
 		output.Options.ImageStreamDataIntervalTimeout = v.ImageStreamDataIntervalTimeout
 		output.Options.ImageStreamKeepaliveInterval = v.ImageStreamKeepaliveInterval
 		output.Options.OpenAIFirstOutputTimeoutSeconds = v.OpenAIFirstOutputTimeoutSeconds

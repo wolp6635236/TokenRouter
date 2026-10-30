@@ -12,6 +12,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/completion"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry/logging"
 	"github.com/TokenFlux/TokenRouter/internal/pkg/querycache"
+	"github.com/TokenFlux/TokenRouter/internal/protocol"
 	providerpostgres "github.com/TokenFlux/TokenRouter/internal/provider/postgres"
 	"github.com/TokenFlux/TokenRouter/internal/requestlog"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
@@ -27,7 +28,7 @@ import (
 
 // batchPricingGroups combines group policy and effective multipliers for batch quotes.
 type batchPricingGroups struct {
-	// source reads group flags and the base multiplier, while settings resolves
+	// source reads group protocols and the base multiplier, while settings resolves
 	// batch discount and hold multipliers using the same requested group ID.
 	source   routing.GroupRepository       // stored group reader
 	settings *routing.PricingConfigService // effective multiplier reader
@@ -43,7 +44,13 @@ func (r batchPricingGroups) GetByIDLite(ctx context.Context, id int64) (*batchim
 		return nil, err
 	}
 	settings := r.settings.GetEffectiveBillingSettings(ctx, id)
-	return &batchimage.GroupView{ID: value.ID, AllowBatchImageGeneration: value.AllowBatchImageGeneration, RateMultiplier: value.RateMultiplier, BatchImageDiscountMultiplier: settings.BatchImageDiscountMultiplier, BatchImageHoldMultiplier: settings.BatchImageHoldMultiplier}, err
+	return &batchimage.GroupView{
+		ID:                           value.ID,
+		AllowBatchImageGeneration:    value.AllowsClientProtocol(protocol.ProtocolImageBatches),
+		RateMultiplier:               value.RateMultiplier,
+		BatchImageDiscountMultiplier: settings.BatchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:     settings.BatchImageHoldMultiplier,
+	}, err
 }
 
 // provideBatchPricing constructs batch price resolution with the supplied group reader.
@@ -59,14 +66,11 @@ func batchVertexOptions(cfg *config.Config) batchprovider.VertexBatchImageProvid
 		return batchprovider.VertexBatchImageProviderOptions{}
 	}
 	return batchprovider.VertexBatchImageProviderOptions{
-		Enabled:                cfg.BatchImage.VertexEnabled,
 		ProjectID:              cfg.BatchImage.VertexProjectID,
 		Location:               cfg.BatchImage.VertexLocation,
 		ManagedGCSBucket:       cfg.BatchImage.VertexManagedGCSBucket,
 		ManagedGCSPrefix:       cfg.BatchImage.VertexManagedGCSPrefix,
 		Environment:            cfg.Log.Environment,
-		InputRetentionHours:    cfg.BatchImage.VertexInputRetentionHours,
-		OutputRetentionHours:   cfg.BatchImage.VertexOutputRetentionHours,
 		BatchPredictionBaseURL: cfg.BatchImage.VertexBatchPredictionBaseURL,
 		GCSBaseURL:             cfg.BatchImage.VertexGCSBaseURL,
 	}
@@ -74,8 +78,8 @@ func batchVertexOptions(cfg *config.Config) batchprovider.VertexBatchImageProvid
 
 // provideBatchRuntime constructs processing, settlement, and funding recovery with
 // the supplied Funds service. Nil pricing, logs, or auth leaves the corresponding
-// callbacks unset; nil cfg uses normalized worker defaults and disables runtime
-// startup. provideJobsRuntime starts the returned loops, using the supplied
+// callbacks unset; nil cfg uses normalized worker defaults for runtime
+// settings. provideJobsRuntime starts the returned loops, using the supplied
 // repositories, queue, and provider registry throughout execution.
 func provideBatchRuntime(requests *requestlog.Service, repo batchimage.BatchImageRepository, providers *providerpostgres.ProviderStore, queue batchimage.BatchImageQueue, funds *billing.Funds, logs usage.UsageLogRepository, pricing *batchimage.Pricing, auth apikey.APIKeyAuthCacheInvalidator, cfg *config.Config, registry *batchimage.Registry[batchprovider.BatchImageProvider]) *batchimage.Runtime {
 	funding := batchimage.Funding{Store: funds, Observe: creativeObserve}
@@ -109,7 +113,7 @@ func provideBatchRuntime(requests *requestlog.Service, repo batchimage.BatchImag
 		recovery.InvalidateAuth = auth.InvalidateAuthCacheByUserID
 	}
 	worker := batchimage.NewBatchImageWorker(queue, &batchimage.PipelineProcessor{ProviderProcessor: processor, SettlementService: settlement}, options)
-	return batchimage.NewWorkerRuntime(worker, recovery, cfg != nil && cfg.BatchImage.QueueEnabled)
+	return batchimage.NewWorkerRuntime(worker, recovery, true)
 }
 
 // batchWorkerOptions converts startup settings into normalized batch worker options.

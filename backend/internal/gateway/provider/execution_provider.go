@@ -2,6 +2,8 @@ package provider
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/TokenFlux/TokenRouter/internal/egress"
@@ -10,6 +12,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	provideradapter "github.com/TokenFlux/TokenRouter/internal/provider/provider"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
+	"github.com/TokenFlux/TokenRouter/internal/routing/capability"
+	"github.com/TokenFlux/TokenRouter/internal/upstream/opencode"
 )
 
 // execution_provider.go constructs execution targets and supplies provider
@@ -47,6 +51,33 @@ func BindExecutionHeaders(value *ExecutionProvider) func(http.Header) {
 	return func(headers http.Header) {
 		provideradapter.ApplyProviderHeaderOverrides(ExecutionProtocolRecord(value), headers)
 	}
+}
+
+// FinalizeRequestHeaders installs the provider's final authentication and
+// conversation identity after configured overrides. Callers validate targetURL
+// before sending; read supplies inbound client headers and may be nil.
+//
+// An OpenCode provider owns its bearer key, agent, and session, so those
+// replace whatever the protocol builder and overrides wrote. Other API-key
+// providers addressed to HTTPS opencode.ai, such as an OpenAI relay pointed at
+// that host, receive only the conversation ID; any other destination is left
+// untouched so session data never reaches an untrusted origin.
+func FinalizeRequestHeaders(value *ExecutionProvider, targetURL string, read func(string) string, headers http.Header) {
+	if value == nil || headers == nil {
+		return
+	}
+	if value.View().IsOpenCode() {
+		opencode.ApplyHeaders(headers, value.View().GetCredential("api_key"), read)
+		return
+	}
+	if value.Record.Type != capability.ProviderTypeAPIKey {
+		return
+	}
+	parsed, err := url.Parse(targetURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "opencode.ai") {
+		return
+	}
+	opencode.SetSession(headers, opencode.SessionID(read))
 }
 
 // BindExecutionHeaderValue returns a callback that looks up an override by

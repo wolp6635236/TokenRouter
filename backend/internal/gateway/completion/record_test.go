@@ -3,6 +3,7 @@ package completion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,6 +43,23 @@ type recordModels struct{}
 
 // recordPriceCatalog supplies known prices for settlement and log-order tests.
 type recordPriceCatalog struct{}
+
+// recordTTLStats retains usage supplied to differential cache-lifetime pricing.
+type recordTTLStats struct {
+	tokens pricing.UsageTokens // observed disjoint pricing buckets
+}
+
+// recordFundingReader traces preliminary subscription and balance-rate reads for
+// the same payer/group pair. Tests use one serial trace shared with settlement
+// to detect duplicate reads or a change in their order.
+type recordFundingReader struct {
+	events *[]string // shared serial lookup trace
+	// subscription is returned with subscriptionErr so callers can demonstrate
+	// that a failed preliminary read discards even nonnil subscription evidence.
+	subscription    *billing.UserSubscription // returned preliminary eligibility evidence
+	subscriptionErr error                     // configured subscription lookup failure
+	rate            float64                   // configured balance user multiplier
+}
 
 // Apply counts and retains one financial command before returning the configured
 // fixture result. A cancelled context returns its error; otherwise the synthetic
@@ -237,4 +255,253 @@ func TestRecordCyberPreservesZeroUsage(t *testing.T) {
 	require.NotEmpty(t, logs.rows)
 	require.Zero(t, logs.rows[0].ActualCost)
 	require.Equal(t, RequestTypeCyberBlocked, logs.rows[0].RequestType)
+}
+
+// ResolveProviderStats captures token evidence and applies distinct fixture TTL
+// rates. A returned cost pointer selects provider statistics for settlement;
+// calls run serially so tests can inspect the retained buckets after recording.
+func (s *recordTTLStats) ResolveProviderStats(_ context.Context, input billing.ProviderStatsCostInput) *float64 {
+	s.tokens = input.Tokens
+	cost := pricing.ComputeCacheCreationCost(&pricing.ModelPricing{SupportsCacheBreakdown: true, CacheCreation5mPrice: 1e-6, CacheCreation1hPrice: 2e-6}, input.Tokens, 0, 1)
+	return &cost
+}
+
+// TestRecordProviderStatisticsRetainCacheLifetimes submits a native Messages
+// observation with separate cache-write lifetimes to the recorder. Provider
+// statistics must price those disjoint buckets, and the persisted row must
+// retain the lifetimes with their distinct TTL cost.
+func TestRecordProviderStatisticsRetainCacheLifetimes(t *testing.T) {
+	recorder, _, logs, input, _ := recordFixture()
+	stats := &recordTTLStats{}
+	recorder.stats = stats
+	groupID := int64(1)
+	input.APIKey.GroupID = &groupID
+	input.Result.NativeUsage = true
+	input.Result.Usage = TokenUsage{InputTokens: 100, OutputTokens: 10, CacheReadInputTokens: 30, CacheCreationInputTokens: 12, CacheCreation5mTokens: 5, CacheCreation1hTokens: 7}
+	require.NoError(t, recorder.Record(t.Context(), input, true))
+	require.Equal(t, pricing.UsageTokens{InputTokens: 100, OutputTokens: 10, CacheReadTokens: 30, CacheCreationTokens: 12, CacheCreation5mTokens: 5, CacheCreation1hTokens: 7}, stats.tokens)
+	require.Len(t, logs.rows, 1)
+	row := logs.rows[0]
+	require.Equal(t, 100, row.InputTokens)
+	require.Equal(t, 5, row.CacheCreation5mTokens)
+	require.Equal(t, 7, row.CacheCreation1hTokens)
+	require.NotNil(t, row.ProviderStatsCost)
+	// Five tokens at one and seven at two microdollars cost nineteen microdollars.
+	require.InDelta(t, 19e-6, *row.ProviderStatsCost, 1e-12)
+}
+
+// ResolveUsableSubscriptionForGroup traces the payer and group before returning
+// configured eligibility evidence. Tests can supply both a subscription and an
+// error to verify how the public recorder handles a failed preliminary read.
+func (r *recordFundingReader) ResolveUsableSubscriptionForGroup(_ context.Context, userID, groupID int64) (*billing.UserSubscription, error) {
+	*r.events = append(*r.events, fmt.Sprintf("subscription(%d,%d)", userID, groupID))
+	return r.subscription, r.subscriptionErr
+}
+
+// Resolve traces the payer, group, and supplied group fallback before returning
+// the configured user multiplier. The shared trace lets tests observe whether
+// subscription selection suppresses or precedes this balance lookup.
+func (r *recordFundingReader) Resolve(_ context.Context, userID, groupID int64, fallback float64) float64 {
+	*r.events = append(*r.events, fmt.Sprintf("rate(%d,%d,%g)", userID, groupID, fallback))
+	return r.rate
+}
+
+// TestRecordPreliminaryFunding characterizes both protocol entrypoints with
+// captured or inferred subscriptions and missing or failed readers. It protects
+// preliminary prices, command factors, captured funding mode, and lookup order.
+func TestRecordPreliminaryFunding(t *testing.T) {
+	groupID := int64(7)
+	subscriptionID := int64(99)
+	planSubscription := &billing.UserSubscription{
+		ID: subscriptionID,
+		Plan: &billing.SubscriptionPlan{
+			GroupIDs:             []int64{groupID},
+			GroupRateMultipliers: map[int64]float64{groupID: 0.5},
+		},
+	}
+	groupSubscription := &billing.UserSubscription{
+		ID: subscriptionID,
+		Plan: &billing.SubscriptionPlan{
+			GroupIDs: []int64{groupID},
+		},
+	}
+	excludedSubscription := &billing.UserSubscription{
+		ID: subscriptionID,
+		Plan: &billing.SubscriptionPlan{
+			GroupIDs: []int64{8},
+		},
+	}
+	lookupErr := errors.New("subscription lookup failed")
+	settlementErr := errors.New("settlement rejected")
+	cases := []struct {
+		name               string                    // descriptive funding fixture name
+		mode               string                    // captured key funding mode
+		current            *billing.UserSubscription // captured preliminary subscription evidence
+		resolved           *billing.UserSubscription // reader supplied subscription evidence
+		resolveErr         error                     // preliminary eligibility lookup failure
+		omitGroup          bool                      // missing captured group snapshot
+		omitGroupID        bool                      // missing selected group identifier
+		omitRates          bool                      // absent balance override reader
+		omitSubscriptions  bool                      // absent automatic eligibility reader
+		settlementFails    bool                      // rejected financial command fixture
+		wantBase           float64                   // expected preliminary pricing factor
+		wantSubscription   float64                   // expected subscription allocation factor
+		wantBalance        float64                   // expected balance allocation factor
+		wantSubscriptionID *int64                    // expected preliminary subscription identifier
+		wantReads          []string                  // expected ordered preliminary lookups
+	}{
+		{
+			name: "system default without group", omitGroup: true, omitGroupID: true,
+			wantBase: 1.25, wantSubscription: 1.25, wantBalance: 1.25,
+		},
+		{
+			name: "group snapshot without group ID", omitGroupID: true,
+			wantBase: 1.25, wantSubscription: 1.25, wantBalance: 1.25,
+		},
+		{
+			name: "inferred subscription without group snapshot", omitGroup: true, resolved: planSubscription,
+			wantBase: 1.25, wantSubscription: 1.25, wantBalance: 1.25,
+			wantSubscriptionID: &subscriptionID, wantReads: []string{"subscription(1,7)"},
+		},
+		{
+			name: "balance ignores captured subscription", mode: billing.APIKeyBillingModeBalance, current: planSubscription,
+			wantBase: 1.8, wantSubscription: 1.4, wantBalance: 1.8,
+			wantReads: []string{"rate(1,7,1.4)"},
+		},
+		{
+			name:     "automatic balance override",
+			wantBase: 1.8, wantSubscription: 1.4, wantBalance: 1.8,
+			wantReads: []string{"subscription(1,7)", "rate(1,7,1.4)"},
+		},
+		{
+			name: "captured subscription plan rate", current: planSubscription,
+			wantBase: 0.5, wantSubscription: 1.4, wantBalance: 1.4, wantSubscriptionID: &subscriptionID,
+		},
+		{
+			name: "inferred subscription plan rate", resolved: planSubscription,
+			wantBase: 0.5, wantSubscription: 1.4, wantBalance: 1.4,
+			wantSubscriptionID: &subscriptionID, wantReads: []string{"subscription(1,7)"},
+		},
+		{
+			name: "locked subscription retains captured plan", mode: billing.APIKeyBillingModeSubscription,
+			current: planSubscription, resolved: excludedSubscription, settlementFails: true,
+			wantBase: 0.5, wantSubscription: 1.4, wantBalance: 1.4, wantSubscriptionID: &subscriptionID,
+		},
+		{
+			name: "locked missing subscription does not infer", mode: billing.APIKeyBillingModeSubscription, resolved: planSubscription,
+			wantBase: 1.8, wantSubscription: 1.4, wantBalance: 1.8,
+			wantReads: []string{"rate(1,7,1.4)"},
+		},
+		{
+			name: "covered subscription uses group rate", current: groupSubscription,
+			wantBase: 1.4, wantSubscription: 1.4, wantBalance: 1.4, wantSubscriptionID: &subscriptionID,
+		},
+		{
+			name: "excluded subscription keeps system default", current: excludedSubscription,
+			wantBase: 1.25, wantSubscription: 1.4, wantBalance: 1.4, wantSubscriptionID: &subscriptionID,
+		},
+		{
+			name: "lookup error discards returned subscription", resolved: planSubscription, resolveErr: lookupErr,
+			wantBase: 1.8, wantSubscription: 1.4, wantBalance: 1.8,
+			wantReads: []string{"subscription(1,7)", "rate(1,7,1.4)"},
+		},
+		{
+			name: "missing rate reader uses group rate", omitRates: true,
+			wantBase: 1.4, wantSubscription: 1.4, wantBalance: 1.4,
+			wantReads: []string{"subscription(1,7)"},
+		},
+		{
+			name: "missing subscription reader uses balance", omitSubscriptions: true,
+			wantBase: 1.8, wantSubscription: 1.4, wantBalance: 1.8,
+			wantReads: []string{"rate(1,7,1.4)"},
+		},
+	}
+	for _, protocol := range []string{"anthropic", "openai"} {
+		t.Run(protocol, func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					recorder, funds, logs, input, events := recordFixture()
+					recorder.defaultMultiplier = 1.25
+					reader := &recordFundingReader{
+						events: events, subscription: tc.resolved, subscriptionErr: tc.resolveErr, rate: 1.8,
+					}
+					if !tc.omitSubscriptions {
+						recorder.subscriptions = reader
+					}
+					if !tc.omitRates {
+						recorder.rates = reader
+					}
+					recorder.now = func() time.Time {
+						*events = append(*events, "clock")
+						return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+					}
+					input.APIKey.BillingMode = tc.mode
+					if !tc.omitGroupID {
+						input.APIKey.GroupID = &groupID
+					}
+					if !tc.omitGroup {
+						input.APIKey.Group = &GroupSnapshot{ID: groupID, RateMultiplier: 1.4}
+					}
+					if tc.mode == billing.APIKeyBillingModeSubscription {
+						input.APIKey.PreferredSubscriptionID = &subscriptionID
+					}
+					input.Subscription = tc.current
+					if tc.settlementFails {
+						funds.err = settlementErr
+					}
+					var err error
+					if protocol == "anthropic" {
+						err = recorder.RecordAnthropic(t.Context(), input, nil)
+					} else {
+						err = recorder.RecordOpenAI(t.Context(), input)
+					}
+					wantEvents := append([]string{}, tc.wantReads...)
+					wantEvents = append(wantEvents, "clock", "funds")
+					if tc.settlementFails {
+						require.ErrorIs(t, err, settlementErr)
+					} else {
+						require.NoError(t, err)
+						wantEvents = append(wantEvents, "effects")
+					}
+					wantEvents = append(wantEvents, "best")
+					require.Equal(t, wantEvents, *events)
+					require.Equal(t, 1, funds.calls)
+					require.Len(t, logs.rows, 1)
+					row := logs.rows[0]
+					require.Equal(t, tc.wantBase, row.RateMultiplier)
+					require.Equal(t, tc.wantSubscription, funds.command.SubscriptionRateMultiplier)
+					require.Equal(t, tc.wantBalance, funds.command.BalanceRateMultiplier)
+					require.Equal(t, 1.0, funds.command.SubscriptionRateMultiplierScale)
+					wantMode := tc.mode
+					if wantMode == "" {
+						wantMode = billing.APIKeyBillingModeAuto
+					}
+					require.Equal(t, wantMode, funds.command.APIKeyBillingMode)
+					require.Equal(t, input.APIKey.PreferredSubscriptionID, funds.command.PreferredSubscriptionID)
+					wantType := BillingTypeBalance
+					if tc.wantSubscriptionID != nil {
+						wantType = BillingTypeSubscription
+					}
+					require.Equal(t, wantType, funds.command.BillingType)
+					// The fixture catalog prices ordinary input at three and output at fifteen
+					// microdollars; only the OpenAI entry subtracts the overlapping cache buckets.
+					wantInput := 10
+					if protocol == "openai" {
+						wantInput = 6
+					}
+					require.Equal(t, wantInput, row.InputTokens)
+					wantTotal := float64(wantInput)*3e-6 + 2*15e-6
+					// Allow floating-point rounding from token pricing and multiplier arithmetic.
+					require.InDelta(t, wantTotal, row.TotalCost, 1e-12)
+					require.InDelta(t, wantTotal*tc.wantBase, funds.command.BillableAmountUSD, 1e-12)
+					if tc.settlementFails {
+						require.Zero(t, row.ActualCost)
+						require.Equal(t, tc.wantSubscriptionID, row.SubscriptionID)
+					} else {
+						require.InDelta(t, wantTotal*tc.wantBase, row.ActualCost, 1e-12)
+					}
+				})
+			}
+		})
+	}
 }

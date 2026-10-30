@@ -85,3 +85,45 @@ func TestEffectiveUpstreamUsageConfigDerouter(t *testing.T) {
 		require.True(t, BalanceAlertSupported(p))
 	}
 }
+
+// TestEffectiveUpstreamUsageConfigPlatformAdapters resolves Kimi, Zhipu, and
+// DeepSeek and OpenCode providers whose saved settings request a generic relay
+// format and enable queries. Platform and mode must select the fixed adapter
+// and management root, and modes without a format must resolve to an empty
+// disabled adapter.
+func TestEffectiveUpstreamUsageConfigPlatformAdapters(t *testing.T) {
+	const override = "https://usage.example.test/prefix"
+	tests := []struct {
+		name     string
+		platform string
+		mode     string
+		baseURL  string
+		want     UpstreamUsageQueryConfig
+		fixed    bool
+	}{
+		{"kimi coding", PlatformKimi, ProviderModeCoding, "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterKimiCoding}, true},
+		{"kimi payg", PlatformKimi, ProviderModePayG, "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterKimiBalance}, true},
+		{"zhipu coding", PlatformZhipu, ProviderModeCoding, "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterZhipuCoding}, true},
+		{"zhipu payg", PlatformZhipu, ProviderModePayG, "", UpstreamUsageQueryConfig{}, true},
+		{"deepseek", PlatformDeepseek, ProviderModePayG, "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterDeepseekBalance}, true},
+		{"opencode go default root", PlatformOpenCode, ProviderModeGo, "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterOpenCodeGo, BaseURL: OpenCodeGoUsageDefaultBaseURL}, true},
+		{"opencode go override", PlatformOpenCode, ProviderModeGo, override, UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterOpenCodeGo, BaseURL: override}, true},
+		{"opencode payg", PlatformOpenCode, ProviderModePayG, override, UpstreamUsageQueryConfig{BaseURL: override}, true},
+		{"relay keeps saved adapter", PlatformOpenAI, "", "", UpstreamUsageQueryConfig{Enabled: true, Adapter: UpstreamUsageAdapterNewAPI}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Record{Platform: test.platform, Type: ProviderTypeAPIKey, Credentials: map[string]any{"provider_mode": test.mode}, Extra: map[string]any{
+				UpstreamUsageQueryExtraKey: map[string]any{"enabled": true, "adapter": UpstreamUsageAdapterNewAPI, "base_url": test.baseURL},
+			}}
+			name, fixed := PlatformUsageAdapter(p)
+			require.Equal(t, test.fixed, fixed)
+			if fixed {
+				require.Equal(t, test.want.Adapter, name)
+			}
+			got, err := EffectiveUpstreamUsageConfig(p)
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
+	}
+}

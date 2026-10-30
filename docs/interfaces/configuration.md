@@ -7,6 +7,7 @@
 - [配置分层](#配置分层)：先确定一个选项属于哪一层。
 - [进程配置来源](#进程配置来源)：修改默认值、YAML 或环境变量时读取。
 - [在线更新仓库](#在线更新仓库)：修改管理后台更新来源时读取。
+- [站点链接与客户端 API 地址](#site_link_addresses)：修改邮件链接、OAuth 回调建议或客户端接入地址时读取。
 - [首次初始化](#首次初始化)：修改 setup 和安全密钥引导时读取。
 - [数据库运行时设置](#数据库运行时设置)：修改管理员设置和热更新时读取。
 - [领域配置](#领域配置)：业务实体用专用表，不放进通用键值设置。
@@ -56,6 +57,8 @@
 
 时区的优先级：标准的 `TZ`、兼容的 `TIMEZONE`、配置文件、默认值 `Asia/Shanghai`。`TZ` 非空时覆盖 `TIMEZONE`，容器运行时、应用的本地日统计和 PostgreSQL 连接的时区因此保持一致；无效的 IANA 名称在启动校验时失败。
 
+文本 SSE 的下游空闲心跳使用 `gateway.stream_keepalive_interval`，默认 10 秒，允许 5 至 30 秒，0 关闭统一文本保活。`gateway.stream_data_interval_timeout` 默认 180 秒，允许 30 至 300 秒，0 关闭正文停滞上限；收到上游响应头后，统一组件按上游活动与 handler 字节写入中较晚的时间判断停滞，超过上限后停止发心跳。等待上游响应头期间由传输层响应头超时和首输出保护限制，心跳不会因正文停滞上限而中断，读取器仍执行自己的超时处理。排队心跳和图片专用配置分别保留，Compact 的专用 SSE 控制器继续复用文本间隔。提前提交 200 的条件、错误格式和心跳计数见[SSE 保活](../architecture/gateway_request_lifecycle.md#sse_keepalive)。
+
 ### 请求记录
 
 `request_log.retention_days` 控制请求摘要保留天数，默认 30，环境变量为 `REQUEST_LOG_RETENTION_DAYS`。内存批写、失败处理和关闭排空见[请求 ID 与请求查询](../operations/request_lookup.md#request_storage)。
@@ -82,6 +85,8 @@
 
 以下配置已经退役，加载器忽略它们，不做校验，也不影响运行：
 
+- `batch_image.enabled`、`batch_image.queue_enabled`、`batch_image.vertex_enabled` 及对应环境变量。批量图片按统一协议许可接受请求，后台任务自动运行；升级影响见[批量图片配置统一](../operations/upgrade_notes.md#batch_image_protocol_admission)。
+- `batch_image.max_items_per_job_trial`、`batch_image.output_retention_max_days`、`batch_image.idempotency_key_prefix`、`batch_image.vertex_input_retention_hours`、`batch_image.vertex_output_retention_hours` 及对应环境变量。作业输入、输出留存分别使用 `input_retention_after_terminal_hours` 和 `output_retention_after_terminal_hours`。
 - `subscription_maintenance.worker_count`、`subscription_maintenance.queue_size` 和对应的环境变量；订阅维护队列不会启动。
 - `gateway.openai_ws.fallback_cooldown_seconds` 和 `GATEWAY_OPENAI_WS_FALLBACK_COOLDOWN_SECONDS`；WS 请求失败时不会通过这个配置回退到 HTTP，重试退避、重试预算和连接池预热冷却各有自己的配置。
 - `pricing.hash_url`、`pricing.update_interval_hours`。
@@ -99,7 +104,9 @@
 
 创作台（Creative Studio）属于启动时的进程配置 `creative`：功能和队列开关、临时数据 TTL（`transient_ttl_seconds`，默认 1800 秒）、上传和 prompt 限制（`max_asset_bytes` 默认 32 MiB，`max_total_input_bytes` 默认 64 MiB 且不小于单文件上限，`max_prompt_chars` 默认 8000）、上游执行参数（`execute_timeout_seconds`、`max_execute_attempts`），以及 `creative:queue:*` 的队列键和 TTL，都在启动时校验，修改后需要重启。
 
-创作台每个任务固定生成一张图片，预占价格按所选尺寸的单价计算。和 `batch_image` 不同，创作台的 `enabled` 和 `queue_enabled` 默认开启；临时存储和队列依赖 Redis，Redis 不可用时拒绝创建任务。完整的键清单见 `deploy/config.example.yaml` 和[创作台](../domains/creative_studio.md)。
+创作台每个任务固定生成一张图片，预占价格按所选尺寸的单价计算。创作台的 `enabled` 和 `queue_enabled` 默认开启；临时存储和队列依赖 Redis，Redis 不可用时拒绝创建任务。完整的键清单见 `deploy/config.example.yaml` 和[创作台](../domains/creative_studio.md)。
+
+批量图片的请求准入由分组和提供商统一协议配置控制，worker、恢复和清理随应用启动。`batch_image` 保留请求、下载、留存、队列和 Vertex 存储参数；未配置 GCS 存储桶时，Vertex 不参与新建作业选择。填写存储桶后，启动时校验名称、区域和作业前缀。
 
 两类任务的生产核心，由 app 在构造时传入各自固定的 Options，配置来源相同，业务核心不读取完整的 config。批量图片的 provider registry 同时用于提交、轮询、下载和清理。任务运行时停止后无法再次启动；动态扩容创作 worker 也不会重新打开已经停止的运行时。
 
@@ -119,6 +126,17 @@
 
 官方 Release 检查使用 `TokenFlux/TokenRouter` 和
 `tools/check-upstream-release.sh`，它与本 fork 的管理后台更新来源相互独立。已并入的上游 tag 记录在 `tools/upstream-release.seen`；本 fork 发布后再更新该文件，详见[开发、验证与上游同步](../operations/development_workflow.md#同步上游)。
+
+<a id="site_link_addresses"></a>
+### 站点链接与客户端 API 地址
+
+`frontend_url` 是邮件链接的公开站点地址；后端优先读取数据库中的非空值，未填写或读取失败时使用部署配置 `server.frontend_url`。退订链接每次生成时读取当前设置，保留地址中的路径前缀，再追加 `/api/v1/settings/email-unsubscribe`。公开入口需要把该请求转发到后端；两处前端地址都为空时保留相对链接。
+
+OAuth 服务端回调必须接收发起阶段写入的状态 Cookie。微信登录和支付 OAuth 的自动回调使用当前请求的公开 origin 和固定的 `/api/v1/auth/oauth/...` 路径，不读取站点前端地址或模型 API 地址；反向代理继续负责提供可信的 Host 和协议转发头。微信登录的显式回调配置保持优先。这样前端站点与面板 API 分域，或前端站点自身带路径前缀时，不会把状态 Cookie 留在另一个域名或路径上。
+
+管理页面为 LinuxDo、GitHub、Google、微信和 OIDC 提供的回调建议使用浏览器实际的面板 API 入口，与 OAuth 发起请求采用同一 `VITE_API_BASE_URL`，默认 `/api/v1`；相对入口按当前浏览器 origin 解析。建议不会自动覆盖已填写的回调字段。自定义反向代理 API 路径时，代理还需保持对外回调路径和 Cookie Path 一致。
+
+`api_base_url` 用于客户端接入展示和配置导出，可以包含模型 API 的 `/v1` 前缀，不参与上述站点链接和 OAuth 回调生成。修改这些地址来源不会重写已发送的邮件或已保存的回调地址。MCP OAuth 的站点地址校验和读取失败处理另有下述约束。
 
 ### MCP OAuth
 

@@ -7,11 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/TokenFlux/TokenRouter/internal/apikey"
+	gatewayprovider "github.com/TokenFlux/TokenRouter/internal/gateway/provider"
+	"github.com/TokenFlux/TokenRouter/internal/gateway/session"
+	providercore "github.com/TokenFlux/TokenRouter/internal/provider"
+	"github.com/TokenFlux/TokenRouter/internal/upstream"
 	"github.com/TokenFlux/TokenRouter/internal/upstream/openai"
 )
 
@@ -584,4 +590,28 @@ func TestOpenAIResponsesRejectedFieldRetryStateForRequestSharesBoundedBudgetAcro
 	}
 	overflow := openAIResponsesRejectedFieldRetryStateForRequest(c, []byte(`{"provider":"overflow"}`))
 	require.False(t, overflow.Allow([]byte(`{"new":"retry"}`)))
+}
+
+// TestPassthroughSinkRecordsAppliedTurnState delivers headers before any heartbeat.
+// The passthrough adapter must record the matching provider when its header
+// reaches HTTP output, preserving ownership checks for a later provider switch.
+func TestPassthroughSinkRecordsAppliedTurnState(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("session-id", "passthrough-applied")
+	c.Set("api_key", &apikey.APIKey{ID: 7})
+	origins := session.NewCodexTurnOrigins(time.Now)
+	adapter := &openAIPassthroughExecutionAdapter{openAIMessagesExecutionAdapter: &openAIMessagesExecutionAdapter{
+		c: c, provider: &gatewayprovider.ExecutionProvider{Record: providercore.Record{ID: 42}},
+		s: &OpenAITextExecutor{Requests: &OpenAIRequests{Turns: &CodexTurnStateHeaders{Origins: origins}}},
+	}}
+	output := upstream.NewOutputContext(adapter.Sink())
+	output.Writer.Header().Set(CodexTurnStateHeader, "delivered-state")
+	_, err := output.Writer.Write([]byte("data: {}\n\n"))
+	require.NoError(t, err)
+	owner, known := origins.Owner("7\x00passthrough-applied")
+	require.True(t, known)
+	require.Equal(t, int64(42), owner)
+	require.Equal(t, "delivered-state", rec.Result().Header.Get(CodexTurnStateHeader))
 }

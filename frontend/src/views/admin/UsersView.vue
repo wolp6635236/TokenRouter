@@ -828,12 +828,14 @@
       :show="showBalanceModal"
       :user="balanceUser"
       :operation="balanceOperation"
+      :z-index="balanceDialogZIndex"
       @close="closeBalanceModal"
-      @success="loadUsers"
+      @success="handleBalanceSuccess"
     />
     <UserBalanceHistoryModal
       :show="showBalanceHistoryModal"
       :user="balanceHistoryUser"
+      :refresh-key="balanceHistoryRefreshKey"
       @close="closeBalanceHistoryModal"
       @deposit="handleDepositFromHistory"
       @withdraw="handleWithdrawFromHistory"
@@ -858,6 +860,7 @@ import { useAppStore } from '@/stores/app'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useBalanceDisplay } from '@/composables/useBalanceDisplay'
 import { useTableSelection } from '@/composables/useTableSelection'
+import { Z_INDEX } from '@/constants/overlay'
 import { formatDateTime } from '@/utils/format'
 import BalanceIcon from '@/components/common/BalanceIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1795,9 +1798,18 @@ const balanceUser = ref<AdminUser | null>(null)
 const balanceOperation = ref<'add' | 'subtract'>('add')
 
 // Balance-history visibility and its account also supply the target when history
-// actions open deposit or withdrawal.
+// actions open deposit or withdrawal. The refresh key advances after each completed
+// edit so the open history reloads the new entry and totals.
 const showBalanceHistoryModal = ref(false)
 const balanceHistoryUser = ref<AdminUser | null>(null)
+const balanceHistoryRefreshKey = ref(0)
+
+// balanceDialogZIndex lifts the balance editor above the history dialog that can open
+// it. Both dialogs otherwise share the default modal layer, where teleport order paints
+// the later mounted history surface on top.
+const balanceDialogZIndex = computed(() =>
+  showBalanceHistoryModal.value ? Z_INDEX.MODAL_NESTED : Z_INDEX.MODAL,
+)
 
 // getDaysRemaining returns the ceiling of days between now and subscription expiry.
 // Expired values may be zero or negative because this helper exposes the rounded
@@ -2145,6 +2157,18 @@ const handleWithdraw = (user: AdminUser) => {
 const closeBalanceModal = () => {
   showBalanceModal.value = false
   balanceUser.value = null
+}
+
+// handleBalanceSuccess applies a completed adjustment to the open history dialog, asks it
+// to reload its records, and refreshes the user table. The edit response can leave out
+// list-only fields, so the update merges over the retained row record instead of
+// replacing it.
+const handleBalanceSuccess = (updatedUser: AdminUser) => {
+  if (balanceHistoryUser.value?.id === updatedUser.id) {
+    balanceHistoryUser.value = { ...balanceHistoryUser.value, ...updatedUser }
+  }
+  balanceHistoryRefreshKey.value += 1
+  loadUsers()
 }
 
 // handleBalanceHistory selects the account whose balance history the modal displays.

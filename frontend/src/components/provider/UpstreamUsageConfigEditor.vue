@@ -8,9 +8,9 @@
       testid="upstream-usage-enabled"
     />
 
-    <Collapse :open="enabledModel && !automaticAdapter" unmount-on-hide>
+    <Collapse :open="enabledModel && (!adapterInfo.automatic || !!baseUrlInfo)" unmount-on-hide>
       <SettingsSubpanel>
-        <div>
+        <div v-if="!adapterInfo.automatic">
           <label class="input-label">{{ t('admin.providers.upstreamUsage.adapter') }}</label>
           <Select
             v-model="adapterModel"
@@ -18,30 +18,20 @@
             data-testid="upstream-usage-adapter"
           />
         </div>
-        <div>
+        <div v-if="baseUrlInfo">
           <label class="input-label">{{ t('admin.providers.upstreamUsage.baseUrl') }}</label>
           <input
             v-model="baseUrlModel"
             type="text"
             class="input"
             :placeholder="
-              adapterModel === 'derouter'
-                ? 'https://cf-api.derouter.ai'
-                : t('admin.providers.upstreamUsage.baseUrlPlaceholder')
+              baseUrlInfo.placeholder ?? t('admin.providers.upstreamUsage.baseUrlPlaceholder')
             "
             data-testid="upstream-usage-base-url"
           />
-          <p class="input-hint">
-            {{
-              t(
-                adapterModel === 'derouter'
-                  ? 'admin.providers.upstreamUsage.derouterBaseUrlHint'
-                  : 'admin.providers.upstreamUsage.baseUrlHint',
-              )
-            }}
-          </p>
+          <p class="input-hint">{{ t(baseUrlInfo.hintKey) }}</p>
         </div>
-        <template v-if="adapterModel === 'new_api'">
+        <template v-if="adapter === 'new_api'">
           <div>
             <label class="input-label">{{
               t('admin.providers.upstreamUsage.walletAccessToken')
@@ -84,10 +74,12 @@ import { computed, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import type { UpstreamUsageAdapter } from '@/api/admin/providers.types'
+import { UPSTREAM_USAGE_ADAPTERS } from '@/utils/upstreamUsage'
 
 // UpstreamUsageConfigEditor.vue edits a provider usage-query adapter, management address,
 // and optional wallet credentials. Each input emits its own value to the parent form. The
-// automatic adapter flag changes the visible controls, and New API exposes wallet
+// parent passes the resolved adapter, and UPSTREAM_USAGE_ADAPTERS decides whether the
+// manual selector and the management address appear. New API exposes wallet
 // authentication independently from inference credentials.
 
 // props exposes caller-owned inputs used by the template and derived state in this
@@ -98,15 +90,14 @@ const props = withDefaults(
     // walletUserId belong to New API wallet authentication; parent hydration and patch
     // construction keep blank token drafts and clear blank nonsecret user identifiers.
     enabled: boolean // Parent-owned feature enable draft.
-    adapter: UpstreamUsageAdapter // Usage-query adapter wire identifier.
+    // Resolved adapter for the drafted provider: a platform-selected vendor adapter or
+    // the manual relay choice.
+    adapter: UpstreamUsageAdapter
     baseUrl: string // Independent management query address.
     // New API replacement token; EditProviderModal keeps the server-stored secret when
     // this draft is empty.
     walletAccessToken?: string
     walletUserId?: string // New API wallet user identifier.
-    // When true, hides manual adapter selection while retaining the caller-supplied
-    // adapter draft value.
-    automaticAdapter?: boolean
   }>(),
   {
     enabled: true,
@@ -114,7 +105,6 @@ const props = withDefaults(
     baseUrl: '',
     walletAccessToken: '',
     walletUserId: '',
-    automaticAdapter: false,
   },
 )
 
@@ -142,6 +132,11 @@ const adapterOptions = computed<SelectOption[]>(() => [
   { value: 'zivv', label: t('admin.providers.upstreamUsage.adapters.zivv') },
   { value: 'derouter', label: t('admin.providers.upstreamUsage.adapters.derouter') },
 ])
+
+// adapterInfo and baseUrlInfo describe the controls the resolved adapter needs: the
+// manual selector for relay formats and the management address with its default.
+const adapterInfo = computed(() => UPSTREAM_USAGE_ADAPTERS[props.adapter])
+const baseUrlInfo = computed(() => adapterInfo.value.baseUrl)
 
 // enabledModel forwards the query switch to the parent and reflects its current value in
 // the shared toggle row.

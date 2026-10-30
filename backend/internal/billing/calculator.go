@@ -330,6 +330,9 @@ func (s *Calculator) DisplayPricing(model string, rateMultiplier float64) ModelD
 // unsuccessful resolved display attempts return to the ordinary catalog
 // lookup.
 func (s *Calculator) DisplayPricingWithResolvedMultipliers(model string, rateMultiplier float64, resolved *ResolvedPricing) ModelDisplayPricing {
+	if resolved != nil && resolved.LookupModel != nil {
+		model = *resolved.LookupModel
+	}
 	// A negative effective rate produces zero displayed amounts while keeping
 	// model price availability as a separate display decision.
 	if rateMultiplier < 0 {

@@ -79,7 +79,7 @@ func TestUsageLogRepositoryListWithFiltersRequestID(t *testing.T) {
 
 	filters := usage.UsageLogFilters{RequestID: " req-0123 "}
 
-	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE "+regexp.QuoteMeta("(request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($1))) OR (upstream_request_id = $1 AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$1))) ORDER BY id DESC LIMIT $2 OFFSET $3")).
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE "+regexp.QuoteMeta("(request_id = ANY(ARRAY(SELECT id FROM request_lookup_ids($1))) OR (upstream_request_id = $1 AND NOT EXISTS (SELECT 1 FROM request_records exact_request WHERE exact_request.request_id=$1)) OR (system_usage IS NOT NULL AND system_usage->>'parent_request_id' = $1)) ORDER BY id DESC LIMIT $2 OFFSET $3")).
 		WithArgs("req-0123", 21, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
@@ -220,6 +220,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
+			"user", []byte(nil),
 		}})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
@@ -306,6 +307,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
+			"user", []byte(nil),
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -373,6 +375,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
+			"user", []byte(nil),
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -440,6 +443,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"unknown",        // platform snapshot
 			sql.NullString{},
 			sql.NullBool{},
+			"user", []byte(nil),
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -463,6 +467,16 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 		// The fixture already carries destination-compatible types. Reflection assigns
 		// them directly, so this stub exercises column wiring rather than SQL
 		// conversions.
+		if reflect.TypeOf(s.values[i]) == dv.Elem().Type() {
+			dv.Elem().Set(reflect.ValueOf(s.values[i]))
+			continue
+		}
+		if scanner, ok := dest[i].(sql.Scanner); ok {
+			if err := scanner.Scan(s.values[i]); err != nil {
+				return err
+			}
+			continue
+		}
 		dv.Elem().Set(reflect.ValueOf(s.values[i]))
 	}
 	return nil

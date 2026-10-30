@@ -11,11 +11,11 @@ import (
 )
 
 // test_streams_adaptive.go parses adaptive Anthropic test streams and forwards
-// their content and errors.
-// Adaptive Messages parsing emits content and errors while leaving whole-test
-// completion to the CN coordinator. message_stop and DONE finish the endpoint
-// successfully, EOF before those markers fails, and malformed frame JSON is
-// skipped while later events remain available for parsing.
+// their content and errors. Adaptive Messages parsing emits content and errors
+// while leaving whole-test completion to the Kimi, Zhipu, and DeepSeek
+// coordinator. message_stop and DONE finish the endpoint successfully, EOF
+// before those markers fails, and malformed frame JSON is skipped while later
+// events remain available for parsing.
 
 // AdaptiveAnthropic emits text from newline-terminated native Messages SSE and
 // returns nil on message_stop or DONE. It emits no success-completion event, so

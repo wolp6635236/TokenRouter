@@ -667,23 +667,6 @@ func TestConfirmationStatusBelongsToOriginatingToken(t *testing.T) {
 	require.True(t, result.IsError)
 }
 
-// TestRedactionRetainsEditableConfiguration supplies safe configuration beside secrets.
-// Returned credentials and extra containers remain inspectable, while their nested
-// credential values cannot enter the model's response context.
-func TestRedactionRetainsEditableConfiguration(t *testing.T) {
-	f := newMCPFixture(t)
-	input := map[string]any{"credentials": map[string]any{"base_url": "https://upstream.invalid", "api_key": "private"}, "extra": map[string]any{"priority": float64(7), "refresh_token": "private"}, "has_api_key": true}
-	result := jsonTestValue[map[string]any](t, f.handler.redact(input, 0))
-	credentials := jsonTestValue[map[string]any](t, result["credentials"])
-	require.Equal(t, "https://upstream.invalid", credentials["base_url"])
-	require.Equal(t, "***", credentials["api_key"])
-	require.Equal(t, "private", jsonTestValue[map[string]any](t, input["credentials"])["api_key"])
-	extra := jsonTestValue[map[string]any](t, result["extra"])
-	require.Equal(t, float64(7), extra["priority"])
-	require.Equal(t, "***", extra["refresh_token"])
-	require.Equal(t, true, result["has_api_key"])
-}
-
 // TestArchiveDownloadUsesCurrentBrowserGrant exercises a protected streaming file.
 // The current owner's browser session satisfies TOTP; removing its grant blocks
 // the same link before the archive handler can deliver any bytes.

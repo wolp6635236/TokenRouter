@@ -1486,7 +1486,7 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_BuildsImageToolRequest(t *testin
 		"output_format": "png",
 	}
 
-	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true)
+	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true, openai.ImagesResponsesMainModel)
 	require.True(t, modified)
 	require.Equal(t, openai.ImagesResponsesMainModel, reqBody["model"])
 	require.Equal(t, "draw a cat", reqBody["input"])
@@ -1527,7 +1527,7 @@ func TestNormalizeOpenAIResponsesImageOnlyModel_PreservesExistingImageTool(t *te
 		"tool_choice": "auto",
 	}
 
-	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true)
+	modified := openai.NormalizeOpenAIResponsesImageOnlyModel(reqBody, true, openai.ImagesResponsesMainModel)
 	require.True(t, modified)
 	require.Equal(t, openai.ImagesResponsesMainModel, reqBody["model"])
 	require.Equal(t, "auto", reqBody["tool_choice"])

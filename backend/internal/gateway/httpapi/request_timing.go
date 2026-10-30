@@ -36,10 +36,11 @@ const requestTimingWriterKey = "http_text_timing_writer"
 
 // timingResponseBody observes consumed response bytes without changing read ownership.
 type timingResponseBody struct {
-	io.ReadCloser               // original upstream response body
-	frames        *timingFrames // per-response framing state
-	done          func()        // exchange completion observer
-	arrivedAt     time.Time     // last underlying read completion
+	io.ReadCloser                // original upstream response body
+	frames        *timingFrames  // per-response framing state
+	stages        *timing.Stages // shared upstream activity clock
+	done          func()         // exchange completion observer
+	arrivedAt     time.Time      // last underlying read completion
 }
 
 // timingWriter observes successful HTTP writes and existing downstream flushes.
@@ -93,7 +94,7 @@ func TextRequestTiming() gin.HandlerFunc {
 			}
 			ref := telemetry.RequestAttemptFromContext(exchangeCtx)
 			attempt := int64(ref.Number)
-			body := &timingResponseBody{ReadCloser: resp.Body, done: func() { stages.FinishAttempt(attempt) }}
+			body := &timingResponseBody{ReadCloser: resp.Body, stages: stages, done: func() { stages.FinishAttempt(attempt) }}
 			contentType := resp.Header.Get("Content-Type")
 			sse := strings.Contains(contentType, "text/event-stream")
 			nativeStream := resp.Request != nil && strings.Contains(resp.Request.URL.Path, "streamGenerateContent")
@@ -147,6 +148,9 @@ func TextRequestTiming() gin.HandlerFunc {
 func (r *timingResponseBody) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
 	r.arrivedAt = time.Now()
+	if n > 0 && r.stages != nil {
+		r.stages.ObserveUpstreamActivity(r.arrivedAt)
+	}
 	if r.frames != nil {
 		r.frames.feed(p[:n])
 	}

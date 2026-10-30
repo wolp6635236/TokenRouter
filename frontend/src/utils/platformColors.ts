@@ -1,8 +1,11 @@
+import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
+
 /**
  * platformColors.ts supplies platform labels and shared class strings for badges, text,
  * icons, and selected choices. Recognized platform identifiers receive their configured
  * palette. Unrecognized values use purpose-specific default colors, while label helpers
- * retain nonempty custom platform text.
+ * read display names from the shared platform catalog and retain nonempty custom
+ * platform text.
  */
 
 /**
@@ -19,6 +22,7 @@ export type Platform =
   | 'zhipu'
   | 'deepseek'
   | 'jev'
+  | 'opencode'
 
 /**
  * BADGE_DEFAULT and BADGE_LIGHT provide neutral and platform-specific soft badge
@@ -34,6 +38,7 @@ const BADGE_LIGHT: Record<Platform, string> = {
   qoder: 'bg-cyan-500/10 text-cyan-600 dark:bg-cyan-500/10 dark:text-cyan-300',
   grok: 'bg-zinc-800/10 text-zinc-800 dark:bg-zinc-500/10 dark:text-zinc-200',
   jev: 'bg-zinc-800/10 text-zinc-800 dark:bg-zinc-500/10 dark:text-zinc-200',
+  opencode: 'bg-zinc-800/10 text-zinc-800 dark:bg-zinc-500/10 dark:text-zinc-200',
   kimi: 'bg-pink-500/10 text-pink-600 dark:bg-pink-500/10 dark:text-pink-300',
   zhipu: 'bg-indigo-500/10 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-300',
   deepseek: 'bg-teal-500/10 text-teal-600 dark:bg-teal-500/10 dark:text-teal-300',
@@ -51,6 +56,7 @@ const TEXT: Record<Platform, string> = {
   qoder: 'text-cyan-600 dark:text-cyan-400',
   grok: 'text-zinc-800 dark:text-zinc-200',
   jev: 'text-zinc-800 dark:text-zinc-200',
+  opencode: 'text-zinc-800 dark:text-zinc-200',
   kimi: 'text-pink-600 dark:text-pink-400',
   zhipu: 'text-indigo-600 dark:text-indigo-400',
   deepseek: 'text-teal-600 dark:text-teal-400',
@@ -69,6 +75,7 @@ const ICON: Record<Platform, string> = {
   qoder: 'text-cyan-500 dark:text-cyan-400',
   grok: 'text-zinc-800 dark:text-zinc-200',
   jev: 'text-zinc-800 dark:text-zinc-200',
+  opencode: 'text-zinc-800 dark:text-zinc-200',
   kimi: 'text-pink-500 dark:text-pink-400',
   zhipu: 'text-indigo-500 dark:text-indigo-400',
   deepseek: 'text-teal-500 dark:text-teal-400',
@@ -92,6 +99,8 @@ const CHOICE_SELECTED: Record<Platform, string> = {
     'border-cyan-500 bg-cyan-50 ring-1 ring-cyan-500 dark:border-cyan-500/60 dark:bg-cyan-500/10 dark:ring-cyan-500/60',
   grok: 'border-zinc-800 bg-zinc-50 ring-1 ring-zinc-800 dark:border-zinc-400/60 dark:bg-zinc-500/10 dark:ring-zinc-400/60',
   jev: 'border-zinc-800 bg-zinc-50 ring-1 ring-zinc-800 dark:border-zinc-400/60 dark:bg-zinc-500/10 dark:ring-zinc-400/60',
+  opencode:
+    'border-zinc-800 bg-zinc-50 ring-1 ring-zinc-800 dark:border-zinc-400/60 dark:bg-zinc-500/10 dark:ring-zinc-400/60',
   kimi: 'border-pink-500 bg-pink-50 ring-1 ring-pink-500 dark:border-pink-500/60 dark:bg-pink-500/10 dark:ring-pink-500/60',
   zhipu:
     'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500 dark:border-indigo-500/60 dark:bg-indigo-500/10 dark:ring-indigo-500/60',
@@ -113,6 +122,7 @@ const SOLID: Record<Platform, string> = {
   qoder: 'bg-cyan-600 text-white',
   grok: 'bg-zinc-800 text-white dark:bg-zinc-600',
   jev: 'bg-zinc-800 text-white dark:bg-zinc-600',
+  opencode: 'bg-zinc-800 text-white dark:bg-zinc-600',
   kimi: 'bg-pink-500 text-white',
   zhipu: 'bg-indigo-500 text-white',
   deepseek: 'bg-teal-500 text-white',
@@ -120,21 +130,10 @@ const SOLID: Record<Platform, string> = {
 const SOLID_DEFAULT = 'bg-primary-600 text-white'
 
 /**
- * isPlatform recognizes exact identifiers with dedicated platform labels and palettes.
+ * isPlatform recognizes exact identifiers with dedicated platform palettes.
  */
 function isPlatform(p: string): p is Platform {
-  return (
-    p === 'anthropic' ||
-    p === 'openai' ||
-    p === 'antigravity' ||
-    p === 'gemini' ||
-    p === 'qoder' ||
-    p === 'grok' ||
-    p === 'kimi' ||
-    p === 'zhipu' ||
-    p === 'deepseek' ||
-    p === 'jev'
-  )
+  return Object.prototype.hasOwnProperty.call(TEXT, p)
 }
 
 /**
@@ -165,35 +164,12 @@ export function platformIconClass(p: string): string {
 }
 
 /**
- * platformLabel returns the display spelling of a known platform identifier. Unknown
- * nonempty strings pass through unchanged, and empty input uses API as the generic
- * platform label.
+ * platformLabel returns the display spelling of a known platform identifier from the shared
+ * platform catalog. Unknown nonempty strings pass through unchanged, and empty input uses API
+ * as the generic platform label.
  */
 export function platformLabel(p: string): string {
-  switch (p) {
-    case 'anthropic':
-      return 'Anthropic'
-    case 'openai':
-      return 'OpenAI'
-    case 'antigravity':
-      return 'Antigravity'
-    case 'gemini':
-      return 'Gemini'
-    case 'qoder':
-      return 'Qoder'
-    case 'grok':
-      return 'Grok'
-    case 'kimi':
-      return 'Kimi'
-    case 'zhipu':
-      return 'Zhipu GLM'
-    case 'deepseek':
-      return 'DeepSeek'
-    case 'jev':
-      return 'Jev'
-    default:
-      return p || 'API'
-  }
+  return CONCRETE_PLATFORM_OPTIONS.find((option) => option.value === p)?.label ?? (p || 'API')
 }
 
 /**

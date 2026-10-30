@@ -82,8 +82,6 @@ export default {
     viewUserAccounts: 'View and manage user accounts',
     manageProviders: 'Manage Providers',
     configureAiProviders: 'Configure AI platform providers',
-    batchImage: 'Batch Image',
-    batchImageDesc: 'Submit jobs and copy agent instructions',
     groupPricing: 'Group Pricing',
     groupPricingDesc: 'Configure batch discount and hold ratio',
     systemSettings: 'System Settings',
@@ -970,13 +968,10 @@ export default {
     },
     imagePricing: {
       allowImageGeneration: 'Allow image generation for this group',
-      allowBatchImageGeneration: 'Allow batch image generation for this group',
       batchDiscountMultiplier: 'Batch image discount',
       batchHoldMultiplier: 'Batch hold price ratio',
       batchSectionHint:
         'Batch image settings only apply to batch jobs: settlement applies the batch discount, and the upfront hold is normal image price × batch hold price ratio. Reference images also create upstream input-token usage, so a batch image discount above 0.5 is recommended.',
-      batchDisabledHint:
-        'Enable image generation for this group before enabling batch image generation.',
     },
     explicitPricing: {
       title: 'Grok Search & Voice Pricing',

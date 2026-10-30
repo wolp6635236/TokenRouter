@@ -5,12 +5,11 @@
       :disabled="switching"
       :class="triggerClass"
       :title="currentLocale?.name"
+      :aria-label="currentLocale?.name"
     >
       <Icon v-if="variant === 'status'" name="languages" size="md" />
       <span v-else class="text-base leading-none">{{ currentLocale?.flag }}</span>
-      <span v-if="variant !== 'status'" class="hidden sm:inline">{{
-        currentLocale?.code.toUpperCase()
-      }}</span>
+      <span v-if="variant !== 'status'" class="hidden sm:inline">{{ currentLocale?.name }}</span>
       <Icon
         v-if="variant !== 'status'"
         name="chevronDown"
@@ -104,8 +103,8 @@ const switching = ref(false)
  */
 const currentLocaleCode = computed(() => locale.value)
 /**
- * currentLocale resolves the catalog entry that supplies the current locale flag,
- * name, and short code.
+ * currentLocale resolves the catalog entry whose display name and flag identify the
+ * selected language in the trigger and menu.
  */
 const currentLocale = computed(() => availableLocales.find((l) => l.code === locale.value))
 /**
@@ -114,8 +113,8 @@ const currentLocale = computed(() => availableLocales.find((l) => l.code === loc
  */
 const variant = computed(() => props.variant)
 /**
- * triggerClass selects the header status icon geometry or the ordinary flag and locale
- * code button styling.
+ * triggerClass selects the header status icon geometry or the ordinary flag and
+ * language-name button styling.
  */
 const triggerClass = computed(() => {
   if (variant.value === 'status') {

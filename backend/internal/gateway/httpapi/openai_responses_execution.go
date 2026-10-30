@@ -189,7 +189,8 @@ func (s *OpenAIResponsesExecutor) Forward(ctx context.Context, c *gin.Context, p
 		RequestedModel: requestedModel, OriginalModel: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel,
 		ReasoningEffort: reasoningEffort, ReasoningEffortValue: reasoningEffortValue,
 		ImageBillingModel: imageBillingModel, ImageSizeTier: imageSizeTier, ImageInputSize: imageInputSize,
-		Stream: reqStream, OAuth: provider.View().IsOAuth(), Shadow: provider.View().IsShadow(), Grok: provider.View().IsGrok(), StartedAt: startTime,
+		ImageMainModelAdapted: transformed.ImageMainModelAdapted,
+		Stream:                reqStream, OAuth: provider.View().IsOAuth(), Shadow: provider.View().IsShadow(), Grok: provider.View().IsGrok(), StartedAt: startTime,
 	}
 	exchange := openai.HTTPExchangeOptions{
 		StartedAt:          startTime,

@@ -125,3 +125,35 @@ func TestProviderCodecGeminiQuotaPrecheck(t *testing.T) {
 		})
 	}
 }
+
+// TestProviderCodecOpenCodeRetainsModelRoutes captures the lightweight scheduler
+// record for a Go provider. Model aliases and protocol overrides survive so
+// pre-hydration checks resolve the same endpoint as the complete provider.
+func TestProviderCodecOpenCodeRetainsModelRoutes(t *testing.T) {
+	value := provider.Record{ID: 12, Platform: provider.PlatformOpenCode, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{
+		"api_key": "secret", "provider_mode": "payg", "model_mapping": map[string]any{"alias": "custom", "public": "nemotron-3.5-lightning-free"},
+		provider.OpenCodeCatalogProtocolsKey: map[string]any{"payg": map[string]any{"custom": "anthropic_messages"}},
+		provider.OpenCodeModelProtocolsKey:   map[string]any{"payg": map[string]any{"custom": "systemone"}},
+		provider.UpstreamProtocolsKey:        []string{"systemone", "openai_chat_completions"},
+	}}
+	codec := ProviderCodec{}
+	full, metadata, err := codec.Encode(WrapRecord(&value))
+	require.NoError(t, err)
+	for name, payload := range map[string][]byte{"full": full, "metadata": metadata} {
+		t.Run(name, func(t *testing.T) {
+			decoded, err := codec.Decode(payload)
+			require.NoError(t, err)
+			record, err := RecordValue(decoded)
+			require.NoError(t, err)
+			snapshot := record.RoutingSnapshot()
+			resolved, ok := snapshot.ResolveModelRoute("alias", "", nil)
+			require.True(t, ok)
+			require.Equal(t, "custom", resolved.Model)
+			require.Equal(t, "systemone", string(resolved.Protocol))
+			require.Contains(t, record.Credentials, provider.OpenCodeCatalogProtocolsKey)
+			resolved, ok = snapshot.ResolveModelRoute("public", "", nil)
+			require.True(t, ok)
+			require.Equal(t, "nemotron-3.5-lightning-free", resolved.Model)
+		})
+	}
+}

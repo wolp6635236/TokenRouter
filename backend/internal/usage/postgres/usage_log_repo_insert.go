@@ -50,175 +50,104 @@ const (
 	usageLogBestEffortBatchWindow   = 20 * time.Millisecond // acknowledgement collection window
 	usageLogBestEffortBatchQueueCap = 32768                 // buffered best-effort admissions
 	usageLogBestEffortRecentTTL     = 30 * time.Second      // successful submission suppression window
-
-	// usageLogInsertColumns defines the shared positional insert shape. Prepared
-	// arguments, placeholder types, and all three SQL writers follow this order.
-	usageLogInsertColumns = `
-			user_id,
-			billing_user_id,
-			team_id,
-			api_key_id,
-			provider_id,
-			request_id,
-			model,
-			requested_model,
-			upstream_model,
-			group_id,
-			subscription_id,
-			input_tokens,
-			output_tokens,
-			cache_creation_tokens,
-			cache_read_tokens,
-			cache_creation_5m_tokens,
-			cache_creation_1h_tokens,
-			image_output_tokens,
-			image_output_cost,
-			image_input_tokens,
-			image_input_cost,
-			input_cost,
-			output_cost,
-			cache_creation_cost,
-			cache_read_cost,
-			total_cost,
-			actual_cost,
-			subscription_amount_usd,
-			balance_amount_usd,
-			billing_allocations,
-			rate_multiplier,
-			provider_rate_multiplier,
-			billing_type,
-			request_type,
-			stream,
-			openai_ws_mode,
-			duration_ms,
-			timings,
-			user_agent,
-			ip_address,
-			image_count,
-			image_size,
-			image_input_size,
-			image_output_size,
-			image_size_source,
-			image_size_breakdown,
-			video_count,
-			video_resolution,
-			video_duration_seconds,
-			service_tier,
-			reasoning_effort,
-			inbound_endpoint,
-			upstream_endpoint,
-			cache_ttl_overridden,
-			long_context_billing_applied,
-			pricing_config_id,
-			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			provider_stats_cost,
-			upstream_request_id,
-			session_id,
-			created_at,
-			requested_reasoning_effort,
-			native_compaction_v2,
-			platform,
-			upstream_response_model,
-			upstream_model_mismatch,
-			billing_key
-		`
-
-	// usageLogInsertSQL writes one prepared row and ignores uniqueness conflicts,
-	// allowing either identity recovery or acknowledgement-only execution by its
-	// caller.
-	usageLogInsertSQL = `
-		INSERT INTO usage_logs (` + usageLogInsertColumns + `) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9,
-			$10, $11,
-			$12, $13, $14, $15,
-			$16, $17, $18, $19,
-			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69
-		)
-		ON CONFLICT DO NOTHING
-	`
 )
 
-// usageLogInsertArgTypes follows the same order as:
-//  1. prepareUsageLogInsert().args
-//  2. usageLogInsertColumns
-//  3. usageLogInsertSQL placeholders
-//
-// The SELECT columns and scanUsageLog must also agree on the fields they read.
-//
-// Update these lists together when adding usage_logs columns.
-var usageLogInsertArgTypes = [...]string{
-	"bigint",      // user_id
-	"bigint",      // billing_user_id
-	"bigint",      // team_id
-	"bigint",      // api_key_id
-	"bigint",      // provider_id
-	"text",        // request_id
-	"text",        // model
-	"text",        // requested_model
-	"text",        // upstream_model
-	"bigint",      // group_id
-	"bigint",      // subscription_id
-	"integer",     // input_tokens
-	"integer",     // output_tokens
-	"integer",     // cache_creation_tokens
-	"integer",     // cache_read_tokens
-	"integer",     // cache_creation_5m_tokens
-	"integer",     // cache_creation_1h_tokens
-	"integer",     // image_output_tokens
-	"numeric",     // image_output_cost
-	"integer",     // image_input_tokens
-	"numeric",     // image_input_cost
-	"numeric",     // input_cost
-	"numeric",     // output_cost
-	"numeric",     // cache_creation_cost
-	"numeric",     // cache_read_cost
-	"numeric",     // total_cost
-	"numeric",     // actual_cost
-	"numeric",     // subscription_amount_usd
-	"numeric",     // balance_amount_usd
-	"jsonb",       // billing_allocations
-	"numeric",     // rate_multiplier
-	"numeric",     // provider_rate_multiplier
-	"smallint",    // billing_type
-	"smallint",    // request_type
-	"boolean",     // stream
-	"boolean",     // openai_ws_mode
-	"integer",     // duration_ms
-	"jsonb",       // timings
-	"text",        // user_agent
-	"text",        // ip_address
-	"integer",     // image_count
-	"text",        // image_size
-	"text",        // image_input_size
-	"text",        // image_output_size
-	"text",        // image_size_source
-	"jsonb",       // image_size_breakdown
-	"integer",     // video_count
-	"text",        // video_resolution
-	"integer",     // video_duration_seconds
-	"text",        // service_tier
-	"text",        // reasoning_effort
-	"text",        // inbound_endpoint
-	"text",        // upstream_endpoint
-	"boolean",     // cache_ttl_overridden
-	"boolean",     // long_context_billing_applied
-	"bigint",      // pricing_config_id
-	"text",        // model_mapping_chain
-	"text",        // billing_tier
-	"text",        // billing_mode
-	"numeric",     // provider_stats_cost
-	"text",        // upstream_request_id
-	"text",        // session_id
-	"timestamptz", // created_at
-	"text",        // requested_reasoning_effort
-	"boolean",     // native_compaction_v2
-	"text",        // execution platform snapshot
-	"text",        // upstream_response_model
-	"boolean",     // upstream_model_mismatch
-	"text",        // billing_key
+var (
+	// usageLogInsertSchema defines every insert column and its PostgreSQL type in
+	// the order used by prepareUsageLogInsert's explicit argument construction.
+	usageLogInsertSchema = [...]usageLogInsertColumn{
+		{name: "user_id", dataType: "bigint"},
+		{name: "billing_user_id", dataType: "bigint"},
+		{name: "team_id", dataType: "bigint"},
+		{name: "api_key_id", dataType: "bigint"},
+		{name: "provider_id", dataType: "bigint"},
+		{name: "request_id", dataType: "text"},
+		{name: "model", dataType: "text"},
+		{name: "requested_model", dataType: "text"},
+		{name: "upstream_model", dataType: "text"},
+		{name: "group_id", dataType: "bigint"},
+		{name: "subscription_id", dataType: "bigint"},
+		{name: "input_tokens", dataType: "integer"},
+		{name: "output_tokens", dataType: "integer"},
+		{name: "cache_creation_tokens", dataType: "integer"},
+		{name: "cache_read_tokens", dataType: "integer"},
+		{name: "cache_creation_5m_tokens", dataType: "integer"},
+		{name: "cache_creation_1h_tokens", dataType: "integer"},
+		{name: "image_output_tokens", dataType: "integer"},
+		{name: "image_output_cost", dataType: "numeric"},
+		{name: "image_input_tokens", dataType: "integer"},
+		{name: "image_input_cost", dataType: "numeric"},
+		{name: "input_cost", dataType: "numeric"},
+		{name: "output_cost", dataType: "numeric"},
+		{name: "cache_creation_cost", dataType: "numeric"},
+		{name: "cache_read_cost", dataType: "numeric"},
+		{name: "total_cost", dataType: "numeric"},
+		{name: "actual_cost", dataType: "numeric"},
+		{name: "subscription_amount_usd", dataType: "numeric"},
+		{name: "balance_amount_usd", dataType: "numeric"},
+		{name: "billing_allocations", dataType: "jsonb"},
+		{name: "rate_multiplier", dataType: "numeric"},
+		{name: "provider_rate_multiplier", dataType: "numeric"},
+		{name: "billing_type", dataType: "smallint"},
+		{name: "request_type", dataType: "smallint"},
+		{name: "stream", dataType: "boolean"},
+		{name: "openai_ws_mode", dataType: "boolean"},
+		{name: "duration_ms", dataType: "integer"},
+		{name: "timings", dataType: "jsonb"},
+		{name: "user_agent", dataType: "text"},
+		{name: "ip_address", dataType: "text"},
+		{name: "image_count", dataType: "integer"},
+		{name: "image_size", dataType: "text"},
+		{name: "image_input_size", dataType: "text"},
+		{name: "image_output_size", dataType: "text"},
+		{name: "image_size_source", dataType: "text"},
+		{name: "image_size_breakdown", dataType: "jsonb"},
+		{name: "video_count", dataType: "integer"},
+		{name: "video_resolution", dataType: "text"},
+		{name: "video_duration_seconds", dataType: "integer"},
+		{name: "service_tier", dataType: "text"},
+		{name: "reasoning_effort", dataType: "text"},
+		{name: "inbound_endpoint", dataType: "text"},
+		{name: "upstream_endpoint", dataType: "text"},
+		{name: "cache_ttl_overridden", dataType: "boolean"},
+		{name: "long_context_billing_applied", dataType: "boolean"},
+		{name: "pricing_config_id", dataType: "bigint"},
+		{name: "model_mapping_chain", dataType: "text"},
+		{name: "billing_tier", dataType: "text"},
+		{name: "billing_mode", dataType: "text"},
+		{name: "provider_stats_cost", dataType: "numeric"},
+		{name: "upstream_request_id", dataType: "text"},
+		{name: "session_id", dataType: "text"},
+		{name: "created_at", dataType: "timestamptz"},
+		{name: "requested_reasoning_effort", dataType: "text"},
+		{name: "native_compaction_v2", dataType: "boolean"},
+		{name: "platform", dataType: "text"},
+		{name: "upstream_response_model", dataType: "text"},
+		{name: "upstream_model_mismatch", dataType: "boolean"},
+		{name: "billing_key", dataType: "text"},
+		{name: "request_source", dataType: "text"},
+		{name: "system_usage", dataType: "jsonb"},
+	}
+
+	// usageLogInsert caches fixed SQL metadata once for the direct and batch
+	// writers; all callers leave its strings and derived slices unchanged.
+	usageLogInsert = buildUsageLogInsertMetadata()
+)
+
+// usageLogInsertColumn pairs one persisted field with its batch-input SQL type.
+type usageLogInsertColumn struct {
+	name     string // persisted column name
+	dataType string // PostgreSQL parameter type
+}
+
+// usageLogInsertMetadata holds fixed SQL fragments for every usage write path.
+// Its columns, argTypes, casts, and statement share the descriptor's order and
+// remain unchanged after package initialization.
+type usageLogInsertMetadata struct {
+	columns   string   // ordered SQL column list
+	argTypes  []string // ordered PostgreSQL parameter types
+	casts     []string // ordered SQL cast suffixes
+	statement string   // conflict-tolerant single-row insert SQL
 }
 
 // usageLogCreateRequest carries a result-aware write and its caller-shared row
@@ -268,9 +197,9 @@ type usageLogInsertPrepared struct {
 	requestID      string    // trimmed diagnostic request identity
 	rateMultiplier float64   // supplied user rate multiplier
 	requestType    int16     // normalized request category code
-	// args follows usageLogInsertColumns and usageLogInsertArgTypes. Optional
-	// provider multiplier, provider cost, and response-mismatch pointers stay
-	// shared with their input owners until the SQL writer finishes reading them.
+	// args follows usageLogInsertSchema. Optional provider multiplier, provider
+	// cost, and response-mismatch pointers stay shared with their input owners
+	// until the SQL writer finishes reading them.
 	args []any
 }
 
@@ -305,6 +234,45 @@ type usageLogCreateShared struct {
 	state atomic.Int32
 }
 
+// buildUsageLogInsertMetadata derives fixed SQL fragments once during package
+// initialization. Prepared argument construction must follow the schema's order;
+// callers treat the returned type and cast slices as immutable.
+func buildUsageLogInsertMetadata() usageLogInsertMetadata {
+	names := make([]string, len(usageLogInsertSchema))
+	argTypes := make([]string, len(usageLogInsertSchema))
+	casts := make([]string, len(usageLogInsertSchema))
+	var values strings.Builder
+	for i, column := range usageLogInsertSchema {
+		names[i] = column.name
+		argTypes[i] = column.dataType
+		casts[i] = "::" + column.dataType
+		if i > 0 {
+			// Retain the single-row statement's line groups while deriving every
+			// numbered placeholder from the shared column order.
+			switch i {
+			case 9, 11, 15, 19, 25:
+				_, _ = values.WriteString(",\n\t\t\t")
+			default:
+				_, _ = values.WriteString(", ")
+			}
+		}
+		_, _ = values.WriteString("$")
+		_, _ = values.WriteString(strconv.Itoa(i + 1))
+	}
+	columns := "\n\t\t\t" + strings.Join(names, ",\n\t\t\t") + "\n\t\t"
+	return usageLogInsertMetadata{
+		columns:  columns,
+		argTypes: argTypes,
+		casts:    casts,
+		statement: `
+		INSERT INTO usage_logs (` + columns + `) VALUES (
+			` + values.String() + `
+		)
+		ON CONFLICT DO NOTHING
+	`,
+	}
+}
+
 // Create writes a usage record and reports whether this submission inserted it.
 // Nil rows return false without work; an Ent transaction in ctx or a blank
 // request ID takes the direct path, and other records can use the result-aware
@@ -323,6 +291,12 @@ func (r *Store) Create(ctx context.Context, log *usage.UsageLog) (bool, error) {
 
 	if tx := dbent.TxFromContext(ctx); tx != nil {
 		return r.createSingle(ctx, tx.Client(), log)
+	}
+	if log.EffectiveRequestSource() != usage.SourceUser {
+		// System attribution has no API-key identity, so customer-key batch
+		// recovery cannot correlate it. Provider-only settlement supplies its own
+		// transaction and the direct writer retains that connection.
+		return r.createSingle(ctx, r.sql, log)
 	}
 	requestID := strings.TrimSpace(log.RequestID)
 	if requestID == "" {
@@ -343,6 +317,11 @@ func (r *Store) Create(ctx context.Context, log *usage.UsageLog) (bool, error) {
 // persistence unresolved. Queued acknowledgements do not populate row identity,
 // and callers keep retained argument pointers stable until processing finishes.
 func (r *Store) CreateBestEffort(ctx context.Context, log *usage.UsageLog) error {
+	if log != nil && log.EffectiveRequestSource() != usage.SourceUser {
+		_, err := r.Create(ctx, log)
+		return err
+	}
+
 	// Hold admission open through the caller wait, so shutdown closes initialized
 	// channels only after active writers have stopped sending or awaiting results.
 	r.batchLifecycleMu.RLock()
@@ -421,7 +400,7 @@ func (r *Store) createSingle(ctx context.Context, sqlq sqlExecutor, log *usage.U
 		return false, usage.MarkUsageLogCreateNotPersisted(ctx.Err())
 	}
 
-	query := usageLogInsertSQL + " RETURNING id, created_at"
+	query := usageLogInsert.statement + " RETURNING id, created_at"
 
 	if err := scanSingleRow(ctx, sqlq, query, prepared.args, &log.ID, &log.CreatedAt); err != nil {
 		// A uniqueness conflict may refer to a retained legacy financial key; recover
@@ -432,7 +411,12 @@ func (r *Store) createSingle(ctx context.Context, sqlq sqlExecutor, log *usage.U
 				billingKey = prepared.requestID
 			}
 			selectQuery := "SELECT id, created_at FROM usage_logs WHERE (request_id = $1 OR COALESCE(billing_key, request_id) = $3) AND api_key_id = $2"
-			if err := scanSingleRow(ctx, sqlq, selectQuery, []any{prepared.requestID, log.APIKeyID, billingKey}, &log.ID, &log.CreatedAt); err != nil {
+			selectArgs := []any{prepared.requestID, log.APIKeyID, billingKey}
+			if log.EffectiveRequestSource() != usage.SourceUser {
+				selectQuery = "SELECT id, created_at FROM usage_logs WHERE request_id=$1 AND request_source=$2"
+				selectArgs = []any{prepared.requestID, log.RequestSource}
+			}
+			if err := scanSingleRow(ctx, sqlq, selectQuery, selectArgs, &log.ID, &log.CreatedAt); err != nil {
 				return false, err
 			}
 			log.RateMultiplier = prepared.rateMultiplier
@@ -1000,7 +984,7 @@ func (r *Store) batchInsertUsageLogs(db *sql.DB, keys []string, preparedByKey ma
 // buildUsageLogBatchInsertQuery builds typed SQL input and ordered bound
 // parameters for result-aware writes. Callers supply nonempty keys and a
 // prepared payload for every key, with positional values matching the shared
-// insert-column and type tables.
+// insert schema.
 //
 // A synthetic input index carries caller order through the SQL result. INSERT
 // ignores conflicts, while the resolved CTE matches inserted or existing rows by
@@ -1015,9 +999,9 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 	var query strings.Builder
 	_, _ = query.WriteString(`
 		WITH input (
-			input_idx,` + usageLogInsertColumns + `) AS (VALUES `)
+			input_idx,` + usageLogInsert.columns + `) AS (VALUES `)
 
-	args := make([]any, 0, len(keys)*(len(usageLogInsertArgTypes)+1))
+	args := make([]any, 0, len(keys)*(len(usageLogInsert.argTypes)+1))
 	argPos := 1
 	for idx, key := range keys {
 		if idx > 0 {
@@ -1033,9 +1017,8 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			_, _ = query.WriteString(",")
 			_, _ = query.WriteString("$")
 			_, _ = query.WriteString(strconv.Itoa(argPos))
-			if i < len(usageLogInsertArgTypes) {
-				_, _ = query.WriteString("::")
-				_, _ = query.WriteString(usageLogInsertArgTypes[i])
+			if i < len(usageLogInsert.casts) {
+				_, _ = query.WriteString(usageLogInsert.casts[i])
 			}
 			argPos++
 		}
@@ -1045,8 +1028,8 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 	_, _ = query.WriteString(`
 		),
 		inserted AS (
-			INSERT INTO usage_logs (` + usageLogInsertColumns + `)
-			SELECT` + usageLogInsertColumns + `FROM input
+			INSERT INTO usage_logs (` + usageLogInsert.columns + `)
+			SELECT` + usageLogInsert.columns + `FROM input
 			ON CONFLICT DO NOTHING
 			RETURNING request_id, billing_key, api_key_id, id, created_at
 		),
@@ -1086,7 +1069,7 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 
 // buildUsageLogBestEffortInsertQuery builds typed multirow INSERT SQL and bound
 // arguments in prepared-list order. Callers supply a nonempty list whose
-// payloads match the shared column/type tables; conflicts are ignored and no row
+// payloads match the shared insert schema; conflicts are ignored and no row
 // identity is returned.
 func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (string, []any) {
 	// Builder writes append to memory and return nil errors. The following sequence
@@ -1094,9 +1077,9 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 	// slice.
 	var query strings.Builder
 	_, _ = query.WriteString(`
-		WITH input (` + usageLogInsertColumns + `) AS (VALUES `)
+		WITH input (` + usageLogInsert.columns + `) AS (VALUES `)
 
-	args := make([]any, 0, len(preparedList)*len(usageLogInsertArgTypes))
+	args := make([]any, 0, len(preparedList)*len(usageLogInsert.argTypes))
 	argPos := 1
 	for idx, prepared := range preparedList {
 		if idx > 0 {
@@ -1109,9 +1092,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			}
 			_, _ = query.WriteString("$")
 			_, _ = query.WriteString(strconv.Itoa(argPos))
-			if i < len(usageLogInsertArgTypes) {
-				_, _ = query.WriteString("::")
-				_, _ = query.WriteString(usageLogInsertArgTypes[i])
+			if i < len(usageLogInsert.casts) {
+				_, _ = query.WriteString(usageLogInsert.casts[i])
 			}
 			argPos++
 		}
@@ -1121,8 +1103,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 
 	_, _ = query.WriteString(`
 		)
-		INSERT INTO usage_logs (` + usageLogInsertColumns + `)
-		SELECT` + usageLogInsertColumns + `FROM input
+		INSERT INTO usage_logs (` + usageLogInsert.columns + `)
+		SELECT` + usageLogInsert.columns + `FROM input
 		ON CONFLICT DO NOTHING
 	`)
 
@@ -1134,7 +1116,7 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 // error acknowledges execution and does not distinguish a new row from an
 // existing row.
 func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared usageLogInsertPrepared) error {
-	_, err := sqlq.ExecContext(ctx, usageLogInsertSQL, prepared.args...)
+	_, err := sqlq.ExecContext(ctx, usageLogInsert.statement, prepared.args...)
 	return err
 }
 
@@ -1224,6 +1206,13 @@ func prepareUsageLogInsert(log *usage.UsageLog) usageLogInsertPrepared {
 	if requestID != "" {
 		requestIDArg = requestID
 	}
+	systemJSON, _ := json.Marshal(log.SystemUsage)
+	var systemArg any
+	if log.SystemUsage != nil {
+		systemArg = systemJSON
+	}
+	var userIDArg, keyIDArg, payerIDArg any
+	userIDArg, keyIDArg = log.UserID, log.APIKeyID
 	billingUserID := log.BillingUserID
 	// Missing payer identity attributes historical personal records to their actor;
 	// a supplied positive billing identity remains available for team-owner ranking.
@@ -1231,16 +1220,20 @@ func prepareUsageLogInsert(log *usage.UsageLog) usageLogInsertPrepared {
 		billingUserID = log.UserID
 	}
 
+	payerIDArg = billingUserID
+	if log.EffectiveRequestSource() != usage.SourceUser {
+		userIDArg, keyIDArg, payerIDArg = nil, nil, nil
+	}
 	return usageLogInsertPrepared{
 		createdAt:      createdAt,
 		requestID:      requestID,
 		rateMultiplier: rateMultiplier,
 		requestType:    requestType,
 		args: []any{
-			log.UserID,
-			billingUserID,
+			userIDArg,
+			payerIDArg,
 			nullInt64(log.TeamID),
-			log.APIKeyID,
+			keyIDArg,
 			log.ProviderID,
 			requestIDArg,
 			log.Model,
@@ -1306,6 +1299,8 @@ func prepareUsageLogInsert(log *usage.UsageLog) usageLogInsertPrepared {
 			nullString(log.UpstreamResponseModel),
 			log.UpstreamModelMismatch,
 			nullStringValue(log.BillingKey),
+			log.EffectiveRequestSource(),
+			systemArg,
 		},
 	}
 }

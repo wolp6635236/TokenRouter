@@ -1,14 +1,12 @@
 package gemini
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -310,42 +308,41 @@ func (s *ResponseAdapter) HandleOpenAICompatStreamingResponseFromGemini(
 			return resultSnapshot(), nil
 		}
 	}
-	reader := bufio.NewReader(resp.Body)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			trimmed := strings.TrimRight(line, "\r\n")
-			if after, ok0 := strings.CutPrefix(trimmed, "data:"); ok0 {
-				payload := strings.TrimSpace(after)
-				if payload != "" && payload != "[DONE]" {
-					rawBytes := []byte(payload)
-					if isOAuth {
-						if innerBytes, uwErr := UnwrapGeminiResponse(rawBytes); uwErr == nil {
-							rawBytes = innerBytes
-						}
-					}
-
-					// Decode before advancing protocol state; malformed JSON is skipped so
-					// partially populated fields cannot enter downstream conversion for this line.
-					var geminiResp map[string]any
-					if err := json.Unmarshal(rawBytes, &geminiResp); err == nil {
-						s.observeRaw(rawBytes)
-						for event := range state.Process(geminiResp, rawBytes) {
-							if emitAnthropicEvent(event) {
-								return resultSnapshot(), nil
-							}
-						}
-					}
-				}
+	observed, readErr := s.readStream(resp, isOAuth, func(event upstream.GeminiStreamEvent) error {
+		if len(event.Data) == 0 {
+			if event.Terminal {
+				c.Complete()
+			}
+			return c.Err()
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			return err
+		}
+		s.observeRaw(event.Data)
+		for message := range state.Process(payload, event.Data) {
+			if emitAnthropicEvent(message) {
+				return c.Err()
 			}
 		}
-
-		if errors.Is(err, io.EOF) {
-			break
+		if event.Terminal {
+			c.Complete()
 		}
-		if err != nil {
-			return nil, fmt.Errorf("stream read error: %w", err)
+		return c.Err()
+	})
+	// Preserve sparse accounting independently of client delivery and terminal
+	// conversion; a usage-only tail cannot zero previously observed input tokens.
+	if len(observed.UsageJSON) > 0 {
+		var usagePayload map[string]any
+		_ = json.Unmarshal(observed.UsageJSON, &usagePayload)
+		for range state.Process(usagePayload, observed.UsageJSON) {
 		}
+	}
+	if c.Err() != nil {
+		return resultSnapshot(), nil
+	}
+	if readErr != nil {
+		return resultSnapshot(), readErr
 	}
 
 	// Finish the Gemini bridge before downstream finalization so final

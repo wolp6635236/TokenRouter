@@ -50,10 +50,6 @@ var (
 // VertexBatchImageProviderOptions supplies endpoint identity and managed
 // storage settings retained by the batch adapter.
 type VertexBatchImageProviderOptions struct {
-	// Enabled is retained as configuration metadata. Adapter operations check
-	// the provider's batch protocol or credentials; execution is not gated by this
-	// field, so callers apply their enablement policy.
-	Enabled bool // retained adapter enablement setting
 	// ProjectID takes precedence during Submit when nonblank. Empty values
 	// use the provider's project credential or parsed service-account project, and
 	// a missing resolved project fails after input upload.
@@ -71,11 +67,6 @@ type VertexBatchImageProviderOptions struct {
 	// input and output resources retain job-specific identity.
 	ManagedGCSPrefix string // managed per-job path template
 	Environment      string // managed path environment segment
-	// InputRetentionHours and OutputRetentionHours retain submitted configuration
-	// values. Cleanup scheduling uses the core cleanup options, while this adapter
-	// receives a resource target when deletion is requested.
-	InputRetentionHours  int // hours
-	OutputRetentionHours int // hours
 	// BatchPredictionBaseURL selects the default job client's base when no
 	// client is injected. A supplied client determines its own request endpoint.
 	BatchPredictionBaseURL string // optional job API base
@@ -186,8 +177,8 @@ func NewVertexBatchImageProvider(opts VertexBatchImageProviderOptions, client Ve
 
 // NormalizeVertexBatchImageProviderOptions trims endpoint and managed-path
 // settings and supplies global location, the standard prefix template, and
-// default environment when blank. It retains enablement and retention values
-// as supplied and returns the normalized value copy.
+// default environment when blank. Callers receive a normalized value copy
+// that they can retain throughout the adapter lifetime.
 func NormalizeVertexBatchImageProviderOptions(opts VertexBatchImageProviderOptions) VertexBatchImageProviderOptions {
 	opts.ProjectID = strings.TrimSpace(opts.ProjectID)
 	opts.Location = strings.TrimSpace(opts.Location)
@@ -226,6 +217,16 @@ func (p *VertexBatchImageProvider) SupportsProvider(provider *Provider) bool {
 	// so this eligibility predicate can discard the parser diagnostic.
 	_, err := provideradapter.ParseVertexServiceAccountKey(provider)
 	return err == nil
+}
+
+// SupportsSubmission checks service-account credentials and managed storage for
+// new Vertex jobs. Existing jobs retain their credential-only SupportsProvider
+// check so polling and downloads can use persisted provider references.
+func (p *VertexBatchImageProvider) SupportsSubmission(provider *Provider) bool {
+	return p.SupportsProvider(provider) &&
+		p.opts.ManagedGCSBucket != "" &&
+		!strings.Contains(p.opts.ManagedGCSBucket, "://") &&
+		strings.Contains(p.opts.ManagedGCSPrefix, "{batch_id}")
 }
 
 // Submit uploads managed Vertex JSONL and creates a batch prediction job.

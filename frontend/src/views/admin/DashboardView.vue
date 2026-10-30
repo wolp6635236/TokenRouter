@@ -416,7 +416,6 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Select from '@/components/common/Select.vue'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'
 import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
-import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
 import { externalTooltipHandler, hideExternalTooltip } from '@/utils/chartExternalTooltip'
 
 import {
@@ -465,7 +464,6 @@ onBeforeUnmount(hideExternalTooltip)
 const appStore = useAppStore()
 const router = useRouter()
 const { formatBalanceAmount, formatUsdAmount } = useBalanceDisplay()
-const { refreshBatchImageAccess } = useBatchImageAccess()
 // Summary data and separate loading/error flags control initial skeletons, chart
 // progress, user trends, and ranking feedback.
 const stats = ref<DashboardStats | null>(null)
@@ -895,10 +893,8 @@ const loadChartData = async () => {
   await Promise.all([loadDashboardSnapshot(false), loadUsersTrend(), loadUserSpendingRanking()])
 }
 
-// Refresh batch-image access independently while starting the summary and chart loads
-// so access lookup does not delay dashboard data.
+// Load the summary and charts when the dashboard becomes visible.
 onMounted(() => {
-  void refreshBatchImageAccess()
   loadDashboardStats()
 })
 </script>

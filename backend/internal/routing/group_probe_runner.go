@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 )
 
 // group_probe_runner.go claims due groups, runs bounded probe attempts, and
@@ -182,7 +184,8 @@ func (s *GroupAvailabilityProbeRunnerService) runOne(ctx context.Context, due Gr
 // does not cancel the next one. The helper checks Success before the post-call
 // parent cancellation check; a callback that returns success while canceling
 // its parent still yields that success. Callbacks own result classification,
-// and nil failed results can be retried.
+// and nil failed results can be retried. All attempts inherit one new local
+// request identity so their usage records remain associated with this round.
 func runGroupAvailabilityProbeAttempts(
 	ctx context.Context,
 	maxRetries int,
@@ -192,6 +195,10 @@ func runGroupAvailabilityProbeAttempts(
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+
+	// One logical request identity spans the round before per-attempt deadlines
+	// are derived, so system usage can associate every retry with this probe.
+	ctx = context.WithValue(ctx, telemetry.RequestID, telemetry.NewRequestID())
 
 	var lastResult *GroupAvailabilityProbeResult
 	for retryCount := 0; retryCount <= maxRetries; retryCount++ {

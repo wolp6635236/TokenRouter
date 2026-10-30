@@ -136,12 +136,13 @@ func (r *Store) buildUsageAnalyticsQuery(ctx context.Context, filters UsageLogFi
 		addCondition("billing_mode = $%d", mode)
 	}
 
+	conditions, args = appendRequestSourceCondition(conditions, args, filters.RequestSource, "")
 	metricColumns := `
 		user_id, billing_user_id, team_id, api_key_id, group_id, requested_model,
-		request_type, stream, billing_type, billing_mode, platform, inbound_endpoint,
+		request_type, stream, billing_type, billing_mode, platform, inbound_endpoint, request_source,
 		total_requests, input_tokens, output_tokens, cache_creation_tokens,
 		cache_read_tokens, total_cost, actual_cost, provider_cost,
-		total_duration_ms, duration_count`
+		total_duration_ms, duration_count, incomplete_cost_requests`
 	parts := make([]string, 0, 4)
 	if useDaily {
 		parts = append(parts, `
@@ -164,7 +165,8 @@ func (r *Store) buildUsageAnalyticsQuery(ctx context.Context, filters UsageLogFi
 			1, ul.input_tokens, ul.output_tokens, ul.cache_creation_tokens,
 			ul.cache_read_tokens, ul.total_cost, ul.actual_cost,
 			COALESCE(ul.provider_stats_cost, ul.total_cost) * COALESCE(ul.provider_rate_multiplier, 1),
-			COALESCE(ul.duration_ms, 0), CASE WHEN ul.duration_ms IS NULL THEN 0 ELSE 1 END
+			COALESCE(ul.duration_ms, 0), CASE WHEN ul.duration_ms IS NULL THEN 0 ELSE 1 END,
+			CASE WHEN ul.system_usage->>'cost_state' IN ('unknown','partial') THEN 1 ELSE 0 END
 		FROM `+rawUsageSource+`
 		LEFT JOIN groups g ON g.id = ul.group_id
 		LEFT JOIN providers a ON a.id = ul.provider_id
@@ -207,12 +209,12 @@ func (r *Store) getUsageStatsFromAnalytics(ctx context.Context, filters UsageLog
 			COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
 			COALESCE(SUM(total_cost), 0), COALESCE(SUM(actual_cost), 0),
 			COALESCE(SUM(provider_cost), 0), COALESCE(SUM(total_duration_ms), 0),
-			COALESCE(SUM(duration_count), 0)
+			COALESCE(SUM(duration_count), 0), COALESCE(SUM(incomplete_cost_requests), 0)
 		FROM combined `+query.where, query.args,
 		&stats.TotalRequests, &stats.TotalInputTokens, &stats.TotalOutputTokens,
 		&stats.TotalCacheTokens, &stats.TotalCacheCreationTokens, &stats.TotalCacheReadTokens,
 		&stats.TotalCost, &stats.TotalActualCost, &totalProviderCost,
-		&totalDuration, &durationCount,
+		&totalDuration, &durationCount, &stats.IncompleteCostRequests,
 	)
 	if err != nil {
 		return nil, false, err
@@ -377,7 +379,7 @@ func (r *Store) getInboundEndpointStatsFromAnalytics(ctx context.Context, start,
 // include cache creation/read. Timezone and limit parameters are appended after
 // the source arguments, keeping their positions correct for hourly-only queries.
 func (r *Store) getAPIKeyUsageTrendFromAnalytics(ctx context.Context, start, end time.Time, granularity string, limit int) ([]APIKeyUsageTrendPoint, bool, error) {
-	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{}, start, end, false)
+	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{RequestSource: usage.SourceUser}, start, end, false)
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -436,7 +438,7 @@ func (r *Store) getAPIKeyUsageTrendFromAnalytics(ctx context.Context, start, end
 // scopes. The appended named timezone determines display buckets, and
 // cost/actual_cost remain separate base and charged amounts.
 func (r *Store) getUserUsageTrendFromAnalytics(ctx context.Context, start, end time.Time, granularity string, limit int) ([]UserUsageTrendPoint, bool, error) {
-	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{}, start, end, false)
+	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{RequestSource: usage.SourceUser}, start, end, false)
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -499,7 +501,7 @@ func (r *Store) getUserUsageTrendFromAnalytics(ctx context.Context, start, end t
 // display after selection, keeping identity changes independent of historical
 // analytics buckets.
 func (r *Store) getUserSpendingRankingFromAnalytics(ctx context.Context, start, end time.Time, limit int) (*UserSpendingRankingResponse, bool, error) {
-	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{}, start, end, true)
+	query, ok, err := r.buildUsageAnalyticsQuery(ctx, UsageLogFilters{RequestSource: usage.SourceUser}, start, end, true)
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -654,7 +656,8 @@ func (r *Store) getUsageRankingFromAnalytics(ctx context.Context, start, end tim
 // grouping. The fixed sort allowlist selects a metric, with actual_cost for
 // unknown labels; positive limits append a bound row cap and nonpositive limits
 // leave results unlimited. Current email is joined for the grouped payer, while
-// provider cost stays separate from the user-charge ordering.
+// provider cost stays separate from the user-charge ordering. Only customer
+// sources participate, preventing internal work from producing a user-zero row.
 func (r *Store) getUserBreakdownStatsFromAnalytics(ctx context.Context, start, end time.Time, dim usage.UserBreakdownDimension, limit int) ([]usage.UserBreakdownItem, bool, error) {
 	modelSource := usage.NormalizeModelSource(dim.ModelType)
 	if dim.ProviderID > 0 || dim.NativeCompactionV2 != nil || (dim.Model != "" && modelSource != usage.ModelSourceRequested) {
@@ -665,7 +668,8 @@ func (r *Store) getUserBreakdownStatsFromAnalytics(ctx context.Context, start, e
 	}
 	filters := UsageLogFilters{
 		UserID: dim.UserID, APIKeyID: dim.APIKeyID, GroupID: dim.GroupID,
-		Model: dim.Model, ModelFilterSource: modelSource,
+		RequestSource: usage.SourceUser,
+		Model:         dim.Model, ModelFilterSource: modelSource,
 		RequestType: dim.RequestType, Stream: dim.Stream, BillingType: dim.BillingType,
 	}
 	query, ok, err := r.buildUsageAnalyticsQuery(ctx, filters, start, end, true)

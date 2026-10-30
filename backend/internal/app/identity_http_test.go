@@ -23,11 +23,11 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/settings"
 )
 
-// Profile HTTP exposes current identity bindings and compatible source fields
-// while email changes use verified binding rather than ordinary profile
-// updates. These scenarios check avatar/profile display, binding and unbinding,
-// session cleanup, password rejection, and authorization-start data using
-// production identity handlers with mutable in-memory user fixtures.
+// identity_http_test.go checks profile HTTP, OAuth settings, and identity bindings.
+// Profile scenarios cover avatar display, session cleanup, password rejection,
+// and authorization starts using production handlers with mutable user fixtures.
+// OAuth settings cases keep automatic callbacks on the request origin even when
+// site addresses and the client API endpoint use other domains or path prefixes.
 
 // userHandlerRepoStub supplies one mutable user and its authentication
 // identities for profile tests.
@@ -60,6 +60,41 @@ type userHandlerSettingRepoStub struct {
 // for identity HTTP assertions.
 type userHandlerRefreshTokenCacheStub struct {
 	revokedUserIDs []int64 // requested session cleanup users
+}
+
+// TestIdentityHTTPSettingsWeChatCallbackUsesRequestOrigin loads channel options
+// through production settings assembly. Stored and deployment site addresses must
+// not move the generated callback away from the host that issued OAuth cookies.
+func TestIdentityHTTPSettingsWeChatCallbackUsesRequestOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name       string // named source scenario
+		stored     string // saved frontend address
+		deployment string // deployment frontend default
+	}{
+		{name: "different site host", stored: "https://console.example.com", deployment: "https://deployment.example.com"},
+		{name: "site path prefix", stored: "https://api.example.com/portal"},
+		{name: "deployment site", deployment: "https://deployment.example.com"},
+		{name: "missing site"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &settingHandlerRepoStub{values: map[string]string{
+				"api_base_url": "https://models.example.com/v1",
+				"frontend_url": tc.stored,
+				identitycore.SettingKeyWeChatConnectEnabled:   "true",
+				identitycore.SettingKeyWeChatConnectAppID:     "app",
+				identitycore.SettingKeyWeChatConnectAppSecret: "secret",
+				identitycore.SettingKeyWeChatConnectMode:      "open",
+			}}
+			cfg := &config.Config{Server: config.ServerConfig{FrontendURL: tc.deployment}}
+			runtime := identityHTTPSettings{identityAuthSettings: newUserBindingSettings(repo, cfg)}
+			handler := identityhttp.NewWeChatHandler(nil, nil, nil, identityhttp.WeChatHTTPOptions{LoadConfig: runtime.WeChat})
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/auth/oauth/wechat/start", nil)
+			options, err := handler.GetConfig(t.Context(), "open", c)
+			require.NoError(t, err)
+			require.Equal(t, "https://api.example.com/api/v1/auth/oauth/wechat/callback", options.RedirectURI)
+		})
+	}
 }
 
 // TestAuthHandlerGetCurrentUserReturnsProfileCompatibilityFields loads a

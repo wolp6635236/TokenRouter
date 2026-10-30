@@ -160,7 +160,7 @@ func (s *AnthropicProviderTest) Execute(c *TestRun, value *providercore.Record, 
 	s.applyUserAgent(req)
 
 	// Apply provider header overrides after defaults and authentication, as forwarding does.
-	applyGrokQuotaHeaders(value, req.Header)
+	ApplyProviderHeaderOverrides(value, req.Header)
 
 	proxyURL := ""
 	if value.ProxyID != nil && value.Proxy != nil {

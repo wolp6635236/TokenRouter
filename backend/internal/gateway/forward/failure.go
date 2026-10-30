@@ -78,7 +78,8 @@ type GatewayFailureReason string
 // UpstreamFailoverError carries an upstream or credential failure that may trigger provider switching.
 // The caller combines its action with response status and remaining retry budget.
 type UpstreamFailoverError struct {
-	StatusCode int // classified upstream HTTP status
+	Platform   string // selected upstream provider platform
+	StatusCode int    // classified upstream HTTP status
 	// ResponseBody and ResponseHeaders carry captured failure evidence for
 	// classification and output. Assigning this error shares body, map, and header
 	// slice storage; constructors determine whether that evidence was cloned first.
@@ -202,4 +203,14 @@ func (e *UpstreamFailoverError) RetryFailure() *failover.FailureInfo {
 		return nil
 	}
 	return &failover.FailureInfo{StatusCode: e.StatusCode, ForceCacheBilling: e.ForceCacheBilling, RetryableOnSameProvider: e.RetryableOnSameProvider, RequestScopedTransient: e.RequestScopedTransient, SameProviderRetryDelay: e.SameProviderRetryDelay, SameProviderRetryDeadline: e.SameProviderRetryDeadline, SameProviderRetryMax: e.SameProviderRetryMax, RetryNext: e.ShouldRetryNextProvider()}
+}
+
+// ProviderPlatform returns the upstream provider identity retained by this failure.
+// Legacy failures without identity use the supplied protocol default. Callers
+// constructing provider failures should populate Platform before exposing exhausted output.
+func (e *UpstreamFailoverError) ProviderPlatform(defaultPlatform string) string {
+	if e != nil && e.Platform != "" {
+		return e.Platform
+	}
+	return defaultPlatform
 }
