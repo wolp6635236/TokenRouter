@@ -7,9 +7,15 @@
 
 提供商使用 `platform=jev`、`type=apikey`，品牌标识为 `typesafe`。`credentials.api_key` 保存 TypeSafe 或兼容上游的 API Key，`base_url` 缺省为 `https://api.typesafe.ai`。请求使用 Bearer 认证，地址校验、代理和请求头覆写由共享传输组件处理。
 
-客户端入口为 `POST /v1/systemone`，也可以选择声明该模型支持 SystemOne 的 OpenCode 提供商，地址和认证见 [OpenCode 上游](opencode_upstream.md)。Jev 提供商默认启用 `systemone`，管理员需要在分组中开放这个入口。空的提供商协议集合关闭新请求。SystemOne 支持同步 JSON 请求，问题类型为 `noul`、`choice`、`score`；`stream=true` 返回 400。
+客户端入口为 `POST /v1/systemone`，也可以选择声明该模型支持 SystemOne 的 OpenCode 提供商，地址和认证见 [OpenCode 上游](opencode_upstream.md)。Jev 提供商默认启用 `systemone`，管理员需要在分组中开放这个入口。空的提供商协议集合关闭新请求。SystemOne 支持同步 JSON 和 multipart/form-data 请求，问题类型为 `noul`、`choice`、`score`、`box`；`stream=true` 返回 400。
 
-请求需要 `model`、`state` 和非空的 `questions`。state 和问题 instructions 接受字符串、对象或数组。请求按照复合 Key、Key 重定向、分组映射、提供商映射的顺序解析模型，替换顶层 model 后发送。问题和扩展字段随请求转发。内容审核从 state、instructions 和 criteria 中提取 JSON 解码后的键和值，转义字符与明文使用相同的关键词匹配。字面反斜杠按一次 JSON 解码的结果处理。
+请求需要 `model`、`state` 和非空的 `questions`。state 接受字符串、对象或数组。问题 instructions 还允许省略或 null；Noul 缺少 instructions 时需要至少一个非 null 条件。Choice 和 Score 的条件描述允许 null。请求按照复合 Key、Key 重定向、分组映射、提供商映射的顺序解析模型，替换顶层 model 后发送。问题和扩展字段随请求转发。内容审核从 state、instructions 和 criteria 中提取 JSON 解码后的键和值，转义字符与明文使用相同的关键词匹配。字面反斜杠按一次 JSON 解码的结果处理。
+
+图片放在顶层 `assets`，以唯一引用字符串关联 state、instructions 或 criteria 中的字符串值；对象键不会被替换。JSON 图片使用 `format=png/jpg/jpeg` 和标准、有填充的 `data_base64`，不带 data URL 前缀或空白。multipart 的首个分段必须命名为 `request`，类型为 `application/json`；图片通过 `assets[引用].part` 指向文件分段。分段名称唯一，每个文件恰好被一个 asset 使用；同时提供 part 和 data_base64 时以 part 为准。网关校验解压后的请求不超过 32 MiB，单张原始或 base64 解码后的图片不超过 16 MiB。图片实际格式、尺寸、重编码后的总量和引用展开后的大小由上游继续校验。
+
+图片和 Box 仍是 TypeSafe 的实验功能。公开请求须显式携带 `TypeSafe-Danger-Zone-Images: true`；网关转发该头，不按内容自动补写，并保留提供商头覆写的优先级。图片可用于 Jev 1.13 和 1.14，Box 需要 Jev 1.14；具体模型支持由上游判断。multipart 的复合 Key、Key 重定向、分组和提供商映射均改写 request 分段的 model，图片保持二进制内容。模型改写保留 boundary，并同时维护请求体和 Content-Type，重试从未修改的输入重新构造请求。
+
+Box 不使用 criteria，响应包含归一化的 top、bottom、left、right。四个值必须在 0 到 1 之间，且上边界小于下边界、左边界小于右边界。confidence 必须存在，允许数值或 null；null 表示上游未提供置信度。Box 不存在独立的“未找到”答案，调用方需要判断目标是否存在时可以配合 Noul。
 
 普通直连和管理员测试展示上游响应的具体版本。配置了模型别名时，响应恢复客户端请求名；复合 Key 的响应模型名包含客户端使用的分组前缀。`upstream_response_model` 保存恢复前的上游型号，计费使用配置选定的请求、分组映射或出站型号。
 
@@ -30,20 +36,20 @@ app 通过 `provideSystemOneExecutor` 构造决策执行器，直接注入共享
 
 成功响应的用量缺失、为负、类型错误或超出整数范围时，答案照常交付。网关记录 `systemone.usage_invalid` 告警和关联请求的 `usage_unknown` 尝试，跳过资金结算及正常用量账单。有效的零用量按正常响应处理。该响应结束本次上游尝试。
 
-models.dev 的默认 JSON 接口会过滤 decision 等特殊模型。目录同步使用 `catalog.json?type=all`，离线快照保留原始资料，解析时保留 Jev 公共属性和原厂记录，并排除第三方渠道报价。`model_supplements.json` 在同一型号条目内保存 TypeSafe 直连的价格、缺失属性和核验来源，覆盖 `jev-latest`、`jev-preview`、`jev-1.13.0`。目录已有值优先，渠道售价可通过价卡或本地补充按完整 ID 配置，明确零价保持有效。输入模态为文本，输出为结构化决策，在当前模态分类中标为 text 并声明 structured_output。
+models.dev 的默认 JSON 接口会过滤 decision 等特殊模型。目录同步使用 `catalog.json?type=all`，离线快照保留原始资料，解析时保留 Jev 公共属性和原厂记录，并排除第三方渠道报价。`model_supplements.json` 在同一型号条目内保存 TypeSafe 直连的价格、缺失属性和核验来源，覆盖 `jev-latest`、`jev-preview`、`jev-1.13.0`、`jev-1.14.0`。目录已有值优先，渠道售价可通过价卡或本地补充按完整 ID 配置，明确零价保持有效。输入模态为文本和图片，输出为结构化决策，在当前模态分类中标为 text 并声明 structured_output。目录已有的图片能力和内嵌补充均保留，补充文件不覆盖目录的明确值。
 
 ## 管理与展示
 
 上游模型同步请求 `GET /v1/models`，解析 `models[].name`。同步结果合并进表单，由管理员保存为白名单；新建提供商的白名单为空。公共模型列表使用 TokenRouter 的统一格式，并声明每个模型可以请求的协议。
 
-手动测试、定时测试和分组探测共用 Jev 执行器。手动测试默认填入 `jev-latest`，管理员可输入其他型号，填写文本或 JSON 状态，并添加 Noul、Choice、Score 问题。单模型和批量测试使用同一份问题，界面分别展示概率、选择、评分、置信度和 token 用量。无效或缺失用量显示为未知。定时测试和分组探测使用最小 Noul 请求检查连通性。
+手动测试、定时测试和分组探测共用 Jev 执行器。手动测试默认填入 `jev-latest`，管理员可输入其他型号，填写文本或 JSON 状态，上传 PNG/JPEG 图片，并添加 Noul、Choice、Score、Box 问题。单模型和批量测试使用同一份问题，界面分别展示概率、选择、评分、置信度和 token 用量。无效或缺失用量显示为未知。定时测试和分组探测使用最小 Noul 请求检查连通性。
 
-决策测试与文字、图片测试共用弹窗布局和结果面板，指标展示实际模型、总耗时及输入／输出 token。结果、JSON 和日志通过面板页签切换，复制按钮复制当前 JSON 或日志。问题 ID 和额外判断条件在左栏折叠编辑。
+决策测试与文字、图片测试共用弹窗布局和结果面板，指标展示实际模型、总耗时及输入／输出 token。结果、JSON 和日志通过面板页签切换，复制按钮复制当前 JSON 或日志。问题 ID 和额外判断条件在左栏折叠编辑。图片支持插入到最近选中的文本字段或复制引用；JSON 状态由管理员手动编辑。上传时检查文件大小和宽高，未引用图片及已删除图片的残留引用阻止提交。
 
-决策结果按提交顺序分成问题卡片，使用提交时的问题和条件快照解释答案。Noul 同时展示成立与不成立的概率。Choice 标出所选项，并按概率排列选项。Score 保留连续分值，按等级顺序展示概率和响应中的 legend 描述。概率与置信度分别显示。修改表单后，已完成结果中的问题说明保持为本次提交的内容。
+决策结果按提交顺序分成问题卡片，使用提交时的问题和条件快照解释答案。Noul 同时展示成立与不成立的概率。Choice 标出所选项，并按概率排列选项。Score 保留连续分值，按等级顺序展示概率和响应中的 legend 描述。概率与置信度分别显示。Box 问题显式选择目标图片，界面将该引用写入 instructions。结果显示图片上的定位框、四个坐标和置信度；缺失置信度显示为未提供。问题、图片和目标关联在每次单模型或批量请求开始时保存快照，后续编辑表单不改变已完成结果；输入变更后，结果面板标明当前显示的是上次测试结果。
 
-管理员测试接口以 `test_type=decision` 和 `systemone={state, questions}` 传入表单数据，选定的 `model_id` 经提供商映射后覆盖请求模型。校验失败时结束测试。TypeSafe 的公开 API 文档和官方 SDK 没有账户余额查询接口（核验日期：2026-10-11），Jev 的上游余额查询默认关闭，兼容中继可以配置已支持的查询适配器。
+管理员测试接口以 `test_type=decision` 和 `systemone={state, questions, assets?}` 传入表单数据，选定的 `model_id` 经提供商映射后覆盖请求模型。后台图片或 Box 测试显式发送图片启用头，图片预览名称和目标关联仅保留在浏览器，不进入上游 JSON。校验失败时结束测试。TypeSafe 的公开 API 文档和官方 SDK 没有账户余额查询接口（核验日期：2026-10-11），Jev 的上游余额查询默认关闭，兼容中继可以配置已支持的查询适配器。
 
 TypeSafe 品牌用于分组品牌选项、模型图标、市场筛选和 SystemOne 协议展示。Jev 提供商使用同一图标资源。分组的展示品牌优先取 display_brand，为空时使用分组名；执行平台取提供商配置。
 
-参考：[TypeSafe API](https://docs.typesafe.ai/api)、[TypeSafe SDK](https://github.com/typesafe-ai/typesafe-sdk-js/blob/main/src/client.ts)、[官方模型与价格](https://docs.typesafe.ai/models)、[models.dev Jev](https://models.dev/models/typesafe/jev-latest/)。本地图标取自 TypeSafe 官方文档站 favicon。
+参考：[图片](https://docs.typesafe.ai/images)、[Box](https://docs.typesafe.ai/primitives/box)、[TypeSafe API](https://docs.typesafe.ai/api)、[TypeSafe SDK](https://github.com/typesafe-ai/typesafe-sdk-js/blob/main/src/client.ts)、[官方模型与价格](https://docs.typesafe.ai/models)、[models.dev Jev](https://models.dev/models/typesafe/jev-latest/)。本地图标取自 TypeSafe 官方文档站 favicon。

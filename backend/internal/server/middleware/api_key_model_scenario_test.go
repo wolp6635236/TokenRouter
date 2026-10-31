@@ -7,10 +7,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/identity"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	"github.com/TokenFlux/TokenRouter/internal/protocol"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/systemone"
 	"github.com/TokenFlux/TokenRouter/internal/routing"
 )
 
@@ -57,6 +60,63 @@ func TestResolveCompositeAPIKeyRequestJSON(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "gPt/vendor/model", clientModel)
 	require.Equal(t, "vendor/model", actualModel)
+}
+
+// TestSystemOneCompressedMultipartKeyMapping sends the official SDK's compressed
+// multipart shape through composite selection and key redirection. Each stage
+// changes only the JSON model while binary image bytes and explicit opt-in survive.
+func TestSystemOneCompressedMultipartKeyMapping(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="request"`}, "Content-Type": {"application/json"}})
+	require.NoError(t, err)
+	_, err = io.WriteString(part, `{"model":"GPT/alias","state":"<photo>","questions":{"box":{"type":"box"}},"assets":{"<photo>":{"part":"photo"}},"extension":9007199254740993}`)
+	require.NoError(t, err)
+	part, err = writer.CreateFormFile("photo", "input.png")
+	require.NoError(t, err)
+	image := []byte{0, 255, 128, '\n', 1}
+	_, err = part.Write(image)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	compressor, err := zstd.NewWriter(nil)
+	require.NoError(t, err)
+	compressed := compressor.EncodeAll(body.Bytes(), nil)
+	require.NoError(t, compressor.Close())
+	for _, composite := range []bool{false, true} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/systemone", bytes.NewReader(compressed))
+		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		c.Request.Header.Set("Content-Encoding", "zstd")
+		c.Request.Header.Set(systemone.ImagesHeader, "true")
+		key := compositeMiddlewareTestKey()
+		if composite {
+			service := testkit.NewService(nil, nil, nil, nil, nil, nil, nil)
+			service.Start()
+			_, err = resolveCompositeAPIKeyRequest(c, service, key)
+			require.NoError(t, err)
+			key.ModelMapping = map[string]string{"alias": "jev-1.14.0"}
+		} else {
+			key.ModelMapping = map[string]string{"GPT/alias": "jev-1.14.0"}
+		}
+		gatewayhttp.ApplyAPIKeyModelRedirect(c, key)
+		forwarded, err := gatewayhttp.ReadAndRestoreRequestBody(c.Request)
+		require.NoError(t, err)
+		parsed, err := systemone.ParsePayload(forwarded, c.Request.Header.Get("Content-Type"))
+		require.NoError(t, err)
+		require.Equal(t, "jev-1.14.0", parsed.Model)
+		require.Empty(t, c.Request.Header.Get("Content-Encoding"))
+		require.Equal(t, "true", c.Request.Header.Get(systemone.ImagesHeader))
+		require.Contains(t, string(forwarded), `"extension":9007199254740993`)
+		reader, err := c.Request.MultipartReader()
+		require.NoError(t, err)
+		_, err = reader.NextPart()
+		require.NoError(t, err)
+		photo, err := reader.NextPart()
+		require.NoError(t, err)
+		actualImage, err := io.ReadAll(photo)
+		require.NoError(t, err)
+		require.Equal(t, image, actualImage)
+	}
 }
 
 // TestResolveCompositeAPIKeyRequestMultipart selects a group from an image-edit

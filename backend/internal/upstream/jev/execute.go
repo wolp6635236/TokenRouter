@@ -41,6 +41,12 @@ type Target struct {
 	// model name.
 	URL, Model string
 	Token      string `json:"-"` // provider API credential
+	// ContentType describes the supplied Body, including its multipart boundary.
+	// Empty means application/json for existing scheduled and administrator probes.
+	ContentType string
+	// ImagesOptIn carries an explicitly supplied image header before provider
+	// overrides. Empty leaves experimental image support disabled by this caller.
+	ImagesOptIn string
 	// ReadLimit bounds buffered response bytes. Nonpositive values select
 	// sixteen MiB; the read reserves an extra byte to detect an oversized
 	// body. Callers keep positive limits below MaxInt64 so that size probe
@@ -52,7 +58,7 @@ type Target struct {
 	// was acquired.
 	Enter func() (func(), error)
 	// ApplyHeaders optionally edits the outbound headers after Bearer and
-	// JSON headers are set, so permitted overrides use the caller's policy.
+	// content and explicit image headers are set, so overrides use the caller's policy.
 	ApplyHeaders func(http.Header)
 	// Do sends the request. A nil error supplies a nonnil response with a
 	// usable body, which Execute closes after bounded reading and output.
@@ -122,7 +128,11 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 	if !ok || target == nil || target.Do == nil || input.Protocol != protocol.ProtocolSystemOne {
 		return result, errors.New("SystemOne target is not configured")
 	}
-	request, err := systemone.ParseRequest(input.Body)
+	contentType := target.ContentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	request, err := systemone.ParsePayload(input.Body, contentType)
 	if err != nil {
 		return result, err
 	}
@@ -146,8 +156,11 @@ func (Executor) Execute(ctx context.Context, input upstream.AttemptInput, sink u
 		return result, err
 	}
 	req.Header.Set("Authorization", "Bearer "+target.Token)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
+	if target.ImagesOptIn != "" {
+		req.Header.Set(systemone.ImagesHeader, target.ImagesOptIn)
+	}
 	if target.ApplyHeaders != nil {
 		target.ApplyHeaders(req.Header)
 	}

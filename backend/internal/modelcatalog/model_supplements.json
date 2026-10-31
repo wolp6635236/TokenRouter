@@ -127,18 +127,19 @@
     "input_cost_per_token": 4.2e-08,
     "output_cost_per_token": 0,
     "source_url": "https://docs.typesafe.ai/models",
-    "verified_at": "2026-10-11",
+    "verified_at": "2026-10-31",
     "attributes": {
       "display_name": "Jev",
       "context": 64000,
       "input_modalities": [
-        "text"
+        "text",
+        "image"
       ],
       "output_modalities": [
         "text"
       ],
       "structured_output": true,
-      "attachment": false
+      "attachment": true
     }
   },
   "jev-preview": {
@@ -146,18 +147,19 @@
     "input_cost_per_token": 4.2e-08,
     "output_cost_per_token": 0,
     "source_url": "https://docs.typesafe.ai/models",
-    "verified_at": "2026-10-11",
+    "verified_at": "2026-10-31",
     "attributes": {
       "display_name": "Jev Preview",
       "context": 64000,
       "input_modalities": [
-        "text"
+        "text",
+        "image"
       ],
       "output_modalities": [
         "text"
       ],
       "structured_output": true,
-      "attachment": false
+      "attachment": true
     }
   },
   "jev-1.13.0": {
@@ -165,18 +167,39 @@
     "input_cost_per_token": 4.2e-08,
     "output_cost_per_token": 0,
     "source_url": "https://docs.typesafe.ai/models",
-    "verified_at": "2026-10-11",
+    "verified_at": "2026-10-31",
     "attributes": {
       "display_name": "Jev 1.13",
       "context": 64000,
       "input_modalities": [
-        "text"
+        "text",
+        "image"
       ],
       "output_modalities": [
         "text"
       ],
       "structured_output": true,
-      "attachment": false
+      "attachment": true
+    }
+  },
+  "jev-1.14.0": {
+    "provider": "typesafe",
+    "input_cost_per_token": 4.2e-08,
+    "output_cost_per_token": 0,
+    "source_url": "https://docs.typesafe.ai/models",
+    "verified_at": "2026-10-31",
+    "attributes": {
+      "display_name": "Jev 1.14",
+      "context": 64000,
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "structured_output": true,
+      "attachment": true
     }
   }
 }

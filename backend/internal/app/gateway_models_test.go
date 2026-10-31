@@ -31,8 +31,8 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/upstream/gemini"
 )
 
-// Gateway model lists reflect configured provider candidates, group policy, and
-// Key aliases rather than metadata availability alone. The scenarios exercise
+// gateway_models_test.go checks configured provider candidates, group policy,
+// and Key aliases in gateway model lists. The scenarios exercise
 // mixed platforms, custom list filtering/order, composite prefixes and
 // subscription access, native Gemini display, and local model routes with
 // protocol-specific response fields.
@@ -687,13 +687,14 @@ func TestGatewayModels_QoderUsesExecutionModels(t *testing.T) {
 
 // TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild lists one
 // mapped Grok 4.5 candidate. It checks the shared reasoning helper observes
-// low/medium/high choices with high marked as the default and compatible
+// low/medium/high/xhigh choices with high marked as the default and compatible
 // display fields.
 func TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild(t *testing.T) {
 	assertGrokGatewayReasoningEfforts(t, 4409, "grok-4.5", []gatewayReasoningEffortOptionForTest{
 		{Value: "low", Label: "Low"},
 		{Value: "medium", Label: "Medium"},
 		{Value: "high", Label: "High", Default: true},
+		{Value: "xhigh", Label: "xHigh"},
 	})
 }
 

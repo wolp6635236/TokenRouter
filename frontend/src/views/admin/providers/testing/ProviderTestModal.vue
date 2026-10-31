@@ -149,7 +149,7 @@
           v-if="isDecisionProvider"
           :key="`${provider?.id}-${show}`"
           :disabled="busy"
-          @change="decisionPayload = $event"
+          @change="updateDecisionForm"
         />
         <TextArea
           v-else-if="!isCompactTestMode"
@@ -171,8 +171,14 @@
           v-if="testScope === 'single'"
           :run="singleRun"
           :decision="isDecisionProvider"
+          :decision-input="decisionInput"
         />
-        <ProviderTestBatchPanel v-else :batch="batch" :decision="isDecisionProvider" />
+        <ProviderTestBatchPanel
+          v-else
+          :batch="batch"
+          :decision="isDecisionProvider"
+          :decision-input="decisionInput"
+        />
       </section>
     </div>
 
@@ -263,7 +269,8 @@ import type { ClaudeModel } from '@/api/models.types'
 import ProviderTestBatchPanel from './ProviderTestBatchPanel.vue'
 import ProviderTestResultView from './ProviderTestResultView.vue'
 import SystemOneTestForm from './SystemOneTestForm.vue'
-import type { SystemOneTestPayload } from './systemOneTest'
+import type { SystemOneTestPayload, SystemOneTestPreview } from './systemOneTest'
+import { systemOneInputKey } from './systemOneTest'
 import {
   defaultProviderTestProtocol,
   providerTestProtocolPlan,
@@ -391,6 +398,18 @@ const hasProviderBrandIcon = computed(() =>
  */
 const isDecisionProvider = computed(() => testProtocol.value === 'systemone')
 const decisionPayload = ref<SystemOneTestPayload | null>(null)
+const decisionPreview = ref<SystemOneTestPreview>()
+const decisionInput = computed(() => systemOneInputKey(decisionPayload.value))
+
+/**
+ * updateDecisionForm captures the current validated decision and its browser preview metadata.
+ * The preview travels separately from upstream JSON and is copied by each single or batch run
+ * when it starts, preserving the selected image for completed Box answers.
+ */
+function updateDecisionForm(payload: SystemOneTestPayload | null, preview: SystemOneTestPreview) {
+  decisionPayload.value = payload
+  decisionPreview.value = preview
+}
 
 /**
  * Platform predicates control compact testing and native protocol choices without modifying the
@@ -641,6 +660,7 @@ const buildRequestBody = (model: string): ProviderTestRequestBody => {
       model_id: model,
       test_type: 'decision',
       systemone: decisionPayload.value,
+      decisionPreview: decisionPreview.value,
     }
   }
   const body: ProviderTestRequestBody = {

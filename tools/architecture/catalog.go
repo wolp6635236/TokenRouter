@@ -243,7 +243,7 @@ internal/config internal/egress internal/gateway internal/gateway/httpapi intern
 internal/gateway/provider/selection internal/gateway/requeststate internal/gateway/session
 internal/gateway/testkit internal/gateway/tierpolicy internal/identity/testkit
 internal/infra/httpclient/... internal/notification internal/ops internal/payment internal/promotion
-internal/protocol internal/routing internal/routing/accessview internal/routing/capability
+internal/protocol internal/protocol/systemone internal/routing internal/routing/accessview internal/routing/capability
 internal/routing/httpapi/dto internal/scheduler internal/settings/httpapi internal/settings/testkit
 internal/site internal/team internal/upstream/anthropic internal/upstream/openai internal/usage
 internal/usage/httpapi internal/usage/httpapi/ports`},
@@ -390,8 +390,15 @@ internal/upstream/zhipu/...`, Tests: ""},
 	}
 
 	pureFileStandard = map[string]string{
-		"internal/pkg/locale/locale.go": "embed golang.org/x/text/language",
-		"internal/pkg/locale/errors.go": "embed unicode",
+		// SystemOne parses buffered multipart envelopes without acquiring files or
+		// network connections; only the codec and its fixture builder need MIME helpers.
+		"internal/protocol/systemone/payload.go":      "mime mime/multipart",
+		"internal/protocol/systemone/payload_test.go": "mime/multipart",
+		// Deterministic reference fixtures and allocation regression checks need
+		// random sampling and runtime counters in this test file only.
+		"internal/protocol/systemone/references_test.go": "math/rand/v2 runtime",
+		"internal/pkg/locale/locale.go":                  "embed golang.org/x/text/language",
+		"internal/pkg/locale/errors.go":                  "embed unicode",
 		// 请求取消测试使用虚拟时钟检查截止时间和异步回调。
 		"internal/pkg/requestcontext/context_test.go":          "testing/synctest",
 		"internal/gateway/clientmeta/claude_validator_test.go": "net/http net/http/httptest os",
@@ -410,6 +417,9 @@ internal/upstream/zhipu/...`, Tests: ""},
 	// File permissions bind imports to reviewed source files; neighboring files
 	// and target subpackages do not inherit these permissions.
 	filePermissions = []filePermission{
+		// The composite-key scenario reads the actual SystemOne envelope after
+		// middleware rewriting, keeping its assertions aligned with the protocol parser.
+		{Scope: "internal/server", Imports: "internal/protocol/systemone", Files: "middleware/api_key_model_scenario_test.go"},
 		// OAuth registration hashes confidential-client secrets; revocation tests verify their authentication behavior.
 		{Scope: "internal/identity/provider", Imports: "golang.org/x/crypto/bcrypt", Files: "mcp_oauth_clients.go mcp_oauth_test.go"},
 		// Protocol acceptance uses migrated PostgreSQL and the production account reader on one connection pool.

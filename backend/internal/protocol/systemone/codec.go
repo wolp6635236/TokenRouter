@@ -17,8 +17,8 @@ import (
 // SystemOne decisions return typed answers separately from token accounting.
 // Valid answers remain deliverable when usage is missing or malformed, while
 // valid zero usage still establishes accounting evidence. Request validation
-// reads the modeled fields and forwarding patches the original JSON body so
-// unknown extensions remain outside that typed subset.
+// reads the modeled fields while payload.go preserves the original JSON and
+// multipart images, so unknown extensions remain outside that typed subset.
 //
 // Moderation uses decoded state and modeled question descriptions, including
 // JSON keys, with strings decoded once and numbers retained as json.Number.
@@ -31,8 +31,8 @@ import (
 // Question holds the decision type and raw descriptions used by request validation.
 type Question struct {
 	// Type chooses Criteria's shape: noul accepts optional true/false descriptions,
-	// choice accepts an option object, and score accepts a level array.
-	// Instructions remains a required string, object, or array for every type.
+	// choice accepts an option object, score accepts a level array, and box omits
+	// criteria. Instructions may be omitted or null when the question permits it.
 	Type         string          `json:"type"`         // decision question type
 	Instructions json.RawMessage `json:"instructions"` // raw decision instructions
 	Criteria     json.RawMessage `json:"criteria"`     // type-specific criteria JSON
@@ -43,6 +43,7 @@ type Request struct {
 	Model     string              `json:"model"`     // requested model identifier
 	State     json.RawMessage     `json:"state"`     // raw state description
 	Questions map[string]Question `json:"questions"` // ID-keyed decision questions
+	Assets    map[string]Asset    `json:"assets"`    // reference-keyed image assets
 	Stream    bool                `json:"stream"`    // rejected streaming selection
 }
 
@@ -56,17 +57,38 @@ type Response struct {
 	HasUsage bool
 }
 
-// ParseRequest validates a synchronous request with a nonblank model and
-// a nonempty question map. State and instructions accept
-// JSON strings, objects, or arrays; streaming and unsupported decision labels fail.
-//
-// Noul criteria can be omitted or contain true/false keys, choice needs 1-255
-// options and permits null option descriptions, and score needs 2-10 description
-// levels. Returned fields retain their supplied spelling rather than trimming
-// model or type values. Errors can return partially decoded request data, so
-// callers use the request after success and retain raw JSON for forwarding extras.
+// boxCoordinates retains presence separately from valid zero-valued image edges.
+type boxCoordinates struct {
+	// Top, Bottom, Left, and Right retain field presence independently from their
+	// numeric values. A missing or null edge must not become a valid zero boundary.
+	Top    *float64 `json:"top"`    // normalized top edge
+	Bottom *float64 `json:"bottom"` // normalized bottom edge
+	Left   *float64 `json:"left"`   // normalized left edge
+	Right  *float64 `json:"right"`  // normalized right edge
+}
+
+// valid reports whether all four edges form a nonempty normalized rectangle.
+// Missing edges and nil boxes are invalid, while zero and one remain valid
+// image boundaries when the opposing edge establishes a positive extent.
+func (b *boxCoordinates) valid() bool {
+	return b != nil && probability(b.Top) && probability(b.Bottom) &&
+		probability(b.Left) && probability(b.Right) && *b.Top < *b.Bottom && *b.Left < *b.Right
+}
+
+// ParseRequest validates a synchronous JSON request and its inline images.
+// Multipart callers use ParsePayload so asset part references can be checked
+// against their files. Returned descriptions retain their JSON representation;
+// callers forward the original body to preserve unknown extension fields.
 // @project-doc docs/interfaces/jev_upstream.md#systemone_execution
 func ParseRequest(body []byte) (Request, error) {
+	return ParsePayload(body, "application/json")
+}
+
+// parseRequest validates the JSON decision envelope before checking its assets.
+// Instructions may be omitted or null; noul then needs a nonnull criterion.
+// Choice requires 1-255 alternatives and score requires 2-10 ordered levels.
+// Raw descriptions and unknown fields remain available in the caller's body.
+func parseRequest(body []byte) (Request, error) {
 	var request Request
 	if err := json.Unmarshal(body, &request); err != nil {
 		return request, errors.New("invalid SystemOne JSON request")
@@ -84,14 +106,17 @@ func ParseRequest(body []byte) (Request, error) {
 		return request, errors.New("questions must be a non-empty object")
 	}
 	for id, question := range request.Questions {
-		if !description(question.Instructions, false) {
-			return request, fmt.Errorf("questions[%q].instructions must be a string, object, or array", id)
+		if len(question.Instructions) > 0 && !description(question.Instructions, true) {
+			return request, fmt.Errorf("questions[%q].instructions must be a string, object, array, or null", id)
 		}
 		switch question.Type {
 		case "noul", "choice":
 			// A noul decision can rely on its instructions without a criteria
 			// object, allowing the minimal availability probe to use the same request validator.
-			if question.Type == "noul" && len(question.Criteria) == 0 {
+			if question.Type == "noul" && (len(question.Criteria) == 0 || bytes.Equal(bytes.TrimSpace(question.Criteria), []byte("null"))) {
+				if !description(question.Instructions, false) {
+					return request, fmt.Errorf("questions[%q] requires instructions or a criterion", id)
+				}
 				continue
 			}
 			var criteria map[string]json.RawMessage
@@ -104,13 +129,18 @@ func ParseRequest(body []byte) (Request, error) {
 			if question.Type == "choice" && (len(criteria) == 0 || len(criteria) > 255) {
 				return request, fmt.Errorf("questions[%q].criteria requires 1 to 255 options", id)
 			}
+			hasDescription := description(question.Instructions, false)
 			for name, value := range criteria {
 				if question.Type == "noul" && name != "true" && name != "false" {
 					return request, fmt.Errorf("questions[%q].criteria keys must be true or false", id)
 				}
-				if !description(value, question.Type == "choice") {
+				if !description(value, true) {
 					return request, fmt.Errorf("questions[%q].criteria contains an invalid description", id)
 				}
+				hasDescription = hasDescription || description(value, false)
+			}
+			if question.Type == "noul" && !hasDescription {
+				return request, fmt.Errorf("questions[%q] requires instructions or a criterion", id)
 			}
 		case "score":
 			var levels []json.RawMessage
@@ -121,12 +151,19 @@ func ParseRequest(body []byte) (Request, error) {
 				return request, fmt.Errorf("questions[%q].criteria requires 2 to 10 levels", id)
 			}
 			for _, value := range levels {
-				if !description(value, false) {
+				if !description(value, true) {
 					return request, fmt.Errorf("questions[%q].criteria contains an invalid description", id)
 				}
 			}
+		case "box":
+			if len(request.Assets) == 0 {
+				return request, fmt.Errorf("questions[%q] requires an image asset", id)
+			}
+			if len(question.Criteria) > 0 && !bytes.Equal(bytes.TrimSpace(question.Criteria), []byte("null")) {
+				return request, fmt.Errorf("questions[%q].criteria is not supported for box", id)
+			}
 		default:
-			return request, fmt.Errorf("questions[%q].type must be noul, choice, or score", id)
+			return request, fmt.Errorf("questions[%q].type must be noul, choice, score, or box", id)
 		}
 	}
 	return request, nil
@@ -212,7 +249,9 @@ func appendModerationText(content *strings.Builder, raw json.RawMessage) {
 // ParseResponse checks response model and answers against the supplied question
 // map, then reads usage independently. Callers pass their validated request
 // questions; malformed envelopes, mismatched answer counts/types, or missing
-// selected answer fields return an error before accounting is accepted.
+// selected answer fields return an error before accounting is accepted. Box
+// confidence must be present but may be null; its four edges must form a
+// nonempty rectangle within the normalized image bounds.
 //
 // Noul requires a probability in [0,1]. Choice and score require confidence
 // in that range and a nonempty probability map, but selected choice membership,
@@ -230,15 +269,16 @@ func ParseResponse(body []byte, questions map[string]Question) (Response, error)
 		return result, errors.New("invalid SystemOne response")
 	}
 	for id, question := range questions {
-		// Type selects Noul, Choice, or Score. Confidence and Probabilities
-		// are required for choice/score; Legend is shape-checked for score.
+		// Type selects Noul, Choice, Score, or Box. Confidence and Probabilities
+		// are required for choice/score; Box accepts explicit null confidence.
 		// Pointer fields distinguish missing values from supplied zero values.
 		var answer struct {
 			Type          string             `json:"type"`          // returned decision type
 			Noul          *float64           `json:"noul"`          // optional noul probability
 			Choice        *string            `json:"choice"`        // optional selected choice
 			Score         *float64           `json:"score"`         // optional continuous score
-			Confidence    *float64           `json:"confidence"`    // optional confidence probability
+			Confidence    json.RawMessage    `json:"confidence"`    // nullable confidence JSON
+			Box           *boxCoordinates    `json:"box"`           // normalized image rectangle
 			Probabilities map[string]float64 `json:"probabilities"` // returned probability map
 			Legend        json.RawMessage    `json:"legend"`        // raw score descriptions
 		}
@@ -250,9 +290,11 @@ func ParseResponse(body []byte, questions map[string]Question) (Response, error)
 		case "noul":
 			valid = probability(answer.Noul)
 		case "choice":
-			valid = answer.Choice != nil && probability(answer.Confidence) && len(answer.Probabilities) > 0
+			valid = answer.Choice != nil && confidence(answer.Confidence, false) && len(answer.Probabilities) > 0
 		case "score":
-			valid = answer.Score != nil && probability(answer.Confidence) && len(answer.Probabilities) > 0 && description(answer.Legend, false)
+			valid = answer.Score != nil && confidence(answer.Confidence, false) && len(answer.Probabilities) > 0 && description(answer.Legend, false)
+		case "box":
+			valid = answer.Box.valid() && confidence(answer.Confidence, true)
 		}
 		if !valid {
 			return result, errors.New("invalid SystemOne answer values")
@@ -277,6 +319,17 @@ func ParseResponse(body []byte, questions map[string]Question) (Response, error)
 // range. Missing values and comparisons outside that range return false,
 // letting answer validation distinguish absent or unusable probability evidence.
 func probability(value *float64) bool { return value != nil && *value >= 0 && *value <= 1 }
+
+// confidence accepts a probability or, when nullable, an explicit JSON null.
+// Missing fields remain invalid even for Box, whose upstream schema requires
+// confidence to be present while allowing models to withhold its value.
+func confidence(raw json.RawMessage, nullable bool) bool {
+	if nullable && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return true
+	}
+	var value *float64
+	return json.Unmarshal(raw, &value) == nil && probability(value)
+}
 
 // ProbeBody builds the single-noul request used by provider tests and scheduled
 // probes. Empty state selects the service-availability sentence; nonempty state

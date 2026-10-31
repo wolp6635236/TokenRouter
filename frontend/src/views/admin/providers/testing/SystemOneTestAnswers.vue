@@ -30,7 +30,7 @@
           </p>
         </div>
       </div>
-      <div class="grid gap-4 sm:grid-cols-3">
+      <div class="grid gap-4 sm:grid-cols-2">
         <div
           v-for="type in questionTypes"
           :key="type"
@@ -76,7 +76,13 @@
             {{ row.title }}
           </h4>
         </header>
-        <dl class="grid grid-cols-2 gap-4">
+        <SystemOneBoxAnswer
+          v-if="row.answer.type === 'box' && row.answer.box"
+          :box="row.answer.box"
+          :confidence="row.answer.confidence"
+          :image="preview?.images[preview.boxImages[row.id]]"
+        />
+        <dl v-else class="grid grid-cols-2 gap-4">
           <div class="min-w-0">
             <dt class="text-xs text-gray-500 dark:text-dark-400">{{ row.primaryLabel }}</dt>
             <dd class="mt-1">
@@ -125,7 +131,10 @@
             />
           </div>
         </div>
-        <div v-else class="space-y-3">
+        <div
+          v-else-if="row.answer.type === 'choice' || row.answer.type === 'score'"
+          class="space-y-3"
+        >
           <div class="text-xs font-medium text-gray-500 dark:text-dark-400">
             {{
               t(
@@ -188,12 +197,17 @@ import { computed, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import SettingsNotice from '@/components/common/settings/SettingsNotice.vue'
 import { Icon } from '@/components/icons'
-import type { SystemOneTestPayload, SystemOneTestResult } from './systemOneTest'
+import type {
+  SystemOneTestPayload,
+  SystemOneTestPreview,
+  SystemOneTestResult,
+} from './systemOneTest'
+import SystemOneBoxAnswer from './SystemOneBoxAnswer.vue'
 
 /**
  * SystemOneTestAnswers.vue explains decision results using the question definitions captured
  * when a request started. Returned answers retain submission order for known identifiers, with
- * additional response identifiers appended. Noul, choice, and score values use separate labels
+ * additional response identifiers appended. Noul, choice, score, and box values use separate labels
  * and display rules.
  *
  * Score descriptions prefer a matching response legend entry and then the submitted criteria,
@@ -214,17 +228,18 @@ const props = defineProps<{
    * leave returned identifiers as the available labels.
    */
   questions?: SystemOneTestPayload['questions'] | null
+  preview?: SystemOneTestPreview | null // submitted image and target snapshot
   usageValid?: boolean // decision token accounting validation flag
   running?: boolean // decision request is connecting
 }>()
 /**
  * Translation and generated label identity support answer headings, while fixed type names
- * describe the three supported decision result categories.
+ * describe the four supported decision result categories.
  */
 const { t } = useI18n()
 const labelId = useId()
-const questionTypes = ['noul', 'choice', 'score'] as const
-const typeNames = { noul: 'Noul', choice: 'Choice', score: 'Score' }
+const questionTypes = ['noul', 'choice', 'score', 'box'] as const
+const typeNames = { noul: 'Noul', choice: 'Choice', score: 'Score', box: 'Box' }
 /**
  * Answer represents one keyed SystemOne response entry rendered by the answer view.
  */
@@ -234,11 +249,26 @@ type Answer = SystemOneTestResult['answers'][string]
  */
 type Question = SystemOneTestPayload['questions'][string]
 /**
+ * previewInstructions removes the form's generated image suffix from the visible Box title.
+ * Only the exact submitted target suffix is removed; ordinary instructions retain their text,
+ * while the image caption supplies the human-readable filename beside the rendered result.
+ */
+function previewInstructions(
+  question: Question | undefined,
+  reference: string | undefined,
+): string {
+  const instructions = question?.instructions ?? ''
+  const suffix = reference ? `\nImage: ${reference}` : ''
+  return suffix && instructions.endsWith(suffix)
+    ? instructions.slice(0, -suffix.length)
+    : instructions
+}
+/**
  * percent formats a probability fraction as a percentage with two decimal places. Undefined
  * values use a placeholder, preserving visible zero probabilities and confidence values in
  * decision answers.
  */
-const percent = (value: number | undefined) =>
+const percent = (value: number | null | undefined) =>
   // Probability fractions become percentages; absent observations retain a placeholder.
   value == null ? '-' : `${(value * 100).toFixed(2)}%`
 /**
@@ -305,7 +335,10 @@ const rows = computed(() => {
     return {
       id,
       answer,
-      title: question?.instructions || id,
+      title:
+        (answer.type === 'box' && previewInstructions(question, props.preview?.boxImages[id])) ||
+        question?.instructions ||
+        id,
       primaryLabel: t(
         noul
           ? 'admin.providers.decisionTest.trueProbability'

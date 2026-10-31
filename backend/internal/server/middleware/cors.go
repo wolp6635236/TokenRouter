@@ -82,6 +82,7 @@ func CORS(cfg httpconfig.CORSConfig) gin.HandlerFunc {
 		"Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization", "X-Creative-Workspace-ID", "Idempotency-Key", "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID",
 		"accept", "origin", "Cache-Control", "X-Requested-With", "X-API-Key", "X-Admin-UI-Request", "X-User-UI-Request",
 		"X-Request-ID", "X-Client-Request-ID",
+		"TypeSafe-Danger-Zone-Images",
 	}
 	// Include the SDK metadata names in preflight permissions so browser clients
 	// can send the enumerated x-stainless properties alongside their API request.

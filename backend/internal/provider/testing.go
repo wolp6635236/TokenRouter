@@ -88,6 +88,9 @@ type TestRequest struct {
 	// input requires a provider whose native protocols include SystemOne, and the
 	// caller keeps its bytes stable through execution.
 	SystemOne json.RawMessage
+	// SystemOneImages carries the caller's explicit TypeSafe image opt-in header.
+	// Scheduled probes leave it empty and retain their text-only request behavior.
+	SystemOneImages string
 
 	ProviderID int64 // selected provider record identifier
 	// GroupID selects the model attribute profile for this test. Zero uses

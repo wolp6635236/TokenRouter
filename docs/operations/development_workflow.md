@@ -280,13 +280,14 @@ Testcontainers 的启动函数可能同时返回已创建的容器和错误。�
 | 任意文件 | `git diff --check` |
 | `backend/**/*.go` | Go 格式、arch-go，改动包的 golangci-lint（`--new-from-rev`，带 integration 标签）和 `go test` |
 | `backend/go.mod`、`backend/go.sum` | 同上，lint 和测试范围扩大到整个模块 |
+| `tools/architecture/` | 重新扫描后端源码，执行架构和文件布局检查，禁用 Go 测试结果缓存 |
 | `frontend/src`、`frontend/public` | 全量前端格式、ESLint、注释、依赖、UI token、类型和检查脚本测试；应用测试使用 `vitest related`，删除源文件时运行完整 Vitest |
 | `frontend` 下的其他文件 | 完整前端静态检查、检查脚本测试和 Vitest；package、锁文件或 workspace 配置改动时先冻结安装 |
 | `backend/internal/pkg/locale/*.json` | 引用这些文件的前端测试 |
 | `deploy/`、`tools/goreleaser*` | `make test-scripts` |
 | `tools/*.py`、`tools/declorder/`、`.githooks/` | `make test-tools` |
 
-快检使用 Go 测试缓存，没有改动的包直接复用上次结果。集成测试、前端生产构建和改动包的下游使用方由 CI 检查。快检失败会阻止推送，修复后重新推送；确需跳过时使用 `git push --no-verify`。手动执行 `make check` 时，基准默认取上游分支的共同祖先，也可以传 `BASE=<提交>`。
+包级单元测试使用 Go 测试缓存，没有改动的包直接复用上次结果。架构测试跨模块读取后端源码，以 `-count=1` 每次重新扫描；架构规则自身变化也会触发这项检查。集成测试、前端生产构建和改动包的下游使用方由 CI 检查。快检失败会阻止推送，修复后重新推送；确需跳过时使用 `git push --no-verify`。手动执行 `make check` 时，基准默认取上游分支的共同祖先，也可以传 `BASE=<提交>`。
 
 ### CI
 

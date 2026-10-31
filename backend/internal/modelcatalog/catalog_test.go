@@ -392,7 +392,7 @@ func TestOfflineCatalogFiltering(t *testing.T) {
 		"volcengine-coding-plan/doubao-seed-2.0-lite",
 		"minimax-cn/MiniMax-M3", "minimax-coding-plan/MiniMax-M3",
 		"minimax-cn-coding-plan/MiniMax-M3",
-		"alibaba-cn/qwen2-5-coder-32b-instruct",
+		"alibaba-cn/qwen3-max",
 		"alibaba-coding-plan/qwen3-coder-next", "alibaba-coding-plan-cn/qwen3-coder-next",
 		"alibaba-token-plan/happyhorse-1.1-t2v", "alibaba-token-plan-cn/happyhorse-1.1-t2v",
 		"stepfun-ai/step-3.5-flash", "stepfun-ai-step-plan/step-3.5-flash", "stepfun-step-plan/step-3.5-flash",

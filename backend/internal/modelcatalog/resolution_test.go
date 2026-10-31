@@ -89,7 +89,8 @@ func TestViewResolvePlatformCapabilities(t *testing.T) {
 			require.Equal(t, 65000, *result.Attributes.OutputLimit)
 		}},
 		{"jev", Target{Platform: "jev", Model: "jev-latest"}, func(t *testing.T, result Resolution) {
-			require.Equal(t, valuePointer(true), result.Attributes.StructuredOutput)
+			require.Equal(t, []string{"text", "image"}, *result.Attributes.InputModalities)
+			require.Equal(t, valuePointer(true), result.Attributes.Attachment)
 			require.Equal(t, 64000, *result.Attributes.Context)
 		}},
 		{"unknown", Target{Platform: "openai", Model: "gpt-99-my-alias"}, func(t *testing.T, result Resolution) {
@@ -190,7 +191,7 @@ func TestViewPlatformRulesDoNotInferFutureModels(t *testing.T) {
 	require.NoError(t, err)
 	catalog, err := Parse(body)
 	require.NoError(t, err)
-	require.Equal(t, "ed06875cb5d654ed5df1e3cce6f764aa9ab19752a0f8b692de521897f60394a3", catalog.Version)
+	require.Equal(t, "ed1c21db1a80af0b3206f458c0823357c9d7dd332f81557e74d5d6e83d4324f4", catalog.Version)
 	for _, target := range []Target{
 		{Platform: "openai", Model: "gpt-6.2-sol"},
 		{Platform: "grok", Model: "grok-latest"},

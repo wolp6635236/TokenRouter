@@ -60,6 +60,19 @@
         </div>
       </div>
 
+      <p
+        v-if="
+          decision &&
+          run.decisionResult &&
+          decisionInput !== undefined &&
+          decisionInput !== run.decisionInput
+        "
+        class="shrink-0 px-4 py-2 text-xs text-gray-500 dark:text-dark-400"
+        role="status"
+        data-testid="decision-stale-input"
+      >
+        {{ t('admin.providers.decisionTest.inputChanged') }}
+      </p>
       <div
         ref="outputRef"
         class="min-h-0 flex-1 overflow-auto overscroll-contain p-4"
@@ -77,6 +90,7 @@
             v-if="decision && run.status !== 'error'"
             :result="run.decisionResult"
             :questions="run.decisionQuestions"
+            :preview="run.decisionPreview"
             :usage-valid="run.decisionUsageValid"
             :running="running"
           />
@@ -215,6 +229,8 @@ import SystemOneTestAnswers from './SystemOneTestAnswers.vue'
 const props = defineProps<{
   run: ProviderTestRun // shared reactive test output
   decision?: boolean // render decision answer mode
+  /** Current draft identity labels retained results when the administrator edits images, state, or questions. */
+  decisionInput?: string | null
 }>()
 
 /**

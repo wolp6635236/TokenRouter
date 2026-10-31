@@ -92,7 +92,8 @@ func (s *SystemOneExecutor) Forward(ctx context.Context, c *gin.Context, target 
 	if err != nil {
 		return result, err
 	}
-	request, err := systemone.ParseRequest(body)
+	contentType := c.GetHeader("Content-Type")
+	request, err := systemone.ParsePayload(body, contentType)
 	if err != nil {
 		return result, err
 	}
@@ -120,7 +121,7 @@ func (s *SystemOneExecutor) Forward(ctx context.Context, c *gin.Context, target 
 	if err != nil {
 		return result, err
 	}
-	body, err = systemone.ReplaceModel(body, mapped)
+	body, contentType, err = systemone.ReplaceRequestModel(body, contentType, mapped)
 	if err != nil {
 		return result, err
 	}
@@ -133,6 +134,7 @@ func (s *SystemOneExecutor) Forward(ctx context.Context, c *gin.Context, target 
 	t := &jev.Target{
 		ProviderID: selected.Record.ID, URL: jev.EndpointURL(base, "systemone"), Model: mapped,
 		Token: selected.View().GetCredential("api_key"), ReadLimit: s.ReadLimit, Enter: s.Enter,
+		ContentType: contentType, ImagesOptIn: c.GetHeader(systemone.ImagesHeader),
 		ApplyHeaders: func(h http.Header) {
 			gatewayprovider.BindExecutionHeaders(selected)(h)
 			gatewayprovider.FinalizeRequestHeaders(selected, jev.EndpointURL(base, "systemone"), clientHeaderReader(c), h)

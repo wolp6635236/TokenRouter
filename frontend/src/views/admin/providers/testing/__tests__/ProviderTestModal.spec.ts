@@ -273,7 +273,9 @@ describe('ProviderTestModal', () => {
     expect(wrapper.get('[data-testid="decision-answer-question_2"]').text()).toContain(
       'Evaluate this state',
     )
+    expect(wrapper.find('[data-testid="decision-stale-input"]').exists()).toBe(false)
     await wrapper.get('[data-testid="decision-instructions-1"]').setValue('A different question')
+    expect(wrapper.get('[data-testid="decision-stale-input"]').text()).toContain('inputChanged')
     expect(wrapper.get('[data-testid="decision-answer-question_2"]').text()).not.toContain(
       'A different question',
     )

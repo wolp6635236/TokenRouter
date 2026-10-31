@@ -1,6 +1,11 @@
 <template>
   <div class="flex min-h-0 flex-1 flex-col gap-4" data-testid="provider-batch-test">
-    <ProviderTestResultView v-if="batch.detailRow" :run="batch.detailRow.run" :decision="decision">
+    <ProviderTestResultView
+      v-if="batch.detailRow"
+      :run="batch.detailRow.run"
+      :decision="decision"
+      :decision-input="decisionInput"
+    >
       <template #leading>
         <button
           type="button"
@@ -257,6 +262,8 @@ const props = defineProps<{
    */
   batch: UnwrapNestedRefs<ProviderBatchTest>
   decision?: boolean // render SystemOne result details
+  /** Current draft identity can differ from an older batch row's submitted image and question snapshot. */
+  decisionInput?: string | null
 }>()
 
 /**

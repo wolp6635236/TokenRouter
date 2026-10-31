@@ -476,8 +476,11 @@
             :key="group.id"
             class="flex cursor-grab items-center gap-3 rounded-surface border border-gray-200 bg-white p-3 transition-shadow hover:shadow-md active:cursor-grabbing dark:border-dark-600 dark:bg-dark-700"
           >
+            <!-- The icon must not take pointer events: Chromium starts no native
+                 drag when the press lands on the animated SVG, which would leave
+                 this handle area unable to move the row. -->
             <div class="text-gray-400">
-              <Icon name="menu" size="md" />
+              <Icon name="menu" size="md" class="pointer-events-none" />
             </div>
             <div class="flex-1">
               <div class="font-medium text-gray-900 dark:text-white">

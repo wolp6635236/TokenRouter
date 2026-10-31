@@ -45,7 +45,9 @@
           <div
             class="drag-handle mt-3 flex cursor-grab items-center text-gray-300 hover:text-gray-500 active:cursor-grabbing dark:text-dark-600 dark:hover:text-dark-400"
           >
-            <Icon name="grip" size="md" class="h-5 w-5" />
+            <!-- The grip icon must not take pointer events, or a press on it
+                 starts no native drag and the handle cannot move the row. -->
+            <Icon name="grip" size="md" class="pointer-events-none h-5 w-5" />
           </div>
           <div class="min-w-0 flex-1">
             <ProviderCard

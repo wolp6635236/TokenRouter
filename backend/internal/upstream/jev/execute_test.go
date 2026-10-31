@@ -138,3 +138,38 @@ func TestExecuteHTTPFailureAndResponseLimit(t *testing.T) {
 		require.Equal(t, "https://example.com/v1/systemone", EndpointURL(base, "systemone"))
 	}
 }
+
+// TestExecuteImagesRequiresExplicitHeader sends an image Box to a real local
+// server with absent, explicit, and overridden opt-in. Served boxes keep usage
+// independently of client write errors, including explicit unknown confidence.
+func TestExecuteImagesRequiresExplicitHeader(t *testing.T) {
+	body := []byte(`{"model":"jev-latest","state":"photo","assets":{"photo":{"format":"png","data_base64":"aW1hZ2U="}},"questions":{"box":{"type":"box"}}}`)
+	for _, tc := range []struct {
+		header   string // explicit caller opt-in
+		override string // optional provider override
+		want     string // expected outgoing value
+	}{
+		{"", "", ""}, {"true", "", "true"}, {"true", "false", "false"},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			require.Equal(t, tc.want, req.Header.Get(systemone.ImagesHeader))
+			require.Equal(t, "application/json", req.Header.Get("Content-Type"))
+			actual, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.Equal(t, body, actual)
+			_, err = io.WriteString(w, `{"model":"jev-1.14.0","answers":{"box":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":null}},"usage":{"input_tokens":290,"output_tokens":21}}`)
+			require.NoError(t, err)
+		}))
+		target := &Target{URL: server.URL, Model: "jev-latest", ImagesOptIn: tc.header, Do: http.DefaultClient.Do, ApplyHeaders: func(headers http.Header) {
+			if tc.override != "" {
+				headers.Set(systemone.ImagesHeader, tc.override)
+			}
+		}}
+		result, err := (Executor{}).Execute(t.Context(), upstream.AttemptInput{Protocol: protocol.ProtocolSystemOne, Body: body, Target: target}, &outputProbe{fail: true})
+		require.Error(t, err)
+		require.True(t, result.Served)
+		require.True(t, result.HasUsage)
+		require.Equal(t, 290, result.Usage.InputTokens)
+		server.Close()
+	}
+}

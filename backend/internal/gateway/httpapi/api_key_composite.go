@@ -20,6 +20,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/gateway/modeltrace"
 	"github.com/TokenFlux/TokenRouter/internal/infra/telemetry"
 	infraerrors "github.com/TokenFlux/TokenRouter/internal/pkg/apperror"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/systemone"
 	"github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
 
@@ -305,10 +306,22 @@ func RewriteCompositeGeminiParams(c *gin.Context, actualModel string) {
 }
 
 // CompositeModelFromRequest reads the top-level model from JSON or multipart input.
-// Successful body reading restores bytes for downstream handlers. Missing or empty
-// model values return the composite-prefix-required error; content decoding failures
-// are returned to admission instead of selecting a group.
+// Successful body reading restores bytes for downstream handlers. SystemOne
+// multipart reads the model inside its first request JSON part; other multipart
+// endpoints use a model field. Missing or empty model values return the
+// composite-prefix-required error, while decoding failures stop admission.
 func CompositeModelFromRequest(request *http.Request) (string, error) {
+	if IsSystemOneEndpoint(request.URL.Path) {
+		body, err := ReadAndRestoreRequestBody(request)
+		if err != nil {
+			return "", err
+		}
+		model, err := systemone.RequestModel(body, request.Header.Get("Content-Type"))
+		if err == nil && model == "" {
+			return "", apikey.ErrCompositeKeyPrefixRequired
+		}
+		return model, err
+	}
 	// Use the parsed media type for multipart dispatch; other results take JSON
 	// handling, whose model check supplies the composite admission error when needed.
 	mediaType, _, _ := mime.ParseMediaType(request.Header.Get("Content-Type"))
@@ -327,10 +340,26 @@ func CompositeModelFromRequest(request *http.Request) (string, error) {
 }
 
 // RewriteCompositeRequestModel replaces the request's top-level internal model.
-// Multipart requests are rebuilt through RewriteMultipartModel; JSON rewriting
-// updates the readable body and length. Invalid JSON replacement returns the
-// composite-prefix-required error so admission stops before forwarding.
+// SystemOne rewrites its JSON envelope and preserves multipart image bytes;
+// other multipart endpoints use RewriteMultipartModel. Rebuilt content type,
+// body, and length are installed together after success. Errors leave the
+// restored original body available and stop the caller's model redirection.
 func RewriteCompositeRequestModel(request *http.Request, actualModel string) error {
+	if IsSystemOneEndpoint(request.URL.Path) {
+		body, err := ReadAndRestoreRequestBody(request)
+		if err != nil {
+			return err
+		}
+		body, contentType, err := systemone.ReplaceRequestModel(body, request.Header.Get("Content-Type"), actualModel)
+		if err != nil {
+			return err
+		}
+		// SystemOne stores its model inside the request JSON part, unlike image
+		// generation forms. Install the rebuilt bytes with their matching multipart boundary.
+		request.Header.Set("Content-Type", contentType)
+		SetRequestBody(request, body)
+		return nil
+	}
 	// Use the parsed media type for multipart dispatch; otherwise sjson handles
 	// the body and supplies the replacement error returned to composite admission.
 	mediaType, _, _ := mime.ParseMediaType(request.Header.Get("Content-Type"))

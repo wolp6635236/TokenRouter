@@ -45,6 +45,8 @@
 
 前缀匹配不区分大小写。服务只按第一个 `/` 拆分，因此 `GPT/vendor/model` 的实际模型 ID 是 `vendor/model`。
 
+SystemOne 的 JSON 请求使用顶层 `model`；multipart 请求把带前缀的模型名放在首个 `request` 分段的 JSON `model` 字段中。选组时从对应位置读取并去掉前缀，图片分段保持不变。请求格式和图片启用要求见 [Jev 与 SystemOne](../interfaces/jev_upstream.md#systemone_execution)。
+
 Gemini 原生入口将前缀放在模型 URL 中：
 
 ```text
@@ -58,7 +60,7 @@ POST /v1beta/models/Gemini/gemini-2.5-pro:generateContent
 ## 支持入口
 
 - OpenAI、Anthropic 及兼容入口的 JSON 请求。
-- SystemOne `/v1/systemone` 的 JSON 决策请求。
+- SystemOne `/v1/systemone` 的 JSON 或 multipart 决策请求。
 - 图片生成与编辑的 JSON 或 multipart 请求。
 - 单模型批量图片提交。
 - Gemini `/v1beta/models/<前缀>/<模型>:<动作>` 入口。

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/TokenFlux/TokenRouter/internal/identity/httpapi/authctx"
+	"github.com/TokenFlux/TokenRouter/internal/protocol/systemone"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	response "github.com/TokenFlux/TokenRouter/internal/server/httpx"
 )
@@ -37,7 +38,7 @@ type TestProviderRequest struct {
 	// defaults, and negative identifiers are rejected before streaming begins.
 	GroupID int64 `json:"group_id" binding:"gte=0"`
 	// SystemOne retains the supplied JSON bytes for decision preparation.
-	// TestService restricts any nonempty value, including JSON null, to Jev targets.
+	// TestService restricts any nonempty value to providers with native SystemOne support.
 	SystemOne json.RawMessage `json:"systemone"` // structured decision test input
 	// ModelID is forwarded to the selected target for mapping and default model
 	// selection. Blank input therefore follows that platform's test-model rule.
@@ -108,7 +109,7 @@ func (h *TestHandler) Test(c *gin.Context) {
 	if subject, ok := authctx.GetAuthSubjectFromContext(c); ok {
 		operatorID = &subject.UserID
 	}
-	if err := h.tests.Test(c.Request.Context(), provider.TestRequest{OperatorUserID: operatorID, GroupID: req.GroupID, SystemOne: req.SystemOne, ProviderID: providerID, Model: req.ModelID, Prompt: req.Prompt, Mode: req.Mode, Type: &testType, Protocol: req.Protocol, UserAgent: c.GetHeader("User-Agent"), Originator: c.GetHeader("originator")}, NewTestEventSink(c.Writer)); err != nil {
+	if err := h.tests.Test(c.Request.Context(), provider.TestRequest{OperatorUserID: operatorID, GroupID: req.GroupID, SystemOne: req.SystemOne, SystemOneImages: c.GetHeader(systemone.ImagesHeader), ProviderID: providerID, Model: req.ModelID, Prompt: req.Prompt, Mode: req.Mode, Type: &testType, Protocol: req.Protocol, UserAgent: c.GetHeader("User-Agent"), Originator: c.GetHeader("originator")}, NewTestEventSink(c.Writer)); err != nil {
 		// A failed test cannot justify restoring provider health. Return before
 		// recovery even when the service has already emitted partial output or a failure event.
 		return

@@ -1,13 +1,18 @@
 import { reactive } from 'vue'
 import { buildApiUrl } from '@/api/client'
 import { ADMIN_UI_REQUEST_HEADER } from '@/api/adminUIRequest'
-import type { SystemOneTestPayload, SystemOneTestResult } from './systemOneTest'
+import type {
+  SystemOneTestPayload,
+  SystemOneTestPreview,
+  SystemOneTestResult,
+} from './systemOneTest'
+import { systemOneInputKey } from './systemOneTest'
 import type { ProviderTestProtocol } from './providerTestProtocols'
 
 /**
  * providerTestRun.ts collects one provider connection test into reactive state shared by the
  * single-model dialog and batch detail view. Each request starts with cleared output and a
- * copied decision-question definition. Timing uses the browser performance clock, while
+ * copied decision questions and image previews. Timing uses the browser performance clock, while
  * content, images, and completion events arrive independently from the server.
  *
  * The first terminal event decides success or failure so a trailing completion cannot replace
@@ -72,14 +77,22 @@ export interface ProviderTestRun {
    */
   decisionQuestions?: SystemOneTestPayload['questions'] | null
   /**
+   * Copied images and Box targets remain tied to this submission after the editable form changes.
+   */
+  decisionPreview?: SystemOneTestPreview | null
+  /**
+   * Submitted input identity lets the view label preserved results when the editable draft changes.
+   */
+  decisionInput?: string | null
+  /**
    * True permits the result view to display usage, including valid zero token counts.
    */
   decisionUsageValid?: boolean
 }
 
 /**
- * ProviderTestRequestBody describes the JSON body sent to the administrative provider-test
- * endpoint.
+ * ProviderTestRequestBody combines administrator wire fields with optional browser preview
+ * metadata. The runner excludes decisionPreview before serializing the HTTP request.
  */
 export interface ProviderTestRequestBody {
   /** The selected membership supplies model attributes; omission uses the default catalogue values. */
@@ -87,6 +100,10 @@ export interface ProviderTestRequestBody {
   model_id: string // requested provider model identifier
   prompt?: string // optional test prompt text
   systemone?: SystemOneTestPayload // structured decision test payload
+  /**
+   * Browser-only preview metadata is copied into the run and excluded from the HTTP request body.
+   */
+  decisionPreview?: SystemOneTestPreview
   test_type: 'text' | 'image' | 'decision' // requested output test category
   mode?: 'default' | 'compact' | 'legacy_compact' // optional OpenAI compact mode
   protocol?: ProviderTestProtocol // optional selectable endpoint protocol
@@ -148,6 +165,8 @@ export function resetProviderTestRun(run: ProviderTestRun) {
   run.images = []
   run.decisionResult = null
   run.decisionQuestions = null
+  run.decisionPreview = null
+  run.decisionInput = null
   run.decisionUsageValid = false
 }
 
@@ -157,8 +176,8 @@ export function resetProviderTestRun(run: ProviderTestRun) {
  * attempts. The caller owns the AbortSignal and prevents overlapping writers to the same run.
  *
  * The first success or error event fixes the terminal status, while subsequent content can
- * still append output. A decision request copies questions before dispatch so later form edits
- * do not relabel its answers. The decoder retains incomplete newline-delimited records between
+ * still append output. A decision request copies questions and images before dispatch so later
+ * form edits do not relabel its answers. The decoder retains incomplete newline-delimited records between
  * reads; an unterminated final record is not dispatched. AbortError resets status to idle and
  * leaves collected output available.
  */
@@ -172,10 +191,14 @@ export async function executeProviderTest(options: {
 }): Promise<boolean> {
   const { run, t } = options
   resetProviderTestRun(run)
-  // Copy question definitions before the request starts so answer descriptions remain tied to
-  // the submitted decision payload.
+  // Copy questions and image previews before dispatch so later form changes cannot alter the
+  // description or target image attached to a completed answer.
   if (options.body.test_type === 'decision' && options.body.systemone) {
+    run.decisionInput = systemOneInputKey(options.body.systemone)
     run.decisionQuestions = JSON.parse(JSON.stringify(options.body.systemone.questions))
+    run.decisionPreview = options.body.decisionPreview
+      ? JSON.parse(JSON.stringify(options.body.decisionPreview))
+      : null
   }
   run.status = 'connecting'
   const startedAt = performance.now()
@@ -281,16 +304,23 @@ export async function executeProviderTest(options: {
   addLine(t('admin.providers.startingTestForProvider', { name: options.providerName }), 'info')
 
   try {
-    // The POST stream uses the configured API base and administrative request marker, matching
-    // authenticated management requests elsewhere.
+    const { decisionPreview: _preview, ...requestBody } = options.body
+    const decision = requestBody.test_type === 'decision' ? requestBody.systemone : undefined
+    const usesImages =
+      !!decision &&
+      (Object.keys(decision.assets ?? {}).length > 0 ||
+        Object.values(decision.questions).some((question) => question.type === 'box'))
+    // Choosing images or Box in this administrator form explicitly opts this test into the
+    // experimental upstream feature. Private image names and associations never leave the browser.
     const response = await fetch(buildApiUrl(`/admin/providers/${options.providerId}/test`), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
         'Content-Type': 'application/json',
         [ADMIN_UI_REQUEST_HEADER]: '1',
+        ...(usesImages ? { 'TypeSafe-Danger-Zone-Images': 'true' } : {}),
       },
-      body: JSON.stringify(options.body),
+      body: JSON.stringify(requestBody),
       signal: options.signal,
     })
     if (!response.ok) {

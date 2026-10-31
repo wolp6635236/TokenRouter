@@ -951,12 +951,12 @@ func TestModelRulesReturnIndependentValues(t *testing.T) {
 }
 
 // TestJevOfflineCatalogPricesKeepProviderIdentity loads supplemented TypeSafe
-// identities alongside a filtered relay model. Original rates and text
+// identities alongside a filtered relay model. Original rates and image-input
 // attributes remain available, while removed relay pricing and an unconfigured
 // version remain unavailable.
 func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 	service := newOfflinePricingFixture(t)
-	for _, model := range []string{"jev-latest", "jev-preview", "jev-1.13.0"} {
+	for _, model := range []string{"jev-latest", "jev-preview", "jev-1.13.0", "jev-1.14.0"} {
 		p := service.GetModelPricing(model)
 		require.NotNil(t, p, model)
 		require.InDelta(t, 4.2e-8, p.InputCostPerToken, 1e-15)
@@ -966,8 +966,12 @@ func TestJevOfflineCatalogPricesKeepProviderIdentity(t *testing.T) {
 		attributes := service.ModelAttributes(model)
 		require.NotNil(t, attributes.InputModalities)
 		require.NotNil(t, attributes.OutputModalities)
-		require.Equal(t, []string{"text"}, *attributes.InputModalities)
+		require.Equal(t, []string{"text", "image"}, *attributes.InputModalities)
 		require.Equal(t, []string{"text"}, *attributes.OutputModalities)
+		require.NotNil(t, attributes.StructuredOutput)
+		require.True(t, *attributes.StructuredOutput)
+		require.NotNil(t, attributes.Attachment)
+		require.True(t, *attributes.Attachment)
 	}
 	removed := service.GetModelPricing("opencode/jev-1.13-free")
 	require.NotNil(t, removed)

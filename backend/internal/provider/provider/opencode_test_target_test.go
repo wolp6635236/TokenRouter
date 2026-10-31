@@ -232,6 +232,26 @@ func TestOpenCodeProbeNativeProtocolsKeepOneMappedIdentity(t *testing.T) {
 	}
 }
 
+// TestOpenCodeSystemOneImages retains explicit image opt-in alongside OpenCode
+// authentication and model selection. The shared decision executor forwards the
+// inline image and accepts a Box answer whose confidence is explicitly unknown.
+func TestOpenCodeSystemOneImages(t *testing.T) {
+	transport := &openCodeProbeTransport{response: `{"model":"jev-1.14.0","answers":{"target":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":null}},"usage":{"input_tokens":2,"output_tokens":0}}`}
+	record := &provider.Record{ID: 8, Platform: provider.PlatformOpenCode, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{
+		"api_key": "test-key", "opencode_model_protocols": map[string]any{"payg": map[string]any{"jev-latest": "systemone"}},
+	}}
+	executor := &NativeProtocolTest{Transport: transport, ValidateURL: func(raw string) (string, error) { return raw, nil }}
+	target := openCodeTestTarget{record: record, executor: executor}
+	request := provider.PreparedTestRequest{TestRequest: provider.TestRequest{Model: "jev-latest", SystemOneImages: "true", SystemOne: json.RawMessage(`{"state":"photo","questions":{"target":{"type":"box"}},"assets":{"photo":{"format":"png","data_base64":"aW1hZ2U="}}}`)}, TestType: provider.ProviderTestTypeDecision}
+	sink := &openCodeProbeSink{}
+	require.NoError(t, target.Execute(t.Context(), request, sink))
+	require.Equal(t, "/inference/systemone/v1/systemone", transport.request.URL.Path)
+	require.Equal(t, "Bearer test-key", transport.request.Header.Get("Authorization"))
+	require.Equal(t, "true", transport.request.Header.Get("TypeSafe-Danger-Zone-Images"))
+	require.Contains(t, string(transport.body), `"data_base64":"aW1hZ2U="`)
+	require.True(t, sink.events[len(sink.events)-1].Success)
+}
+
 // TestOpenCodeProbeFailureAndCancellationKeepsOneRun checks an upstream rejection,
 // a cancelled caller, and a failed event sink. Each failure must stop the probe,
 // with no successful completion or extra upstream attempt.

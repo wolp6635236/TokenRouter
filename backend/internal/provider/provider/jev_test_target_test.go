@@ -79,6 +79,21 @@ func TestJevDecisionTestForwardsQuestions(t *testing.T) {
 	require.JSONEq(t, transport.response, string(response))
 }
 
+// TestJevDecisionImageProbe submits inline image data and explicit experimental
+// opt-in through the administrator's prepared request. It checks mapped model,
+// nullable Box confidence, and the completion event's independent usage validity.
+func TestJevDecisionImageProbe(t *testing.T) {
+	transport := &jevProbeTransport{response: `{"model":"jev-1.14.0","answers":{"target":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":null}},"usage":{"input_tokens":2,"output_tokens":0}}`}
+	component := &JevProviderTest{Transport: transport, ValidateURL: func(url string) (string, error) { return url, nil }}
+	target := component.Target(&provider.Record{ID: 7, Platform: provider.PlatformJev, Type: provider.ProviderTypeAPIKey, Credentials: map[string]any{"api_key": "test"}})
+	body := json.RawMessage(`{"state":"photo","questions":{"target":{"type":"box"}},"assets":{"photo":{"format":"png","data_base64":"aW1hZ2U="}}}`)
+	sink := &jevProbeEvents{}
+	require.NoError(t, target.Execute(t.Context(), provider.PreparedTestRequest{TestRequest: provider.TestRequest{SystemOne: body, SystemOneImages: "true"}}, sink))
+	require.Equal(t, "true", transport.request.Header.Get("TypeSafe-Danger-Zone-Images"))
+	require.Contains(t, string(transport.body), `"data_base64":"aW1hZ2U="`)
+	require.True(t, sink.events[len(sink.events)-1].Success)
+}
+
 // TestJevDecisionTestRejectsInvalidPayload submits malformed, unsupported, and
 // streaming decision bodies. Each case must return an error before sending an
 // HTTP request through the probe transport.

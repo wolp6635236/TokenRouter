@@ -143,7 +143,8 @@ func (t openCodeTestTarget) execute(run *TestRun, request provider.PreparedTestR
 	}
 	if route.Protocol == capability.ProtocolSystemOne {
 		return executeSystemOneProbe(run, &jev.Target{
-			ProviderID: t.record.ID, URL: jev.EndpointURL(probe.baseURL, "systemone"), Model: route.Model,
+			ImagesOptIn: request.SystemOneImages,
+			ProviderID:  t.record.ID, URL: jev.EndpointURL(probe.baseURL, "systemone"), Model: route.Model,
 			ApplyHeaders: probe.applyHeaders,
 			Do:           func(req *http.Request) (*http.Response, error) { return t.executor.send(req, t.record) },
 		}, body)

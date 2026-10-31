@@ -540,19 +540,27 @@ func TestQualifiedGrokReasoningPreservesModel(t *testing.T) {
 	}
 }
 
-// TestQualifiedGrokReasoningKeepsCapabilityBounds compares a known 4.5 limit
-// with unknown qualified model identities. Known xhigh must become high, unknown
-// effort must remain, complete model IDs must stay supplied, and absent effort
-// must remain absent.
+// TestQualifiedGrokReasoningKeepsCapabilityBounds compares an explicit high-only
+// capability with catalog and unknown qualified identities. Configured bounds
+// clamp xhigh while catalog-supported and unknown effort values remain intact;
+// complete model IDs and absent effort retain their supplied representation.
 func TestQualifiedGrokReasoningKeepsCapabilityBounds(t *testing.T) {
+	// Keep a configured upper bound independent of changing catalog capabilities
+	// so snapshot refreshes cannot remove the coverage of effort clamping.
+	high := "high"
+	limited := []modelcatalog.ReasoningOption{{Type: "effort", Values: []*string{&high}}}
 	codec := BodyCodec{Attributes: func(model string) modelcatalog.Attributes {
+		if model == "xai/high-only-model" {
+			return modelcatalog.Attributes{ReasoningOptions: &limited}
+		}
 		return testkit.OfflineView().Resolve(modelcatalog.Target{Platform: "grok", Model: model}, modelcatalog.Attributes{}).Attributes
 	}}
 	for _, tc := range []struct {
 		model string // qualified model fixture
 		want  string // expected normalized effort
 	}{
-		{model: "xai/grok-4.5", want: "high"},
+		{model: "xai/high-only-model", want: "high"},
+		{model: "xai/grok-4.5", want: "xhigh"},
 		{model: "x-ai/grok-composer-2.5-fast", want: "xhigh"},
 		{model: "xai/grok-4.6-high", want: "xhigh"},
 		{model: "unknown/grok-4.6", want: "xhigh"},

@@ -57,21 +57,21 @@ func TestModerationBodyDecodesDescriptions(t *testing.T) {
 	}
 }
 
-// TestCodecPreservesMixedQuestions parses noul, choice, and score questions,
+// TestCodecPreservesMixedQuestions parses noul, choice, score, and box questions,
 // patches their model, and reads a valid mixed response. Assertions protect
 // the question count, large numeric/extension bytes, a moderation key, and
 // accepted usage with the supplied input count.
 func TestCodecPreservesMixedQuestions(t *testing.T) {
-	body := []byte(`{"model":"alias","state":{"message":"hello","number":9007199254740993},"extension":{"keep":true},"questions":{"a":{"type":"noul","instructions":["yes?"]},"b":{"type":"choice","instructions":{"ask":"pick"},"criteria":{"one":null,"two":{"hint":"second"}}},"c":{"type":"score","instructions":"rank","criteria":["low",["high"]]}}}`)
+	body := []byte(`{"model":"alias","state":{"message":"hello","number":9007199254740993},"extension":{"keep":true},"questions":{"a":{"type":"noul","instructions":["yes?"]},"b":{"type":"choice","instructions":{"ask":"pick"},"criteria":{"one":null,"two":{"hint":"second"}}},"c":{"type":"score","instructions":"rank","criteria":["low",["high"]]},"d":{"type":"box","instructions":"<photo>"}},"assets":{"<photo>":{"format":"png","data_base64":"aW1hZ2U="}}}`)
 	r, err := ParseRequest(body)
 	require.NoError(t, err)
-	require.Len(t, r.Questions, 3)
+	require.Len(t, r.Questions, 4)
 	mapped, err := ReplaceModel(body, "jev-latest")
 	require.NoError(t, err)
 	require.Contains(t, string(mapped), `9007199254740993`)
 	require.Contains(t, string(mapped), `"extension":{"keep":true}`)
 	require.Contains(t, string(r.ModerationBody()), "message")
-	response := []byte(`{"model":"jev-1.13.0","answers":{"a":{"type":"noul","noul":0.9},"b":{"type":"choice","choice":"one","confidence":0.8,"probabilities":{"one":0.9,"two":0.1}},"c":{"type":"score","score":0.1,"confidence":0.8,"probabilities":{"0":0.9,"1":0.1},"legend":{"0":"low","1":"high"}}},"usage":{"input_tokens":10,"output_tokens":0}}`)
+	response := []byte(`{"model":"jev-1.14.0","answers":{"a":{"type":"noul","noul":0.9},"b":{"type":"choice","choice":"one","confidence":0.8,"probabilities":{"one":0.9,"two":0.1}},"c":{"type":"score","score":0.1,"confidence":0.8,"probabilities":{"0":0.9,"1":0.1},"legend":{"0":"low","1":"high"}},"d":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":null}},"usage":{"input_tokens":10,"output_tokens":0}}`)
 	decoded, err := ParseResponse(response, r.Questions)
 	require.NoError(t, err)
 	require.True(t, decoded.HasUsage)
@@ -109,5 +109,37 @@ func TestParseRequestRejectsUnsupportedShapes(t *testing.T) {
 		require.NoError(t, err)
 		_, err = ParseRequest(body)
 		require.Error(t, err)
+	}
+}
+
+// TestBoxResponseValidation accepts zero edges and explicitly unknown confidence.
+// Missing or malformed coordinates and confidence fail independently of token
+// accounting, while valid boxes remain deliverable without usable usage.
+func TestBoxResponseValidation(t *testing.T) {
+	questions := map[string]Question{"a": {Type: "box"}}
+	for _, tc := range []struct {
+		answer string // raw box answer
+		valid  bool   // expected answer acceptance
+	}{
+		{`{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":null}`, true},
+		{`{"type":"box","box":{"top":0.2,"bottom":0.8,"left":0.1,"right":0.9},"confidence":0}`, true},
+		{`{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1}}`, false},
+		{`{"type":"box","box":{"bottom":1,"left":0,"right":1},"confidence":null}`, false},
+		{`{"type":"box","box":{"top":-0.1,"bottom":1,"left":0,"right":1},"confidence":null}`, false},
+		{`{"type":"box","box":{"top":1,"bottom":1,"left":0,"right":1},"confidence":null}`, false},
+		{`{"type":"box","box":{"top":0,"bottom":1,"left":1,"right":0},"confidence":null}`, false},
+		{`{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":"0.9"}`, false},
+		{`{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":2}`, false},
+	} {
+		for _, usage := range []string{`null`, `{"input_tokens":0,"output_tokens":0}`, `{"input_tokens":-1,"output_tokens":2}`} {
+			body := []byte(`{"model":"jev-1.14.0","answers":{"a":` + tc.answer + `},"usage":` + usage + `}`)
+			response, err := ParseResponse(body, questions)
+			if tc.valid {
+				require.NoError(t, err)
+				require.Equal(t, usage == `{"input_tokens":0,"output_tokens":0}`, response.HasUsage)
+			} else {
+				require.Error(t, err)
+			}
+		}
 	}
 }

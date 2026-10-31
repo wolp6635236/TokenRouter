@@ -21,6 +21,7 @@ import (
 	"github.com/TokenFlux/TokenRouter/internal/moderation"
 	"github.com/TokenFlux/TokenRouter/internal/ops"
 	"github.com/TokenFlux/TokenRouter/internal/protocol/openai"
+	wire "github.com/TokenFlux/TokenRouter/internal/protocol/systemone"
 	"github.com/TokenFlux/TokenRouter/internal/provider"
 	"github.com/TokenFlux/TokenRouter/internal/server/clientip"
 	"github.com/TokenFlux/TokenRouter/internal/upstream"
@@ -121,7 +122,16 @@ func (p *systemOneRun) Forward(ctx context.Context) systemone.Outcome {
 	}
 	body := p.input.Body
 	if p.input.Mapping.Mapped {
-		body = p.h.bindings.Common.Forward.ReplaceModelInBody(body, p.input.Mapping.MappedModel)
+		var err error
+		var contentType string
+		body, contentType, err = wire.ReplaceRequestModel(body, p.c.GetHeader("Content-Type"), p.input.Mapping.MappedModel)
+		if err != nil {
+			gatewayhttp.WriteSystemOneError(p.c, http.StatusBadRequest, "invalid_request_error", "", "", err.Error())
+			return systemone.Outcome{Err: err}
+		}
+		// The protocol rewriter preserves multipart boundaries. Publish its paired
+		// content type so the attempt parser interprets the rewritten envelope correctly.
+		p.c.Request.Header.Set("Content-Type", contentType)
 	}
 	result, err := p.h.bindings.Platform.SystemOne(ctx, p.c, p.selection.Provider, body)
 	outcome := systemone.Outcome{Result: result, Err: err}

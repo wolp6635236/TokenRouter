@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,9 +80,13 @@ func (h *AuxiliaryHandler) SystemOne(c *gin.Context) {
 	if !ok {
 		return
 	}
-	request, err := wire.ParseRequest(body)
+	request, err := wire.ParsePayload(body, c.GetHeader("Content-Type"))
 	if err != nil {
-		h.ports.Error(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		status := http.StatusBadRequest
+		if errors.Is(err, wire.ErrPayloadTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		h.ports.Error(c, status, "invalid_request_error", err.Error())
 		return
 	}
 	h.ports.ObserveRequest(c, request.Model, false, true)

@@ -96,7 +96,8 @@ func (t jevTestTarget) Execute(ctx context.Context, request provider.PreparedTes
 	run.Begin(true)
 	output.SendEvent(run, provider.TestEvent{Type: "test_start", Model: model})
 	target := &jev.Target{
-		ProviderID: t.record.ID, URL: jev.EndpointURL(base, "systemone"), Model: model, Token: t.record.GetCredential("api_key"),
+		ImagesOptIn: request.SystemOneImages,
+		ProviderID:  t.record.ID, URL: jev.EndpointURL(base, "systemone"), Model: model, Token: t.record.GetCredential("api_key"),
 		ApplyHeaders: func(headers http.Header) { ApplyProviderHeaderOverrides(t.record, headers) },
 		Do: func(req *http.Request) (*http.Response, error) {
 			return t.executor.Transport.Do(req, proxy, t.record.ID, t.record.Concurrency)

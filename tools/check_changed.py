@@ -17,7 +17,8 @@ import time
 # Source changes select related tests, with deletions selecting the full suite
 # because their dependency graph may already be absent from the working tree.
 # Backend locale changes retain their frontend related-test path, and pure Go
-# changes require no Node or pnpm installation.
+# changes require no Node or pnpm installation. Architecture scans rerun for
+# backend or policy changes because their inputs include another Go module's files.
 
 # ROOT locates checkout-relative commands; Git's zero object and empty tree identify
 # deleted references and repositories without an existing comparison branch.
@@ -113,7 +114,8 @@ def plan(files, base, go_packages=go_test_packages):
     """plan maps changed paths to ordered working-directory and command pairs.
 
     Go changes select package checks and both committed-range and working-tree
-    formatting. Frontend changes run all static checks, then related tests for
+    formatting. Architecture source and backend changes always rerun the scan
+    without cached test results. Frontend changes run all static checks, then related tests for
     existing source paths or the full suite for configuration and deleted files.
     Backend locale paths independently select the frontend tests importing them.
 
@@ -127,7 +129,11 @@ def plan(files, base, go_packages=go_test_packages):
     if go_files or go_deps:
         commands.append(('.', ['python3', 'tools/format_go.py', '--check', '--base', base]))
         commands.append(('.', ['python3', 'tools/format_go.py', '--check']))
-        commands.append(('tools/architecture', ['env', 'GOWORK=off', 'go', 'test', './...']))
+    if go_files or go_deps or any(f.startswith('tools/architecture/') for f in files):
+        # Architecture reads backend sources outside its Go module. Disable result
+        # caching so an unchanged checker cannot conceal new dependency violations.
+        commands.append(('tools/architecture', ['env', 'GOWORK=off', 'go', 'test', '-count=1', './...']))
+    if go_files or go_deps:
         if go_deps:
             lint_targets = test_packages = ['./...']
         else:

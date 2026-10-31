@@ -81,7 +81,7 @@ OpenAI API Key 提供商的 `credentials.images_generations_mode` 和 `credentia
 各平台的原生协议：
 
 - OpenCode API Key：按模型声明的 Messages、Responses、Chat、GenerateContent 或 SystemOne，细节见 [OpenCode 上游](opencode_upstream.md#opencode_routing)。
-- Jev API Key：SystemOne，支持同步决策请求。
+- Jev API Key：SystemOne，支持同步文本、图片决策及 Box 定位请求；图片和 Box 使用显式实验启用头。
 - OpenAI API Key：Responses、Chat、Embeddings、Images 生成和编辑、Responses WebSocket、Compact、Alpha Search。
 - OpenAI OAuth：Responses、WebSocket、Compact、Alpha Search、Live。PAT 没有 Alpha Search 和 Live，Agent Identity 没有 Live。OpenAI 没有 Messages 原生项。
 - Grok：HTTP Responses、Chat、Images、视频和 Voice 是原生项；WebSocket、搜索和 Compact 是转换入口。

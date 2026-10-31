@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -35,4 +36,17 @@ func TestSystemOneCompositeErrorUsesDecisionEndpoint(t *testing.T) {
 	require.False(t, IsSystemOneEndpoint("/v1/chat/completions"))
 	require.False(t, IsSystemOneEndpoint("/other/systemone"))
 	require.True(t, IsOpenAICompositeEndpoint("/v1/chat/completions"))
+}
+
+// TestSystemOneModelExtractionDefersQuestionValidation preserves admission's
+// missing-model error while reading routing identity from incomplete questions.
+// The SystemOne endpoint owns full question validation after key selection.
+func TestSystemOneModelExtractionDefersQuestionValidation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, EndpointSystemOne, strings.NewReader(`{"model":"GPT/alias","questions":{}}`))
+	model, err := CompositeModelFromRequest(request)
+	require.NoError(t, err)
+	require.Equal(t, "GPT/alias", model)
+	request = httptest.NewRequest(http.MethodPost, EndpointSystemOne, strings.NewReader(`{"state":"test"}`))
+	_, err = CompositeModelFromRequest(request)
+	require.ErrorIs(t, err, apikey.ErrCompositeKeyPrefixRequired)
 }
